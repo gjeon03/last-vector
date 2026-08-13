@@ -88,14 +88,30 @@ async function runPerfProbe({ report, session, options }) {
 
   await report.check({
     id: 'M5.performance-1080p',
-    name: 'Game sustains 60 FPS at 1920x1080',
+    name: 'Game holds the 60 Hz frame budget at 1920x1080',
     criteria: [criterion('M5', 'full', 'Combines this 1080p FPS threshold with M5.runtime-errors in the same run.')],
-    assertion: `At a 1920x1080 CSS-pixel viewport and deviceScaleFactor 1, __LV.profile(${options.profileSeconds}) reports fps >= 60.`,
+    assertion:
+      `At a 1920x1080 CSS-pixel viewport and deviceScaleFactor 1, __LV.profile(${options.profileSeconds}) sustains the ` +
+      '60 Hz budget: mean frame time <= 16.9 ms, p95 <= 20 ms, no frame over 33 ms, and the adaptive ' +
+      'renderer did not buy that budget by collapsing internal resolution (renderScale >= 0.6).',
   }, async () => {
     const evidence = unwrap(profileOutcome);
     verify(settingsOutcome.ok, 'Requested performance quality settings were not confirmed; see PERF.settings.', settingsOutcome.error);
     verify(evidence.viewport.width === 1920 && evidence.viewport.height === 1080 && evidence.deviceScaleFactor === 1, 'Performance probe did not run at the mandatory 1920x1080 resolution.', evidence);
-    verify(evidence.sample.fps >= 60, `Measured FPS ${evidence.sample.fps} is below 60.`, evidence);
+
+    // NOT `fps >= 60`. The compositor caps presentation at the display refresh, and the sample
+    // window is wall-clock, so a perfectly vsynced run measures 59.99 and a strict >= 60 can
+    // never pass. Frame time is the quantity that actually describes smoothness, and the
+    // render scale is what stops the adaptive renderer from cheating its way to a green light.
+    const s = evidence.sample;
+    verify(s.meanFrameMs <= 16.9, `Mean frame time ${s.meanFrameMs.toFixed(2)} ms exceeds the 16.9 ms budget.`, evidence);
+    verify(s.p95FrameMs <= 20, `p95 frame time ${s.p95FrameMs.toFixed(2)} ms exceeds 20 ms.`, evidence);
+    verify(s.maxFrameMs <= 33, `Worst frame ${s.maxFrameMs.toFixed(2)} ms exceeds 33 ms.`, evidence);
+    verify(
+      s.renderScale >= 0.6,
+      `Adaptive resolution collapsed to ${s.renderScale.toFixed(2)}; the frame budget was met only by dropping internal resolution.`,
+      evidence,
+    );
     return evidence;
   });
 }
