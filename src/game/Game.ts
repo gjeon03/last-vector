@@ -447,7 +447,12 @@ export class Game {
     this.overlay.setPhase(phase);
   }
 
-  beginRun(): void {
+  /**
+   * @param skipIntro jump straight to flying instead of running the three-second countdown.
+   *   The interface never passes this; it exists so an unattended playthrough does not spend
+   *   three seconds of every run watching numerals.
+   */
+  beginRun(skipIntro = false): void {
     // Clearing this matters the moment any restart affordance is reachable from the pause
     // menu: without it the new run starts already frozen on the countdown.
     this.paused = false;
@@ -468,6 +473,15 @@ export class Game {
     this.cinematic = false;
     this.activeVantage = null;
     this.input.reset();
+    if (skipIntro) {
+      this.countdown = null;
+      this.countdownTimer = 0;
+      this.overlay.setCountdown(null);
+      this.setPhase('flying');
+      this.radio(0);
+      this.input.requestLock();
+      return;
+    }
     this.countdown = 3;
     this.countdownTimer = 0;
     this.setPhase('countdown');
@@ -1038,12 +1052,19 @@ export class Game {
    */
   private updateBoostFeedback(): void {
     const boosting = this.ship.boosting;
+    const locked = this.ship.boostLocked;
+    const ranDry = locked && !this.wasBoostLocked;
+
+    // These are two different events and must never fire together. The drive stopping because
+    // the pilot let go, and the drive stopping because the reserve ran out, are the same frame
+    // in the simulation but must not be the same sound — two one-shots at the same instant read
+    // as a single muddled event, and the "you are out" cue was the one that lost.
     if (boosting !== this.wasBoosting) {
       this.wasBoosting = boosting;
-      this.audio.play(boosting ? 'boostStart' : 'boostEnd');
+      if (boosting) this.audio.play('boostStart');
+      else if (!ranDry) this.audio.play('boostEnd');
     }
-    const locked = this.ship.boostLocked;
-    if (locked && !this.wasBoostLocked) {
+    if (ranDry) {
       this.audio.play('boostEmpty');
       this.pushCallout('DRIVE DRY', 'RESERVE RECHARGING', 'warn', 1.2);
       this.pushLog('overdrive reserve depleted', 'warn');

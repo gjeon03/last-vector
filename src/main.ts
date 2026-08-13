@@ -123,7 +123,7 @@ function installHarness(game: Game): void {
     version: '1.0.0',
     seed: game.seed,
     ready: () => game.ready(),
-    startRun: () => game.beginRun(),
+    startRun: (options) => game.beginRun(options?.skipIntro === true),
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
