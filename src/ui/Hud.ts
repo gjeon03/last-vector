@@ -1325,7 +1325,8 @@ export class Hud {
       x = vs.gateX;
       y = vs.gateY + Math.max(vs.gateR * 1.2, vmin * 0.026) + vmin * 0.026;
     } else {
-      /* welded to the tail of the chevron runway so arrow + range read as one object */
+      /* Set just inside the arrow head, on the same bearing, so head + range read as one
+         object. With the chevrons gone this readout is the arrow's only second signal. */
       const cx = w * 0.5;
       const cy = h * 0.5;
       const rx = Math.min(w * 0.375, vmin * 0.58) - vmin * 0.058;

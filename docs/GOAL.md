@@ -52,6 +52,30 @@ Concretely, the build is only "excellent" when all of these hold:
 5. Network capture asserts zero external requests.
 6. Fresh `FINAL_REVIEW` challenge before claiming COMPLETE.
 
+## Verification limits — what this build's evidence does NOT cover
+
+Recorded honestly, because an unstated gap reads as coverage.
+
+- **Nobody has heard the audio.** Every audio claim rests on offline `OfflineAudioContext`
+  renders measured in headless Chromium: per-event band energy, RMS, and an "audibility
+  increment" over the engine bed. That proves each cue exists, is placed in a band the drive
+  leaves open, and clears the detection threshold. It does not establish that anything *sounds*
+  good. A single human listening to one boost lockout and one gate approach is worth more than
+  every measurement in the report.
+- **Peak levels in the audio tables carry roughly ±3 dB of harness noise** for click-heavy
+  events. The limiter's 4× oversampling resamples a 1 ms transient differently depending on its
+  phase within the render quantum, so a pure time shift moved a reported peak by 2.95 dB. RMS,
+  band-energy and increment figures are averages and are unaffected; the conclusions rest on
+  those.
+- **Pointer-locked mouse flight is inferred, not felt.** Pointer lock is unavailable in the
+  headless driver, so the virtual-stick behaviour is reasoned from `src/core/Input.ts`. Keyboard
+  and harness axes are measured.
+- **No gamepad has been connected.** The code path is read-only verified.
+- **The results, pause and settings screens have only synthetic-background evidence.** The
+  in-flight HUD was re-verified against the real renderer; those three were not.
+- **Frame-rate headroom is unknown.** Every configuration measured is vsync-locked at 60, so the
+  ceiling was never found — only that ultra at 1440p does not approach it on this machine.
+
 ## Safe autonomy
 
 Lead owns: engine/tech choices, art direction, palette, ship design, course layout, flight
