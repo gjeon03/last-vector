@@ -1144,6 +1144,18 @@ export class Game {
     if (!v) throw new Error(`unknown vantage: ${name}`);
     this.activeVantage = v;
     this.cinematic = false;
+    // Put the course into the state a player would actually be in at this point on the route,
+    // so a screenshot shows a lit, armed cairn rather than a dormant prop.
+    if (v.gateIndex !== undefined) {
+      this.course.reset();
+      for (let i = 0; i < v.gateIndex; i++) this.course.gates[i].setState('cleared');
+      this.course.nextIndex = v.gateIndex;
+      this.course.gates[v.gateIndex]?.setState('armed');
+    } else if (v.terminusStandoff !== undefined) {
+      this.course.reset();
+      for (const gate of this.course.gates) gate.setState('cleared');
+      this.course.nextIndex = this.course.gates.length;
+    }
   }
 
   clearVantage(): void {

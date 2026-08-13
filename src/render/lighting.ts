@@ -61,10 +61,15 @@ export const GLSL_LIGHTING = /* glsl */ `
     float hemi = N.y * 0.5 + 0.5;
     vec3 ambient = mix(uGroundColor, uSkyColor, hemi) * albedo * ao;
 
-    // A rim keyed to the star direction, so silhouettes separate from the background even
-    // when a surface is facing away from the light.
-    float rim = pow(1.0 - ndv, uRimPower) * (0.35 + 0.65 * smoothstep(-0.6, 0.4, dot(N, L)));
-    vec3 rimLight = uRimColor * rim * ao;
+    // Backlight. When the star is behind an object from the camera's point of view, the
+    // grazing edge of that object catches the light and burns — it is the single strongest
+    // shape cue there is, and without it a backlit rock is just a hole cut out of the sky.
+    // The term keys off the *view* direction against the light, not the surface normal, so it
+    // peaks exactly when you are looking into the star past the object's silhouette.
+    float fres = pow(1.0 - ndv, uRimPower);
+    float backlight = pow(max(dot(-V, L), 0.0), 2.2);
+    float sideLight = smoothstep(-0.35, 0.55, dot(N, L));
+    vec3 rimLight = uRimColor * fres * (0.2 + sideLight * 0.5 + backlight * 4.2) * ao;
 
     return (direct + ambient + rimLight) * uExposureBias;
   }
@@ -107,10 +112,11 @@ export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUni
     // A hot star reads as near-white with a warm bias, not as orange paint. Saturating the
     // key light is what turned every rock in the field into terracotta.
     uSunColor: { value: new THREE.Color(0xffe2bd).multiplyScalar(2.7) },
-    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.03) },
-    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.024) },
-    uRimColor: { value: new THREE.Color(0x9fd2ff).multiplyScalar(0.16) },
-    uRimPower: { value: 3.6 },
+    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.05) },
+    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.038) },
+    // The rim takes the star's colour, because that is what is lighting it.
+    uRimColor: { value: new THREE.Color(0xffcf9e).multiplyScalar(0.5) },
+    uRimPower: { value: 2.8 },
     uExposureBias: { value: 1 },
     uHazeColor: { value: new THREE.Color(0x0b1526).multiplyScalar(1.0) },
     uHazeDensity: { value: 1 / 5200 },
