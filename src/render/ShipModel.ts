@@ -44,6 +44,7 @@ const HULL_FRAG = /* glsl */ `
   uniform float uEmissiveStrength;
   uniform float uDamage;
   uniform float uTime;
+  uniform vec3 uFill;
 
   ${GLSL_NOISE}
   ${GLSL_LIGHTING}
@@ -73,10 +74,10 @@ const HULL_FRAG = /* glsl */ `
     float fineSeam = seams(vLocal + 13.0, normalize(vLocalNormal), 1.15, 0.06);
     float seam = clamp(bigSeam * 0.9 + fineSeam * 0.35, 0.0, 1.0);
 
-    // Ivory upper panels over a dark structural base; the split is by height, so the ship
-    // reads as painted rather than randomly patterned.
-    float upper = smoothstep(-0.15, 0.55, normalize(vLocalNormal).y);
-    float paint = upper * smoothstep(0.2, 0.75, fbm(vLocal * 0.55, 3) * 0.5 + 0.85);
+    // Ivory panels over a dark structural base. The split favours upper surfaces but wraps
+    // onto the flanks, so the ship still reads as painted when seen from directly astern.
+    float upper = smoothstep(-0.45, 0.35, normalize(vLocalNormal).y);
+    float paint = upper * smoothstep(0.2, 0.75, fbm(vLocal * 0.55, 3) * 0.5 + 0.9);
     vec3 albedo = mix(uBase, uPanel, paint * 0.85);
 
     // Warning stripe along the spine and the wing leading edges.
@@ -88,11 +89,17 @@ const HULL_FRAG = /* glsl */ `
     float wear = smoothstep(0.55, 0.95, fbm(vLocal * 2.2 + 7.0, 4) * 0.5 + 0.5);
     albedo = mix(albedo, uBase * 0.55, wear * 0.35);
 
-    float roughness = clamp(0.32 + seam * 0.35 + wear * 0.25, 0.1, 0.95);
-    float metalness = mix(0.82, 0.35, paint);
+    float roughness = clamp(0.34 + seam * 0.32 + wear * 0.24, 0.12, 0.95);
+    float metalness = mix(0.52, 0.22, paint);
     float ao = 1.0 - seam * 0.45;
 
     vec3 color = shadeSurface(N, V, albedo, roughness, metalness, ao);
+
+    // Hero fill. The ship is the focal object and the camera sits behind it, so whenever the
+    // star is ahead the hull would otherwise be a pure silhouette. A small view-aligned fill
+    // keeps its form readable without flattening the key light.
+    float fill = max(dot(N, V), 0.0);
+    color += albedo * uFill * (0.25 + fill * 0.75);
 
     // Running lights: thin channels down the flanks and a chevron on the nose.
     float channel = smoothstep(0.035, 0.0, abs(abs(vLocal.x) - 1.32)) * smoothstep(-6.0, -1.0, vLocal.z);
@@ -106,7 +113,7 @@ const HULL_FRAG = /* glsl */ `
       color += vec3(1.0, 0.35, 0.08) * scorch * uDamage * 0.6 * (0.5 + 0.5 * sin(uTime * 11.0));
     }
 
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
   }
 `;
 
@@ -180,7 +187,7 @@ const PLUME_FRAG = /* glsl */ `
     float density = body * edge * (0.55 + turb * 0.55) * mix(1.0, diamonds, 0.45);
 
     vec3 col = mix(uFlame, uCore, pow(1.0 - t, 2.4) * (1.0 - radial * 0.55));
-    col *= density * uPower * 5.5;
+    col *= density * uPower * 2.6;
 
     gl_FragColor = vec4(col, clamp(density * uPower, 0.0, 1.0));
   }
@@ -213,11 +220,12 @@ export class ShipModel {
     this.hullMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uBase: { value: new THREE.Color(PALETTE.hullDark) },
+        uBase: { value: new THREE.Color(0x39414d) },
+        uFill: { value: new THREE.Color(0x8fa6c4).multiplyScalar(0.34) },
         uPanel: { value: new THREE.Color(PALETTE.hullPanel) },
         uTrim: { value: new THREE.Color(PALETTE.starRim).multiplyScalar(0.55) },
         uEmissive: { value: new THREE.Color(PALETTE.engineCore) },
-        uEmissiveStrength: { value: 2.4 },
+        uEmissiveStrength: { value: 1.5 },
         uDamage: { value: 0 },
         uTime: { value: 0 },
       }),
@@ -259,7 +267,7 @@ export class ShipModel {
         uniform float uPower;
         void main() {
           float facing = pow(max(dot(normalize(vNormal), normalize(vView)), 0.0), 1.4);
-          gl_FragColor = vec4(uColor * (1.4 + facing * 5.5) * uPower, 1.0);
+          gl_FragColor = vec4(uColor * (0.6 + facing * 2.2) * uPower, 1.0);
         }
       `,
       transparent: true,
@@ -460,10 +468,10 @@ export class ShipModel {
     this.canopyMat.uniforms.uTime.value = time;
     this.canopyMat.uniforms.uCameraPos.value.copy(cameraPosition);
 
-    const length = 3.2 + power * 7.5 + boost * 15;
-    const width = 0.82 + power * 0.22 + boost * 0.5;
+    const length = 3.0 + power * 6.2 + boost * 13;
+    const width = 0.78 + power * 0.2 + boost * 0.42;
     for (const mat of this.plumeMats) {
-      mat.uniforms.uPower.value = Math.max(0.06, power * 0.85 + boost * 0.6);
+      mat.uniforms.uPower.value = Math.max(0.05, power * 0.55 + boost * 0.45);
       mat.uniforms.uLength.value = length * (0.94 + Math.sin(time * 31 + mat.id) * 0.06);
       mat.uniforms.uWidth.value = width;
       mat.uniforms.uTime.value = time;
@@ -473,7 +481,7 @@ export class ShipModel {
         boost,
       );
     }
-    this.glowMat.uniforms.uPower.value = 0.5 + power * 1.4 + boost * 2.2;
+    this.glowMat.uniforms.uPower.value = 0.35 + power * 0.75 + boost * 1.2;
   }
 
   setVisible(visible: boolean): void {

@@ -59,12 +59,12 @@ const PLANET_FRAG = /* glsl */ `
 
     // Forward scattering along the terminator: the classic warm rim on a lit gas giant.
     float terminator = pow(1.0 - abs(ndl), 6.0) * smoothstep(-0.35, 0.25, ndl);
-    col += vec3(1.0, 0.62, 0.34) * terminator * 0.55;
+    col += vec3(1.0, 0.66, 0.42) * terminator * 0.34;
 
     // Rayleigh-ish limb: the atmosphere is denser at grazing angles.
     vec3 viewDir = normalize(-vec3(0.0, 0.0, 1.0));
     float fres = pow(1.0 - abs(dot(n, viewDir)), 3.0);
-    col += uAtmo * fres * light * 0.55;
+    col += uAtmo * fres * light * 0.3;
 
     // Night side keeps a trace of scattered light so it never becomes a black hole in frame.
     col += uShadow * 0.05;
@@ -147,8 +147,8 @@ export class Planet {
       uniforms: {
         uSunDir: { value: sunDir },
         uColor: { value: new THREE.Color(PALETTE.planetAtmo) },
-        uPower: { value: 3.2 },
-        uStrength: { value: 1.35 },
+        uPower: { value: 2.4 },
+        uStrength: { value: 0.62 },
       },
       vertexShader: ATMO_VERT,
       fragmentShader: ATMO_FRAG,

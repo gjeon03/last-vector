@@ -303,7 +303,7 @@ export class SfxKit {
    * the canopy, which reads as the interval tightening even at a constant repeat rate.
    */
   private gateNear(intensity: number, when: number): void {
-    const v = this.begin(when, 0.22, 0.18);
+    const v = this.begin(when, 0.3, 0.18);
     const freq = 1180 + intensity * 1250;
     this.tone(v, {
       type: 'sine',
@@ -332,14 +332,14 @@ export class SfxKit {
   private gateMiss(intensity: number, when: number): void {
     const v = this.begin(when, 0.46, 0.34);
     const base = 104 * this.jitter(30);
-    this.tone(v, { type: 'sine', freq: base, glideTo: base * 0.55, glideTime: 0.55, peak: 0.42, attack: 0.008, decay: 0.9 });
-    this.tone(v, { type: 'sine', freq: base * 1.021, glideTo: base * 0.56, glideTime: 0.55, peak: 0.3, attack: 0.012, decay: 0.9 });
+    this.tone(v, { type: 'sine', freq: base, glideTo: base * 0.55, glideTime: 0.55, peak: 0.32, attack: 0.008, decay: 0.9 });
+    this.tone(v, { type: 'sine', freq: base * 1.021, glideTo: base * 0.56, glideTime: 0.55, peak: 0.22, attack: 0.012, decay: 0.9 });
     this.tone(v, {
       type: 'sawtooth',
       freq: base * 3.1,
       glideTo: base * 1.05,
       glideTime: 0.65,
-      peak: 0.075 + intensity * 0.05,
+      peak: 0.17 + intensity * 0.1,
       attack: 0.02,
       decay: 0.75,
     });
@@ -350,7 +350,7 @@ export class SfxKit {
       freqTo: 190,
       sweepTime: 0.6,
       q: 1.1,
-      peak: 0.22,
+      peak: 0.32,
       attack: 0.006,
       decay: 0.8,
     });
@@ -371,19 +371,19 @@ export class SfxKit {
       freqTo: 4200,
       sweepTime: 0.34,
       q: 1.2,
-      peak: 0.42 + intensity * 0.16,
+      peak: 0.62 + intensity * 0.22,
       attack: 0.012,
       decay: 0.55,
     });
-    this.tone(v, { type: 'sine', freq: 62, glideTo: 138, glideTime: 0.32, peak: 0.5, attack: 0.02, decay: 0.6 });
-    this.tone(v, { type: 'sawtooth', freq: 180, glideTo: 420, glideTime: 0.3, peak: 0.09, attack: 0.02, decay: 0.45 });
+    this.tone(v, { type: 'sine', freq: 62, glideTo: 138, glideTime: 0.32, peak: 0.28, attack: 0.02, decay: 0.6 });
+    this.tone(v, { type: 'sawtooth', freq: 180, glideTo: 420, glideTime: 0.3, peak: 0.17, attack: 0.02, decay: 0.45 });
     this.noise(v, { colour: 'spark', filter: 'highpass', freq: 5200, peak: 0.13, attack: 0.001, decay: 0.14 });
     this.finishVoice(v);
   }
 
   /** The mirror image: the ducts closing, energy draining downward. */
   private boostEnd(intensity: number, when: number): void {
-    const v = this.begin(when, 0.4, 0.28);
+    const v = this.begin(when, 0.63, 0.28);
     this.noise(v, {
       colour: 'air',
       filter: 'bandpass',
@@ -401,7 +401,7 @@ export class SfxKit {
 
   /** Dry, mechanical, unsatisfying on purpose: three failed ignition ticks and a sag. */
   private boostEmpty(_intensity: number, when: number): void {
-    const v = this.begin(when, 0.38, 0.1);
+    const v = this.begin(when, 0.6, 0.1);
     for (let k = 0; k < 3; k++) {
       this.noise(v, {
         colour: 'spark',
@@ -436,7 +436,7 @@ export class SfxKit {
    * short envelope. Dry, so it sits in front of the pad instead of blooming into the room.
    */
   private countdownTick(intensity: number, when: number): void {
-    const v = this.begin(when, 0.42, 0.12);
+    const v = this.begin(when, 0.75, 0.12);
     const base = 784 * (1 + intensity * 0.16);
     this.tone(v, { type: 'sine', freq: base, peak: 0.42, attack: 0.002, decay: 0.16 });
     this.tone(v, { type: 'sine', freq: base * 2.756, peak: 0.1, attack: 0.002, decay: 0.09 });
@@ -469,13 +469,13 @@ export class SfxKit {
         freq: stack[k] * 0.94,
         glideTo: stack[k],
         glideTime: 0.4,
-        peak: 0.2 * Math.pow(0.8, k),
+        peak: 0.3 * Math.pow(0.82, k),
         attack: 0.06,
         decay: 1.7,
         dest: lift,
       });
     }
-    this.tone(v, { type: 'sine', freq: 36.7, glideTo: 73.4, glideTime: 0.5, peak: 0.55, attack: 0.08, decay: 1.5 });
+    this.tone(v, { type: 'sine', freq: 36.7, glideTo: 73.4, glideTime: 0.5, peak: 0.34, attack: 0.08, decay: 1.5 });
     this.noise(v, {
       colour: 'air',
       filter: 'bandpass',
@@ -514,7 +514,7 @@ export class SfxKit {
 
   /** Layered over `finish`: bell partials two octaves up, so a record reads as light. */
   private newBest(_intensity: number, when: number): void {
-    const v = this.begin(when, 0.4, 0.85);
+    const v = this.begin(when, 0.71, 0.85);
     const notes = [587.33, 880.0, 1174.66];
     for (let n = 0; n < notes.length; n++) {
       for (let p = 0; p < BELL_RATIOS.length; p++) {
@@ -544,7 +544,7 @@ export class SfxKit {
    * accepting the momentum. `intensity` = strike energy.
    */
   private impact(intensity: number, when: number): void {
-    const v = this.begin(when, 0.55, 0.3);
+    const v = this.begin(when, 0.7, 0.3);
     const energy = 0.35 + intensity * 0.65;
     const ring = 214 * this.jitter(90) * (1 - intensity * 0.22);
 
@@ -575,7 +575,7 @@ export class SfxKit {
    * `intensity` = contact pressure.
    */
   private scrape(intensity: number, when: number): void {
-    const v = this.begin(when, 0.4, 0.24);
+    const v = this.begin(when, 0.56, 0.24);
     const dur = 0.34 + intensity * 0.42;
 
     const src = this.ctx.createBufferSource();
@@ -629,7 +629,7 @@ export class SfxKit {
    * without becoming the shrill piezo beep of a smoke detector.
    */
   private warnProximity(intensity: number, when: number): void {
-    const v = this.begin(when, 0.36, 0.14);
+    const v = this.begin(when, 0.45, 0.14);
     const base = 470 + intensity * 150;
     for (let k = 0; k < 2; k++) {
       const t = k * (0.16 - intensity * 0.05);
@@ -646,7 +646,7 @@ export class SfxKit {
 
   /** Barely there: a single high sine, 30 ms, so hovering a list is texture and not events. */
   private uiHover(when: number): void {
-    const v = this.begin(when, 0.14, 0.1);
+    const v = this.begin(when, 0.22, 0.1);
     this.tone(v, { type: 'sine', freq: 2320, peak: 0.3, attack: 0.001, decay: 0.03 });
     this.tone(v, { type: 'sine', freq: 3480, peak: 0.1, attack: 0.001, decay: 0.02 });
     this.finishVoice(v);
@@ -654,7 +654,7 @@ export class SfxKit {
 
   /** Confirmation: same glass, plus a contact tick and a fifth below to give it a floor. */
   private uiClick(when: number): void {
-    const v = this.begin(when, 0.26, 0.14);
+    const v = this.begin(when, 0.33, 0.14);
     this.tone(v, { type: 'sine', freq: 1560, peak: 0.36, attack: 0.001, decay: 0.055 });
     this.tone(v, { type: 'sine', freq: 1040, peak: 0.18, attack: 0.001, decay: 0.09 });
     this.noise(v, { colour: 'spark', filter: 'bandpass', freq: 4200, q: 6, peak: 0.14, attack: 0.0008, decay: 0.022 });
@@ -663,7 +663,7 @@ export class SfxKit {
 
   /** Cancel reads as a descent: the same glass falling a fourth. */
   private uiBack(when: number): void {
-    const v = this.begin(when, 0.24, 0.14);
+    const v = this.begin(when, 0.3, 0.14);
     this.tone(v, { type: 'sine', freq: 1180, glideTo: 790, glideTime: 0.07, peak: 0.32, attack: 0.001, decay: 0.09 });
     this.tone(v, { type: 'sine', freq: 590, glideTo: 395, glideTime: 0.07, peak: 0.14, attack: 0.002, decay: 0.11 });
     this.finishVoice(v);
@@ -676,7 +676,7 @@ export class SfxKit {
    * tops and tails it, the way a carrier opening and closing actually sounds.
    */
   private radio(intensity: number, when: number): void {
-    const v = this.begin(when, 0.34, 0.16);
+    const v = this.begin(when, 0.54, 0.16);
     const dur = 0.26 + intensity * 0.34;
 
     const hp = this.ctx.createBiquadFilter();

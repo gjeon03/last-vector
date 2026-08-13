@@ -75,7 +75,7 @@ const MONOLITH_FRAG = /* glsl */ `
     color += uGlyph * channel * uCharge * pulse * 3.4;
     color -= albedo * channel * 0.25 * (1.0 - uCharge);
 
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
   }
 `;
 

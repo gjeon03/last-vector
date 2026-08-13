@@ -25,15 +25,16 @@ const DUST_VERT = /* glsl */ `
   varying float vSeed;
 
   void main() {
-    float half = uBoxSize * 0.5;
+    float halfBox = uBoxSize * 0.5;
     // Wrap the static point into the box currently centred on the ship.
-    vec3 world = uOrigin - half + mod(position - uOrigin + half, vec3(uBoxSize));
+    vec3 world = uOrigin - halfBox + mod(position - uOrigin + halfBox, vec3(uBoxSize));
 
     float toCentre = length(world - uOrigin);
-    // Fade out at the box boundary so wrapped particles never pop into view.
-    float edge = 1.0 - smoothstep(half * 0.62, half * 0.98, toCentre);
+    // Only the genuinely near-field motes are drawn. Streaks a few hundred metres out read as
+    // a warp tunnel rather than as dust, and they bury the whole scene behind them.
+    float edge = 1.0 - smoothstep(halfBox * 0.16, halfBox * 0.42, toCentre);
     // ...and fade the ones that would be inside the cockpit.
-    float near = smoothstep(3.0, 26.0, toCentre);
+    float near = smoothstep(6.0, 34.0, toCentre);
 
     vec3 trail = -uVelocity * uStretch;
     world += trail * aEnd;
@@ -102,8 +103,8 @@ export class DustField {
         uBoxSize: { value: boxSize },
         uStretch: { value: 0.02 },
         uSpeed: { value: 0 },
-        uColor: { value: new THREE.Color(0x9fc8ff) },
-        uOpacity: { value: 0.5 },
+        uColor: { value: new THREE.Color(0x8fb4e0) },
+        uOpacity: { value: 0.18 },
       },
       vertexShader: DUST_VERT,
       fragmentShader: DUST_FRAG,

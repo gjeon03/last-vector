@@ -1,0 +1,146 @@
+/* Shell styling: the page frame, the canvas, the loading card and the fatal-error card.
+   Everything inside the game's interface lives in src/ui/styles.css. */
+
+:root {
+  color-scheme: dark;
+  --lv-ink: #e7f3ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #04060c;
+  color: var(--lv-ink);
+  font-family: 'Helvetica Neue', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  isolation: isolate;
+}
+
+.lv-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The canvas must never take pointer focus away from HUD controls, but it does need to be
+     the pointer-lock target, so it stays interactive and the overlay sits above it. */
+  cursor: crosshair;
+}
+
+/* ---------------------------------------------------------------- loading card */
+
+.lv-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(120% 80% at 50% 45%, rgba(20, 34, 62, 0.55), transparent 70%),
+    #04060c;
+  transition: opacity 600ms ease;
+}
+
+.lv-loader.is-done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.lv-loader__inner {
+  width: min(420px, 74vw);
+  text-align: center;
+}
+
+.lv-loader__title {
+  font-size: clamp(20px, 3.2vw, 34px);
+  font-weight: 200;
+  letter-spacing: 0.62em;
+  text-indent: 0.62em;
+  color: #cfe8ff;
+  margin-bottom: 1.6rem;
+  animation: lv-loader-in 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lv-loader__bar {
+  height: 1px;
+  background: rgba(127, 232, 255, 0.18);
+  overflow: hidden;
+}
+
+.lv-loader__bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(127, 232, 255, 0.4), #7fe8ff);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.lv-loader__label {
+  margin-top: 0.9rem;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(185, 204, 221, 0.55);
+}
+
+@keyframes lv-loader-in {
+  from {
+    opacity: 0;
+    letter-spacing: 1.1em;
+  }
+  to {
+    opacity: 1;
+    letter-spacing: 0.62em;
+  }
+}
+
+/* ---------------------------------------------------------------- fatal card */
+
+.lv-fatal {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-content: center;
+  gap: 0.75rem;
+  padding: 3rem;
+  text-align: center;
+  background: #04060c;
+}
+
+.lv-fatal h1 {
+  margin: 0;
+  font-size: clamp(18px, 2.6vw, 26px);
+  font-weight: 200;
+  letter-spacing: 0.34em;
+  color: #ff8a97;
+}
+
+.lv-fatal p {
+  margin: 0 auto;
+  max-width: 46ch;
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(185, 204, 221, 0.72);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-loader__title {
+    animation: none;
+  }
+}

@@ -62,18 +62,21 @@ const ASTEROID_FRAG = /* glsl */ `
     N = normalize(N - grad * 0.55);
 
     float cavity = clamp(vCavity, 0.0, 1.0);
-    vec3 albedo = uRock * vTint * (0.72 + h * 0.28) * mix(0.42, 1.0, cavity);
-    float roughness = clamp(0.78 + h * 0.16, 0.25, 0.98);
+    vec3 albedo = uRock * vTint * (0.74 + h * 0.26) * mix(0.34, 1.0, cavity);
+    float roughness = clamp(0.8 + h * 0.15, 0.3, 0.98);
 
-    vec3 color = shadeSurface(N, V, albedo, roughness, 0.06, mix(0.35, 1.0, cavity));
+    vec3 color = shadeSurface(N, V, albedo, roughness, 0.04, mix(0.28, 1.0, cavity));
 
-    // Mineral veins glow faintly, and only inside cracks — it is the one cool accent on an
-    // otherwise warm-lit rock, and it gives the field a reason to be worth flying through.
-    float vein = smoothstep(0.52, 0.78, fbm(vWorldPos * uDetailScale * 0.34 + 11.0, 4));
-    vein *= 1.0 - smoothstep(0.25, 0.75, cavity);
-    color += uMineral * vein * 0.85;
+    // Mineral veins glow faintly, and only deep inside cracks. Kept sparse: it is an accent,
+    // and at field density anything brighter turns the shelf into fairy lights.
+    float vein = smoothstep(0.66, 0.86, fbm(vWorldPos * uDetailScale * 0.34 + 11.0, 4));
+    vein *= 1.0 - smoothstep(0.15, 0.55, cavity);
+    // Veins are a close-range detail. Beyond a few hundred metres a rock is a handful of
+    // pixels and an emissive vein becomes a coloured speck floating in the sky.
+    vein *= 1.0 - smoothstep(400.0, 1600.0, length(uCameraPos - vWorldPos));
+    color += uMineral * vein * 0.3;
 
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
   }
 `;
 
@@ -183,7 +186,7 @@ export class AsteroidField {
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
         uRock: { value: new THREE.Color(PALETTE.rockLit) },
-        uMineral: { value: new THREE.Color(PALETTE.rockMineral).multiplyScalar(0.5) },
+        uMineral: { value: new THREE.Color(PALETTE.rockMineral).multiplyScalar(0.35) },
         uDetailScale: { value: 0.06 },
       }),
       vertexShader: ASTEROID_VERT,
@@ -194,7 +197,7 @@ export class AsteroidField {
     const VARIANTS = 8;
     for (let v = 0; v < VARIANTS; v++) {
       // Bigger rocks get more geometric detail; small ones never fill enough pixels to matter.
-      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), v < 3 ? 4 : 3));
+      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), v < 4 ? 5 : 4));
     }
 
     const perVariant: AsteroidInstance[][] = Array.from({ length: VARIANTS }, () => []);
@@ -216,7 +219,12 @@ export class AsteroidField {
       const dist = options.corridor + Math.pow(rng.next(), 0.62) * options.spread;
       offset.set(dirScratch.x, dirScratch.y * 0.34, dirScratch.z).normalize().multiplyScalar(dist);
 
-      const scale = rng.range(options.minRadius, options.maxRadius) * (rng.bool(0.06) ? 3.1 : 1);
+      // Power-law sizes: mostly small debris, a handful of landmark boulders. A uniform
+      // distribution gives every rock a similar apparent size, which flattens the field.
+      const spread01 = Math.pow(rng.next(), 2.4);
+      const scale =
+        options.minRadius * Math.pow(options.maxRadius / options.minRadius, spread01) *
+        (rng.bool(0.035) ? 3.4 : 1);
       const variant = rng.int(0, VARIANTS);
 
       const instance: AsteroidInstance = {
@@ -245,8 +253,9 @@ export class AsteroidField {
         const inst = list[i];
         this.tmpMatrix.compose(inst.position, inst.quaternion, this.tmpScale.setScalar(inst.scale));
         mesh.setMatrixAt(i, this.tmpMatrix);
-        const warm = rng.range(0.72, 1.18);
-        tint.setRGB(warm, warm * rng.range(0.9, 1.02), warm * rng.range(0.78, 0.96), THREE.LinearSRGBColorSpace);
+        // Narrow, desaturated variation: real rock fields vary in value far more than hue.
+        const value = rng.range(0.62, 1.12);
+        tint.setRGB(value, value * rng.range(0.96, 1.02), value * rng.range(0.93, 1.02), THREE.LinearSRGBColorSpace);
         mesh.setColorAt(i, tint);
       }
       mesh.instanceMatrix.needsUpdate = true;

@@ -318,18 +318,22 @@ export class EngineLayer {
     rampTo(this.subOsc.frequency, f0, 0.13, now);
     rampTo(this.bodyOsc.frequency, f0 * 2, 0.13, now);
     rampTo(this.octaveOsc.frequency, f0 * 0.5, 0.13, now);
-    rampTo(this.octaveGain.gain, boost * 0.42, 0.22, now);
-    rampTo(this.bodyGain.gain, 0.26 + throttle * 0.16 + boost * 0.12, 0.15, now);
-    rampTo(this.subFilter.frequency, 240 + throttle * 260 + boost * 900, 0.18, now);
-    rampTo(this.subGain.gain, 0.24 + throttle * 0.26 + speed * 0.14, 0.16, now);
+    rampTo(this.octaveGain.gain, boost * 0.28, 0.22, now);
+    rampTo(this.bodyGain.gain, 0.5 + throttle * 0.32 + boost * 0.24, 0.15, now);
+    // The body filter opens with thrust, so the odd harmonics that carry the drive on small
+    // speakers arrive with the throttle rather than being permanently buried under the sine.
+    rampTo(this.subFilter.frequency, 320 + throttle * 540 + boost * 1300, 0.18, now);
+    rampTo(this.subGain.gain, 0.1 + throttle * 0.12 + speed * 0.06, 0.16, now);
 
     // Turbine centre frequency tracks commanded thrust most strongly: the pilot should hear
     // the response to the stick before the ship has actually accelerated.
     const turbineHz = 380 + throttle * 1500 + speed * 1150 + boost * 1500;
     rampTo(this.turbineBp.frequency, turbineHz, 0.09, now);
-    rampTo(this.turbineBp.Q, 1.4 + throttle * 5.2 - boost * 3.4, 0.12, now);
+    // A narrow band passes very little noise power, so Q stays moderate and boost opens it
+    // right out — the "filter sweeps wide" gesture is a Q drop as much as a frequency rise.
+    rampTo(this.turbineBp.Q, 1.2 + throttle * 2.6 - boost * 1.7, 0.12, now);
     rampTo(this.turbineHp.frequency, 150 + speed * 260, 0.12, now);
-    rampTo(this.turbineGain.gain, 0.06 + throttle * 0.2 + speed * 0.1 + boost * 0.14, 0.1, now);
+    rampTo(this.turbineGain.gain, 0.2 + throttle * 0.6 + speed * 0.32 + boost * 0.44, 0.1, now);
     rampTo(this.combDelay, 0.0052 - speed * 0.0026, 0.14, now);
     rampTo(this.combFeedback, 0.46 + throttle * 0.16 + boost * 0.1, 0.14, now);
 
@@ -337,16 +341,16 @@ export class EngineLayer {
     rampTo(this.ionA.frequency, ionHz, 0.11, now);
     rampTo(this.ionB.frequency, ionHz * 1.006, 0.11, now);
     rampTo(this.ionFilter.frequency, 360 + speed * 420, 0.14, now);
-    rampTo(this.ionGain.gain, (0.012 + speed * 0.05 + boost * 0.03) * (0.35 + throttle * 0.65), 0.13, now);
+    rampTo(this.ionGain.gain, (0.03 + speed * 0.1 + boost * 0.06) * (0.35 + throttle * 0.65), 0.13, now);
 
-    // Slip drives both level and depth of modulation, so gentle drift is a whisper and a hard
-    // strafe is a stutter of discrete jets.
+    // Slip drives level and modulation depth together, so gentle drift is a whisper and a hard
+    // strafe stutters into discrete jets rather than just getting louder.
     rampTo(this.thrusterBp.frequency, 720 + slip * 1750, 0.06, now);
     rampTo(this.thrusterBp.Q, 1.0 + slip * 1.6, 0.08, now);
-    rampTo(this.thrusterGain.gain, slip * 0.16, 0.05, now);
-    rampTo(this.thrusterMod.gain, slip * 0.0034, 0.06, now);
+    rampTo(this.thrusterGain.gain, slip * 0.45, 0.05, now);
+    rampTo(this.thrusterMod.gain, slip * 0.98, 0.06, now);
 
-    rampTo(this.out.gain, 0.2 + throttle * 0.44 + speed * 0.26 + boost * 0.2, 0.1, now);
+    rampTo(this.out.gain, 0.14 + throttle * 0.27 + speed * 0.16 + boost * 0.08, 0.1, now);
   }
 
   /**

@@ -29,8 +29,7 @@ export const clamp = (value: number, min: number, max: number): number =>
 export const clamp01 = (value: number): number => clamp(value, 0, 1);
 
 /** Guards against NaN/Infinity reaching an AudioParam, which permanently kills a graph. */
-const safe = (value: number, fallback = 0): number =>
-  Number.isFinite(value) ? value : fallback;
+const safe = (value: number): number => (Number.isFinite(value) ? value : 0);
 
 /**
  * Exponential approach to a target. Every per-frame parameter move in the engine layer goes
@@ -38,16 +37,6 @@ const safe = (value: number, fallback = 0): number =>
  */
 export const rampTo = (param: AudioParam, value: number, timeConstant: number, when: number): void => {
   param.setTargetAtTime(safe(value), when, Math.max(timeConstant, 0.001));
-};
-
-/** Linear segment, used for scheduled one-shot envelopes where the end point must be exact. */
-export const rampLinear = (param: AudioParam, value: number, when: number): void => {
-  param.linearRampToValueAtTime(safe(value), when);
-};
-
-/** Exponential segment. Clamped away from zero because `exponentialRamp` throws on 0. */
-export const rampExp = (param: AudioParam, value: number, when: number): void => {
-  param.exponentialRampToValueAtTime(Math.max(safe(value, 0.0001), 0.0001), when);
 };
 
 export const disconnectAll = (nodes: readonly AudioNode[]): void => {

@@ -22,9 +22,14 @@ const STAR_VERT = /* glsl */ `
     gl_Position = projectionMatrix * mv;
     // Scintillation: slow, per-star, and shallow. Enough to feel alive, never sparkly.
     float tw = 0.82 + 0.18 * sin(uTime * (0.6 + fract(aPhase) * 1.4) + aPhase * 43.0);
-    vBright = tw;
+    // Points smaller than about a pixel alias into hard saturated dots, which is why a naive
+    // starfield looks like RGB confetti. Clamp the size and pay the energy back in intensity
+    // so faint stars stay faint instead of becoming bright single pixels.
+    float size = aSize * uPixelScale * tw;
+    float clamped = max(size, 1.6);
+    vBright = tw * min(1.0, (size * size) / (clamped * clamped));
     vColor = aColor;
-    gl_PointSize = aSize * uPixelScale * tw;
+    gl_PointSize = clamped;
   }
 `;
 
@@ -109,7 +114,9 @@ export class Starfield {
 
       const kelvin = rng.bool(0.72) ? rng.range(2600, 5200) : rng.range(6200, 22000);
       blackBody(kelvin, colour);
-      const intensity = 0.45 + m * 0.85;
+      // Faint stars are perceived as colourless; only the bright anchors carry hue.
+      colour.lerp(new THREE.Color(0.86, 0.9, 1.0), 1 - Math.pow(m, 0.55));
+      const intensity = 0.3 + m * 0.8;
       colors[i * 3] = colour.r * intensity;
       colors[i * 3 + 1] = colour.g * intensity;
       colors[i * 3 + 2] = colour.b * intensity;

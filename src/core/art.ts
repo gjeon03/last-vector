@@ -79,7 +79,19 @@ export const FONT = {
 } as const;
 
 /** World scale, in metres. Chosen so the sense of distance is legible from the cockpit. */
-export const SCALE = {
+export const SCALE: Record<
+  | 'shipLength'
+  | 'gateRadius'
+  | 'gateTriggerRadius'
+  | 'gateSpacing'
+  | 'courseGates'
+  | 'asteroidFieldRadius'
+  | 'planetRadius'
+  | 'planetDistance'
+  | 'starDistance'
+  | 'starRadius',
+  number
+> = {
   shipLength: 18,
   gateRadius: 140,
   gateTriggerRadius: 132,
@@ -91,9 +103,19 @@ export const SCALE = {
   planetDistance: 2_900_000,
   starDistance: 42_000_000,
   starRadius: 620_000,
-} as const;
+};
 
-export const FLIGHT = {
+export const FLIGHT: Record<
+  | 'cruiseSpeed'
+  | 'boostSpeed'
+  | 'maxSpeed'
+  | 'spoolTime'
+  | 'boostCapacity'
+  | 'boostDrain'
+  | 'boostRegen'
+  | 'boostRegenDelay',
+  number
+> = {
   /** Metres per second. */
   cruiseSpeed: 420,
   boostSpeed: 980,
@@ -104,4 +126,4 @@ export const FLIGHT = {
   boostDrain: 34,
   boostRegen: 17,
   boostRegenDelay: 0.9,
-} as const;
+};

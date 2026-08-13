@@ -184,9 +184,11 @@ export class Overlay {
 
   /* -------------------------------------------------------------- view logic */
 
+  /**
+   * The game's phase always wins: if the run ends while the player is buried in the settings
+   * menu, they get the results screen, not a stuck sub-view.
+   */
   private applyView(): void {
-    const view = this.screens.current();
-    if (SUB_VIEWS.includes(view)) return;
     this.screens.show(this.viewForState());
     this.applyHudActivity();
   }

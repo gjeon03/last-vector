@@ -19,6 +19,8 @@ export const GLSL_LIGHTING = /* glsl */ `
   uniform vec3 uRimColor;
   uniform float uRimPower;
   uniform float uExposureBias;
+  uniform vec3 uHazeColor;
+  uniform float uHazeDensity;
 
   float distributionGGX(float ndh, float roughness) {
     float a = roughness * roughness;
@@ -66,6 +68,21 @@ export const GLSL_LIGHTING = /* glsl */ `
 
     return (direct + ambient + rimLight) * uExposureBias;
   }
+
+  /**
+   * Atmospheric perspective. There is no air in space, but there *is* dust and scattered
+   * nebula light, and without a distance term every object in the frame sits at the same
+   * apparent depth. This single mix is the strongest depth cue in the whole renderer: it
+   * separates the rock two hundred metres away from the wreck nine kilometres out.
+   */
+  vec3 applyHaze(vec3 color, float distance) {
+    float t = 1.0 - exp(-distance * uHazeDensity);
+    // Highlights punch through haze further than midtones do, which keeps distant emissives
+    // readable instead of washing the whole frame to a flat tint.
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    t *= 1.0 - clamp(luma * 0.35, 0.0, 0.6);
+    return mix(color, uHazeColor, clamp(t, 0.0, 1.0));
+  }
 `;
 
 export interface LightingUniforms {
@@ -76,6 +93,8 @@ export interface LightingUniforms {
   uRimColor: THREE.IUniform<THREE.Color>;
   uRimPower: THREE.IUniform<number>;
   uExposureBias: THREE.IUniform<number>;
+  uHazeColor: THREE.IUniform<THREE.Color>;
+  uHazeDensity: THREE.IUniform<number>;
 }
 
 /**
@@ -85,12 +104,16 @@ export interface LightingUniforms {
 export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUniforms {
   return {
     uSunDir: { value: sunDirection.clone().normalize() },
-    uSunColor: { value: new THREE.Color(PALETTE.starGlow).multiplyScalar(3.1) },
-    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.062) },
-    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.05) },
-    uRimColor: { value: new THREE.Color(PALETTE.starRim).multiplyScalar(0.34) },
-    uRimPower: { value: 3.1 },
+    // A hot star reads as near-white with a warm bias, not as orange paint. Saturating the
+    // key light is what turned every rock in the field into terracotta.
+    uSunColor: { value: new THREE.Color(0xffe2bd).multiplyScalar(2.7) },
+    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.03) },
+    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.024) },
+    uRimColor: { value: new THREE.Color(0x9fd2ff).multiplyScalar(0.16) },
+    uRimPower: { value: 3.6 },
     uExposureBias: { value: 1 },
+    uHazeColor: { value: new THREE.Color(0x0b1526).multiplyScalar(1.0) },
+    uHazeDensity: { value: 1 / 5200 },
   };
 }
 

@@ -1,0 +1,304 @@
+import * as THREE from 'three';
+import { Gate } from '../render/Gate.ts';
+import type { LightingUniforms } from '../render/lighting.ts';
+import { Rng } from '../core/rng.ts';
+import { SCALE } from '../core/art.ts';
+import { clamp01 } from '../core/mathx.ts';
+
+/**
+ * The course through THE CAIRN DRIFT.
+ *
+ * The spine is authored as a sequence of *legs* with deliberate character rather than random
+ * noise, because pacing is what makes a route memorable: an easy opener to teach the controls,
+ * a hard turn that punishes carrying too much speed, a dive through the thick of the shelf, a
+ * long straight that exists purely so the player boosts and feels the frame tear, then a
+ * tightening approach to the terminus.
+ */
+
+export interface CoursePassEvent {
+  gate: Gate;
+  index: number;
+  time: number;
+  radialDistance: number;
+  speed: number;
+  /** Fraction of the aperture radius; 0 is dead centre. */
+  offset: number;
+}
+
+interface Leg {
+  /** Radians of yaw applied across the leg. */
+  turn: number;
+  /** Radians of pitch applied across the leg. */
+  climb: number;
+  /** Multiplier on the nominal gate spacing. */
+  length: number;
+  /** Roll of the gate aperture about the flight axis, in radians. */
+  bank: number;
+  label: string;
+}
+
+const LEGS: Leg[] = [
+  { turn: 0.1, climb: -0.04, length: 0.95, bank: 0.0, label: 'open' },
+  { turn: -0.62, climb: 0.14, length: 1.05, bank: 0.5, label: 'first bend' },
+  { turn: 0.34, climb: -0.34, length: 0.9, bank: -0.35, label: 'dive' },
+  { turn: 0.88, climb: 0.06, length: 1.0, bank: 0.85, label: 'hard right' },
+  { turn: -0.44, climb: 0.3, length: 1.12, bank: -0.6, label: 'climb out' },
+  { turn: -0.72, climb: -0.12, length: 0.86, bank: -0.9, label: 'shelf cut' },
+  { turn: 0.28, climb: -0.2, length: 1.35, bank: 0.2, label: 'the long run' },
+  { turn: 0.55, climb: 0.16, length: 0.82, bank: 0.7, label: 'tighten' },
+  { turn: -0.24, climb: -0.06, length: 1.0, bank: -0.2, label: 'terminus approach' },
+];
+
+export class Course {
+  readonly object = new THREE.Group();
+  readonly gates: Gate[] = [];
+  readonly spine: THREE.Vector3[] = [];
+  readonly curve: THREE.CatmullRomCurve3;
+  readonly startPosition = new THREE.Vector3();
+  readonly startQuaternion = new THREE.Quaternion();
+  readonly terminusPosition = new THREE.Vector3();
+  readonly terminusNormal = new THREE.Vector3();
+  readonly totalLength: number;
+  readonly id: string;
+
+  /** Index of the gate the player must clear next; equals `gates.length` once all are done. */
+  nextIndex = 0;
+  readonly passes: CoursePassEvent[] = [];
+
+  private previousSigned = -1;
+  private readonly previousPosition = new THREE.Vector3();
+  private hasPrevious = false;
+  private readonly scratchA = new THREE.Vector3();
+  private readonly scratchB = new THREE.Vector3();
+  private readonly crossing = new THREE.Vector3();
+
+  onPass: ((event: CoursePassEvent) => void) | null = null;
+  onMiss: ((gate: Gate) => void) | null = null;
+
+  constructor(seed: number, lighting: LightingUniforms) {
+    this.id = `cairn-drift-${seed}`;
+    const rng = new Rng(seed);
+
+    const controlPoints: THREE.Vector3[] = [];
+    const gateAnchors: { position: THREE.Vector3; tangent: THREE.Vector3; bank: number }[] = [];
+
+    const heading = new THREE.Quaternion();
+    const cursor = new THREE.Vector3(0, 0, 0);
+    const forward = new THREE.Vector3(0, 0, -1);
+
+    // A short lead-in so the player is already moving when the first gate appears.
+    controlPoints.push(cursor.clone().addScaledVector(forward, -1800));
+    controlPoints.push(cursor.clone());
+    this.startPosition.copy(cursor).addScaledVector(forward, 1500);
+    this.startQuaternion.copy(heading);
+
+    for (let i = 0; i < LEGS.length; i++) {
+      const leg = LEGS[i];
+      const distance = SCALE.gateSpacing * leg.length * rng.range(0.94, 1.06);
+      const turn = leg.turn * rng.range(0.9, 1.1);
+      const climb = leg.climb * rng.range(0.88, 1.12);
+
+      // Walk the leg in steps so the spine curves smoothly instead of kinking at each gate.
+      const steps = 6;
+      for (let s = 0; s < steps; s++) {
+        const q = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(climb / steps, turn / steps, 0, 'YXZ'),
+        );
+        heading.multiply(q).normalize();
+        forward.set(0, 0, -1).applyQuaternion(heading);
+        cursor.addScaledVector(forward, distance / steps);
+        controlPoints.push(cursor.clone());
+      }
+
+      gateAnchors.push({
+        position: cursor.clone(),
+        tangent: forward.clone().normalize(),
+        bank: leg.bank,
+      });
+    }
+
+    // Run-out past the final gate, where the terminus sits.
+    for (let s = 0; s < 4; s++) {
+      cursor.addScaledVector(forward, 900);
+      controlPoints.push(cursor.clone());
+    }
+    this.terminusPosition.copy(cursor).addScaledVector(forward, 3200);
+    this.terminusNormal.copy(forward).normalize();
+
+    this.curve = new THREE.CatmullRomCurve3(controlPoints, false, 'centripetal', 0.5);
+    this.totalLength = this.curve.getLength();
+
+    const sampleCount = 220;
+    for (let i = 0; i <= sampleCount; i++) {
+      this.spine.push(this.curve.getPointAt(i / sampleCount));
+    }
+
+    for (let i = 0; i < gateAnchors.length; i++) {
+      const anchor = gateAnchors[i];
+      // Final gate is wider: the approach is fast and the run should not end on a technicality.
+      const radius = i === gateAnchors.length - 1 ? SCALE.gateRadius * 1.25 : SCALE.gateRadius;
+      const gate = new Gate({
+        index: i,
+        total: gateAnchors.length,
+        position: anchor.position,
+        normal: anchor.tangent,
+        radius,
+        lighting,
+        seed: seed + i * 7919,
+      });
+      gate.object.rotateZ(anchor.bank);
+      this.gates.push(gate);
+      this.object.add(gate.object);
+    }
+
+    this.gates[0].setState('armed');
+  }
+
+  get nextGate(): Gate | null {
+    return this.gates[this.nextIndex] ?? null;
+  }
+
+  get complete(): boolean {
+    return this.nextIndex >= this.gates.length;
+  }
+
+  /** 0..1 along the whole route including the terminus run-out. */
+  progress(position: THREE.Vector3): number {
+    const total = this.gates.length + 1;
+    let done = this.nextIndex;
+    const target = this.nextGate?.position ?? this.terminusPosition;
+    const previous = this.nextIndex === 0 ? this.startPosition : this.gates[this.nextIndex - 1].position;
+    const legLength = previous.distanceTo(target);
+    if (legLength > 1) {
+      done += clamp01(1 - position.distanceTo(target) / legLength);
+    }
+    return clamp01(done / total);
+  }
+
+  /** Straight-line metres remaining: next gate, then every gate after it, then the terminus. */
+  remainingDistance(position: THREE.Vector3): number {
+    let total = 0;
+    let from = position;
+    for (let i = this.nextIndex; i < this.gates.length; i++) {
+      total += from.distanceTo(this.gates[i].position);
+      from = this.gates[i].position;
+    }
+    total += from.distanceTo(this.terminusPosition);
+    return total;
+  }
+
+  reset(): void {
+    this.nextIndex = 0;
+    this.passes.length = 0;
+    this.hasPrevious = false;
+    this.previousSigned = -1;
+    for (const gate of this.gates) gate.setState('dormant');
+    this.gates[0].setState('armed');
+  }
+
+  /**
+   * Detects gate crossings by watching the signed distance to the aperture plane flip. The
+   * crossing point is interpolated between the two sampled positions, so detection is exact
+   * even at 1000 m/s with a 16 ms step — no tunnelling, no swept-sphere cost.
+   */
+  update(position: THREE.Vector3, speed: number, time: number): void {
+    const gate = this.nextGate;
+    if (!gate) {
+      this.hasPrevious = false;
+      return;
+    }
+
+    const signed = gate.signedDistance(position);
+
+    if (!this.hasPrevious) {
+      this.previousSigned = signed;
+      this.previousPosition.copy(position);
+      this.hasPrevious = true;
+      return;
+    }
+
+    if (this.previousSigned < 0 && signed >= 0) {
+      const denominator = signed - this.previousSigned;
+      const t = denominator === 0 ? 0 : -this.previousSigned / denominator;
+      this.crossing.lerpVectors(this.previousPosition, position, clamp01(t));
+
+      const radial = gate.radialDistance(this.crossing, this.scratchA);
+      if (radial <= gate.radius) {
+        const event: CoursePassEvent = {
+          gate,
+          index: gate.index,
+          time,
+          radialDistance: radial,
+          speed,
+          offset: clamp01(radial / gate.radius),
+        };
+        this.passes.push(event);
+        gate.setState('cleared');
+        this.nextIndex++;
+        this.gates[this.nextIndex]?.setState('armed');
+        this.hasPrevious = false;
+        this.onPass?.(event);
+        return;
+      }
+
+      // Crossed the plane outside the aperture: the cairn stays armed and has to be re-flown.
+      gate.setState('missed');
+      this.onMiss?.(gate);
+      // Re-arm on the next frame so the visual flash lands before the colour returns.
+      window.setTimeout(() => {
+        if (this.gates[this.nextIndex] === gate) gate.setState('armed');
+      }, 420);
+    }
+
+    this.previousSigned = signed;
+    this.previousPosition.copy(position);
+  }
+
+  /**
+   * A racing line target for the autopilot: aim at the next gate, but bias toward the gate
+   * *after* it once close, so the AI carves through rather than stopping at each aperture.
+   */
+  autopilotTarget(position: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const gate = this.nextGate;
+    if (!gate) return out.copy(this.terminusPosition);
+
+    const distance = position.distanceTo(gate.position);
+    out.copy(gate.position);
+
+    // Approach along the gate normal so the crossing is square rather than oblique.
+    const approach = Math.min(distance * 0.55, gate.radius * 6);
+    out.addScaledVector(gate.normal, -approach * clamp01(1 - distance / 3000));
+
+    const following = this.gates[gate.index + 1];
+    if (distance < gate.radius * 5) {
+      const beyond = following ? following.position : this.terminusPosition;
+      out.lerp(beyond, clamp01(1 - distance / (gate.radius * 5)) * 0.45);
+    }
+    return out;
+  }
+
+  /** Pose along the course at normalised `t`, for seeking and cinematic vantages. */
+  poseAt(t: number, position: THREE.Vector3, quaternion: THREE.Quaternion): void {
+    const clamped = clamp01(t);
+    this.curve.getPointAt(clamped, position);
+    this.curve.getTangentAt(clamped, this.scratchB).normalize();
+    const m = new THREE.Matrix4().lookAt(
+      this.scratchA.set(0, 0, 0),
+      this.scratchB.clone().negate(),
+      new THREE.Vector3(0, 1, 0),
+    );
+    quaternion.setFromRotationMatrix(m);
+  }
+
+  update3d(dt: number, time: number, cameraPosition: THREE.Vector3, pixelScale: number): void {
+    for (const gate of this.gates) {
+      // Skip gates that are far behind the player; they are neither visible nor animating.
+      if (gate.state === 'cleared' && gate.position.distanceToSquared(cameraPosition) > 36_000_000) continue;
+      gate.update(dt, time, cameraPosition, pixelScale);
+    }
+  }
+
+  dispose(): void {
+    for (const gate of this.gates) gate.dispose();
+  }
+}

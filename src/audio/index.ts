@@ -30,8 +30,6 @@ export {
   createSaturationCurve,
   disconnectAll,
   NodeLedger,
-  rampExp,
-  rampLinear,
   rampTo,
   startNoise,
 } from './nodes.ts';

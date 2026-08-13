@@ -47,9 +47,12 @@ const NEBULA_FRAG = /* glsl */ `
     // place rather than a random cloud.
     float band = exp(-pow(abs(dot(d, normalize(vec3(0.18, 1.0, -0.32)))) * 2.35, 2.0));
 
-    float density = base * 0.62 + fil * 0.55;
-    density *= mix(0.42, 1.0, band);
-    density = smoothstep(0.22, 0.92, density);
+    float density = base * 0.58 + fil * 0.6;
+    density *= mix(0.12, 1.0, band);
+    // A high, narrow threshold is what separates gas from empty sky. The previous ramp let
+    // every direction carry half-brightness cloud, which read as marbled paper.
+    density = smoothstep(0.46, 1.0, density);
+    density = pow(density, 1.3);
 
     // Dust lanes subtract, and they use a different noise frequency so they cut across the
     // gas instead of following it.
@@ -67,16 +70,16 @@ const NEBULA_FRAG = /* glsl */ `
 
     // Forward-scattering halo: the whole sky brightens toward the star, and the gas in front
     // of it glows through. This single term does most of the atmosphere work.
-    col += uStarGlow * (nearStar * 0.55 + pow(sunDot, 22.0) * 1.6) * (0.28 + density * 1.5);
-    col += uStarGlow * pow(sunDot, 2.0) * 0.035;
+    col += uStarGlow * (nearStar * 0.4 + pow(sunDot, 18.0) * 1.4) * (0.12 + density * 1.2);
+    col += uStarGlow * pow(sunDot, 3.0) * 0.02;
 
     // Deep space floor, slightly blue-shifted away from the star so the frame has a cool side.
     float away = 1.0 - sunDot;
-    col += uDeep * (0.55 + away * 0.75);
+    col += uDeep * (0.35 + away * 0.55);
 
     // A faint far-field of unresolved stars: stops the empty regions reading as flat black.
     float grain = fbm(d * 220.0, 3) * 0.5 + 0.5;
-    col += vec3(0.05, 0.06, 0.085) * pow(grain, 5.0) * 1.8;
+    col += vec3(0.05, 0.06, 0.085) * pow(grain, 6.0) * 1.1;
 
     gl_FragColor = vec4(max(col, 0.0), 1.0);
   }
@@ -117,12 +120,12 @@ export function bakeNebula(
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uSunDir: { value: options.sunDirection.clone().normalize() },
-      uDeep: { value: new THREE.Color(PALETTE.voidFar).multiplyScalar(0.55) },
-      uTeal: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.34) },
-      uIndigo: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.3) },
-      uMagenta: { value: new THREE.Color(PALETTE.nebulaMagenta).multiplyScalar(0.26) },
-      uDust: { value: new THREE.Color(PALETTE.nebulaDust).multiplyScalar(0.55) },
-      uStarGlow: { value: new THREE.Color(PALETTE.starGlow).multiplyScalar(0.5) },
+      uDeep: { value: new THREE.Color(PALETTE.voidFar).multiplyScalar(0.34) },
+      uTeal: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.2) },
+      uIndigo: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.21) },
+      uMagenta: { value: new THREE.Color(PALETTE.nebulaMagenta).multiplyScalar(0.13) },
+      uDust: { value: new THREE.Color(PALETTE.nebulaDust).multiplyScalar(0.3) },
+      uStarGlow: { value: new THREE.Color(PALETTE.starGlow).multiplyScalar(0.34) },
       uSeed: { value: options.seed },
       uOctaves: { value: options.octaves },
     },

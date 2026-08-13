@@ -25,10 +25,9 @@ export type UiSound = 'hover' | 'click' | 'back' | 'move';
 
 /** Original pre-run fiction. Short: the visuals carry the mood. */
 const BRIEF_LINES: readonly string[] = [
-  'ACHRA is going out. What it sheds every hour becomes another kilometre of shelf ice and',
-  'tumbling iron across the only corridor left. The cairns still answer a hail — nine of them,',
-  'set by hands that stopped setting things a long time ago. They are the line. Fly them in order.',
-  'Do not trust the quiet between them, and do not slow down for anything that is not a marker.',
+  'ACHRA is going out. Every hour it sheds another kilometre of shelf ice and tumbling iron across the only corridor anything hull-sized can still survive.',
+  'The cairns answer a hail — nine of them, set by hands that stopped setting things a long time ago. They are the line.',
+  'Fly them in order. Do not trust the quiet between them, and do not slow for anything that is not a marker.',
 ];
 
 const CONTROLS: readonly (readonly [string, string])[] = [
@@ -222,6 +221,7 @@ export class Screens {
     this.nCountNum = count.num;
     this.nCountRing = count.ring;
     this.nCountLabel = count.label;
+    this.el.appendChild(count.view);
 
     this.el.appendChild(this.buildPause());
 
@@ -515,6 +515,7 @@ export class Screens {
   /* --------------------------------------------------------------- countdown */
 
   private buildCountdown(): {
+    view: HTMLElement;
     num: HTMLElement;
     ring: SVGCircleElement;
     label: HTMLElement;
@@ -544,7 +545,7 @@ export class Screens {
     const label = el('div', 'lv-count-k', 'LAUNCH SEQUENCE');
     wrap.append(svg, num, label);
     view.appendChild(wrap);
-    return { num, ring, label };
+    return { view, num, ring, label };
   }
 
   setCountdown(value: number | null): void {

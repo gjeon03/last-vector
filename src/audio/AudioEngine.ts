@@ -36,12 +36,15 @@ export interface AudioGraph {
   ctx: BaseAudioContext;
   ledger: NodeLedger;
   master: GainNode;
+  /** Sum of every bus plus the reverb return, ahead of the glue compressor and the limiter. */
+  preMaster: GainNode;
   musicVolume: GainNode;
   musicDuck: GainNode;
   musicBus: GainNode;
   sfxBus: GainNode;
   engineBus: GainNode;
   reverbSend: GainNode;
+  reverbReturn: GainNode;
   engine: EngineLayer;
   sfx: SfxKit;
   music: MusicBed;
@@ -113,8 +116,10 @@ export const createAudioGraph = (ctx: BaseAudioContext, seed = 0x5eed1e): AudioG
   reverbReturn.connect(preMaster);
 
   // --- sub-buses ------------------------------------------------------------------------
+  // Bus trims are the mix. Music sits well under the drive: the score is a bed, not a soundtrack
+  // the player has to talk over.
   const musicBus = keep(ctx.createGain());
-  musicBus.gain.value = 0.9;
+  musicBus.gain.value = 0.1;
   const musicVolume = keep(ctx.createGain());
   musicVolume.gain.value = 0.65;
   const musicDuck = keep(ctx.createGain());
@@ -158,6 +163,8 @@ export const createAudioGraph = (ctx: BaseAudioContext, seed = 0x5eed1e): AudioG
     ctx,
     ledger,
     master,
+    preMaster,
+    reverbReturn,
     musicVolume,
     musicDuck,
     musicBus,

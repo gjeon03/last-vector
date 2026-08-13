@@ -84,7 +84,14 @@ export class Input {
 
   requestLock(): void {
     if (this.locked || this.disposed) return;
-    void this.canvas.requestPointerLock?.();
+    // Pointer lock rejects in sandboxed frames and in headless drivers. It is never
+    // load-bearing — keyboard and gamepad still fly the ship — so the failure is swallowed.
+    try {
+      const result = this.canvas.requestPointerLock?.() as unknown;
+      if (result instanceof Promise) result.catch(() => undefined);
+    } catch {
+      /* pointer lock unavailable */
+    }
   }
 
   releaseLock(): void {

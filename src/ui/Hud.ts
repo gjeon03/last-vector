@@ -355,10 +355,11 @@ export class Hud {
     this.el.appendChild(this.canvas);
 
     /* ---- vignettes / full-bleed effects ---- */
+    const edge = el('div', 'lv-fx lv-fx--edge');
     this.nProxVignette = el('div', 'lv-fx lv-fx--prox');
     this.nImpact = el('div', 'lv-fx lv-fx--impact');
     this.nBoostFx = el('div', 'lv-fx lv-fx--boost');
-    this.el.append(this.nProxVignette, this.nBoostFx, this.nImpact);
+    this.el.append(edge, this.nProxVignette, this.nBoostFx, this.nImpact);
 
     /* ---- floating gate distance tag (follows the reticle) ---- */
     this.nGateLabel = el('div', 'lv-gatetag');
@@ -952,7 +953,7 @@ export class Hud {
     this.drawAttitude(ctx, w, h, vs);
     this.drawRollArc(ctx, w, h, vs);
     this.drawProximity(ctx, w, h, vs);
-    if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs);
+    if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs, Math.min(w, h));
     if (vs.gateOn < 0.99) this.drawChaseArrow(ctx, w, h, vs);
     this.drawFlightMarker(ctx, w, h, vs);
     this.drawPipper(ctx, w, h, vs);
@@ -961,7 +962,10 @@ export class Hud {
     this.placeGateTag(w, h, vs, gate.anchor.onScreen);
   }
 
-  /** Faint attitude reference: a broken horizon rotated by roll, offset by pitch. */
+  /**
+   * Attitude reference. Deliberately tiny and low-contrast: it lives just outside the pipper
+   * so it reads as part of the sight, never as debris scattered across the view.
+   */
   private drawAttitude(
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -971,97 +975,101 @@ export class Hud {
     const cx = w * 0.5;
     const cy = h * 0.5;
     const vmin = Math.min(w, h);
-    const inner = vmin * 0.135;
-    const outer = vmin * 0.30;
-    const pxPerRad = vmin * 0.46;
+    const inner = vmin * 0.052;
+    const reach = vmin * 0.108;
+    const pxPerRad = vmin * 0.30;
 
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(-vs.roll);
     ctx.lineWidth = 1;
 
-    for (let step = -2; step <= 2; step++) {
-      const deg = step * 10;
-      const y = vs.pitch * pxPerRad - (deg * Math.PI) / 180 * pxPerRad;
-      if (Math.abs(y) > vmin * 0.30) continue;
-      const fade = clamp(1 - Math.abs(y) / (vmin * 0.30), 0, 1);
+    for (let step = -1; step <= 1; step++) {
+      const y = vs.pitch * pxPerRad - ((step * 10 * Math.PI) / 180) * pxPerRad;
+      if (Math.abs(y) > reach) continue;
+      const fade = clamp(1 - Math.abs(y) / reach, 0, 1);
       const major = step === 0;
-      const a = (major ? 0.3 : 0.15) * fade;
+      const a = (major ? 0.26 : 0.13) * fade;
       if (a < 0.012) continue;
       ctx.strokeStyle = rgba(C.ink, a);
-      const len = major ? outer : inner + vmin * 0.05;
-      for (const side of ATT_SIDES) {
+      const len = major ? reach : inner + vmin * 0.026;
+      for (let s = 0; s < 2; s++) {
+        const side = s === 0 ? -1 : 1;
         ctx.beginPath();
         ctx.moveTo(side * inner, y);
         ctx.lineTo(side * len, y);
-        if (!major) ctx.lineTo(side * len, y + (step > 0 ? -1 : 1) * vmin * 0.014);
+        if (!major) ctx.lineTo(side * len, y + (step > 0 ? -1 : 1) * vmin * 0.009);
         ctx.stroke();
       }
     }
     ctx.restore();
   }
 
-  /** Top-centre roll scale with a pointer that hangs from the arc. */
+  /** Compact roll scale sat above the pipper. Reads as part of the sight, not a horizon line. */
   private drawRollArc(ctx: CanvasRenderingContext2D, w: number, h: number, vs: VecState): void {
     const cx = w * 0.5;
     const cy = h * 0.5;
     const vmin = Math.min(w, h);
-    const r = vmin * 0.345;
-    const span = 1.05;
+    const r = vmin * 0.152;
+    const span = 0.78;
 
     ctx.save();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = rgba(C.ink, 0.16);
+    ctx.globalAlpha = vs.alpha;
+
+    ctx.strokeStyle = rgba(C.ink, 0.2);
     ctx.beginPath();
     ctx.arc(cx, cy, r, -Math.PI / 2 - span, -Math.PI / 2 + span);
     ctx.stroke();
 
-    for (let i = -4; i <= 4; i++) {
-      const a = -Math.PI / 2 + (i / 4) * span;
-      const major = i % 2 === 0;
-      const len = major ? vmin * 0.017 : vmin * 0.009;
-      ctx.strokeStyle = rgba(C.ink, major ? 0.34 : 0.18);
+    for (let i = -3; i <= 3; i++) {
+      const a = -Math.PI / 2 + (i / 3) * span;
+      const major = i === 0 || Math.abs(i) === 3;
+      const len = major ? vmin * 0.014 : vmin * 0.008;
+      ctx.strokeStyle = rgba(C.ink, major ? 0.5 : 0.28);
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
       ctx.lineTo(cx + Math.cos(a) * (r + len), cy + Math.sin(a) * (r + len));
       ctx.stroke();
     }
 
-    /* pointer */
     const pa = -Math.PI / 2 + clamp(vs.roll, -span, span);
-    const px = cx + Math.cos(pa) * (r - vmin * 0.004);
-    const py = cy + Math.sin(pa) * (r - vmin * 0.004);
-    const s = vmin * 0.0135;
+    const px = cx + Math.cos(pa) * (r - vmin * 0.003);
+    const py = cy + Math.sin(pa) * (r - vmin * 0.003);
+    const s = vmin * 0.0095;
     ctx.translate(px, py);
     ctx.rotate(pa + Math.PI / 2);
-    ctx.fillStyle = rgba(C.primary, 0.82);
+    ctx.fillStyle = rgba(C.primary, 0.8);
     ctx.beginPath();
-    ctx.moveTo(0, -s * 0.8);
-    ctx.lineTo(s * 0.72, s * 0.62);
-    ctx.lineTo(-s * 0.72, s * 0.62);
+    ctx.moveTo(0, -s * 0.9);
+    ctx.lineTo(s * 0.78, s * 0.55);
+    ctx.lineTo(-s * 0.78, s * 0.55);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
 
-  /** Segmented ring that closes in as debris gets near. */
+  /**
+   * Proximity: a tight ring that closes on the sight. The heavy lifting is done by the DOM
+   * edge vignette — a big ring across the view just reads as clutter.
+   */
   private drawProximity(ctx: CanvasRenderingContext2D, w: number, h: number, vs: VecState): void {
     const p = vs.proximity;
-    if (p < 0.02) return;
+    if (p < 0.03) return;
     const cx = w * 0.5;
     const cy = h * 0.5;
     const vmin = Math.min(w, h);
-    const pulse = this.reduced ? 0.5 : 0.5 + 0.5 * Math.sin(vs.time * (5 + p * 10));
-    const r = vmin * (0.46 - p * 0.06);
-    const col = mix(C.warn, C.bad, clamp((p - 0.35) / 0.5, 0, 1), this.mixBuf);
+    const pulse = this.reduced ? 0.6 : 0.5 + 0.5 * Math.sin(vs.time * (5 + p * 9));
+    const r = vmin * (0.088 - p * 0.014);
+    const col = mix(C.warn, C.bad, clamp((p - 0.3) / 0.5, 0, 1), this.mixBuf);
     ctx.save();
     ctx.strokeStyle = col;
-    ctx.globalAlpha = vs.alpha * clamp(p * 0.8, 0, 0.85) * (0.55 + pulse * 0.45);
-    ctx.lineWidth = vmin * 0.0055;
-    const seg = 12;
+    ctx.globalAlpha = vs.alpha * clamp(p, 0, 1) * (0.42 + pulse * 0.5);
+    ctx.lineWidth = Math.max(1.6, vmin * 0.0026);
+    const seg = 4;
     for (let i = 0; i < seg; i++) {
-      const a0 = (i / seg) * Math.PI * 2 + 0.06;
-      const a1 = a0 + (Math.PI * 2) / seg - 0.34;
+      const a0 = (i / seg) * Math.PI * 2 + 0.34;
+      const a1 = a0 + (Math.PI * 2) / seg - 0.68;
       ctx.beginPath();
       ctx.arc(cx, cy, r, a0, a1);
       ctx.stroke();
@@ -1069,63 +1077,89 @@ export class Hud {
     ctx.restore();
   }
 
-  /** Corner brackets that scale with the gate's true angular size and tighten on approach. */
-  private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState): void {
+  /**
+   * Gate director. One shape language only: four brackets that track the gate's true angular
+   * size, plus an acquisition diamond while it is still too far to have any size at all.
+   */
+  private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState, vmin: number): void {
     const r = vs.gateR;
-    const x = vs.gateX;
-    const y = vs.gateY;
-    const near = clamp(1 - vs.gateDist / 2400, 0, 1);
-    const col = mix(C.primary, C.accent, vs.gateAlign * 0.85, this.mixBuf);
+    const near = clamp(1 - vs.gateDist / 2600, 0, 1);
+    const col = mix(C.primary, C.accent, vs.gateAlign * 0.9, this.mixBuf);
     const a = vs.alpha * vs.gateOn;
+    const small = vmin * 0.05;
 
     ctx.save();
-    ctx.translate(x, y);
+    ctx.translate(vs.gateX, vs.gateY);
     ctx.globalAlpha = a;
 
-    /* diamond outline */
-    ctx.strokeStyle = rgba(C.primary, 0.24 + vs.gateAlign * 0.18);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, -r);
-    ctx.lineTo(r, 0);
-    ctx.lineTo(0, r);
-    ctx.lineTo(-r, 0);
-    ctx.closePath();
-    ctx.stroke();
-
-    /* corner brackets — arms retract as you close */
-    const br = r * (1.22 - near * 0.16);
-    const arm = r * (0.42 - near * 0.24) + 6;
-    ctx.strokeStyle = col;
-    ctx.lineWidth = Math.max(1.6, r * 0.035);
-    for (let i = 0; i < 4; i++) {
-      const sx = i === 0 || i === 3 ? -1 : 1;
-      const sy = i < 2 ? -1 : 1;
+    if (r < small) {
+      /* far: a fixed-size acquisition diamond keeps the target findable at a glance */
+      const d = vmin * 0.016;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.8;
       ctx.beginPath();
-      ctx.moveTo(sx * br, sy * (br - arm));
-      ctx.lineTo(sx * br, sy * br);
-      ctx.lineTo(sx * (br - arm), sy * br);
+      ctx.moveTo(0, -d);
+      ctx.lineTo(d, 0);
+      ctx.lineTo(0, d);
+      ctx.lineTo(-d, 0);
+      ctx.closePath();
       ctx.stroke();
-    }
+      /* same bracket language as the near reticle, just fixed-size */
+      const br = d * 2.15;
+      const arm = d * 0.5;
+      ctx.globalAlpha = a * 0.7;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 4; i++) {
+        const sx = i === 0 || i === 3 ? -1 : 1;
+        const sy = i < 2 ? -1 : 1;
+        ctx.beginPath();
+        ctx.moveTo(sx * br, sy * (br - arm));
+        ctx.lineTo(sx * br, sy * br);
+        ctx.lineTo(sx * (br - arm), sy * br);
+        ctx.stroke();
+      }
+    } else {
+      const br = r * (1.2 - near * 0.14);
+      const arm = r * (0.4 - near * 0.24) + vmin * 0.006;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = Math.max(1.8, r * 0.03);
+      for (let i = 0; i < 4; i++) {
+        const sx = i === 0 || i === 3 ? -1 : 1;
+        const sy = i < 2 ? -1 : 1;
+        ctx.beginPath();
+        ctx.moveTo(sx * br, sy * (br - arm));
+        ctx.lineTo(sx * br, sy * br);
+        ctx.lineTo(sx * (br - arm), sy * br);
+        ctx.stroke();
+      }
 
-    /* alignment arc — a radial gauge sat on the target */
-    if (r > 18) {
-      const ar = br * 1.16;
-      ctx.lineWidth = Math.max(1.5, r * 0.028);
-      ctx.strokeStyle = rgba(C.ink, 0.14);
+      /* Alignment: a short arc under the reticle, grouped with the range readout. Kept off
+         the top so it never fights the roll scale, which lives at top-centre. */
+      const ar = br * 1.13;
+      ctx.lineWidth = Math.max(1.5, r * 0.022);
+      ctx.strokeStyle = rgba(C.ink, 0.12);
       ctx.beginPath();
-      ctx.arc(0, 0, ar, -Math.PI * 0.5, Math.PI * 1.5);
+      ctx.arc(0, 0, ar, Math.PI * 0.26, Math.PI * 0.74);
       ctx.stroke();
-      ctx.strokeStyle = rgba(C.accent, 0.75);
+      ctx.strokeStyle = rgba(C.accent, 0.9);
       ctx.beginPath();
-      ctx.arc(0, 0, ar, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * vs.gateAlign);
+      ctx.arc(
+        0,
+        0,
+        ar,
+        Math.PI * 0.5 - Math.PI * 0.24 * vs.gateAlign,
+        Math.PI * 0.5 + Math.PI * 0.24 * vs.gateAlign,
+      );
       ctx.stroke();
     }
 
     ctx.restore();
   }
 
-  /** Off-screen chase arrow: the single most important readability element. */
+  /**
+   * Off-screen chase arrow — the single most important readability element (Q5). Big, amber,
+   * pulsing, with a stack of trailing chevrons so the eye lands on it without a search.
+   */
   private drawChaseArrow(
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -1135,65 +1169,57 @@ export class Hud {
     const cx = w * 0.5;
     const cy = h * 0.5;
     const vmin = Math.min(w, h);
-    const rx = Math.min(w * 0.40, vmin * 0.62);
-    const ry = Math.min(h * 0.40, vmin * 0.62);
     const a = vs.gateAngle;
-    const ax = cx + Math.cos(a) * rx;
-    const ay = cy - Math.sin(a) * ry;
+    const ax = cx + Math.cos(a) * Math.min(w * 0.375, vmin * 0.58);
+    const ay = cy - Math.sin(a) * Math.min(h * 0.375, vmin * 0.58);
     const vis = vs.alpha * (1 - vs.gateOn);
     if (vis <= 0.01) return;
 
-    const pulse = this.reduced ? 0.6 : 0.5 + 0.5 * Math.sin(vs.time * 4.6);
-    const s = vmin * 0.036 * (1 + pulse * 0.09);
+    const pulse = this.reduced ? 0.6 : 0.5 + 0.5 * Math.sin(vs.time * 4.4);
+    const s = vmin * 0.033 * (1 + pulse * 0.1);
 
     ctx.save();
     ctx.globalAlpha = vis;
 
-    /* dark scrim so it survives a bright nebula behind it */
-    const grad = ctx.createRadialGradient(ax, ay, 0, ax, ay, s * 3.6);
-    grad.addColorStop(0, 'rgba(3,7,14,0.72)');
+    /* soft scrim so amber-on-nebula still reads */
+    const grad = ctx.createRadialGradient(ax, ay, s * 0.6, ax, ay, s * 2.6);
+    grad.addColorStop(0, 'rgba(3,7,14,0.44)');
     grad.addColorStop(1, 'rgba(3,7,14,0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(ax, ay, s * 3.6, 0, Math.PI * 2);
+    ctx.arc(ax, ay, s * 2.6, 0, Math.PI * 2);
     ctx.fill();
-
-    /* guide arc riding the ellipse */
-    ctx.strokeStyle = rgba(C.accent, 0.28 + pulse * 0.2);
-    ctx.lineWidth = Math.max(1.5, vmin * 0.0028);
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, ry, 0, -a - 0.26, -a + 0.26);
-    ctx.stroke();
 
     ctx.translate(ax, ay);
     ctx.rotate(-a);
 
-    /* trailing chevrons point at the head so the eye lands instantly */
-    ctx.strokeStyle = rgba(C.accent, 0.34);
-    ctx.lineWidth = Math.max(1.6, s * 0.13);
-    for (let i = 1; i <= 2; i++) {
-      const off = -s * (0.95 + i * 0.62);
-      const k = s * (0.46 - i * 0.09);
-      ctx.globalAlpha = vis * (0.5 - i * 0.14);
+    /* trailing chevrons: a short runway pointing at the head */
+    ctx.strokeStyle = rgba(C.accent, 1);
+    ctx.lineWidth = Math.max(2, s * 0.16);
+    for (let i = 1; i <= 3; i++) {
+      const off = -s * (0.72 + i * 0.42);
+      const k = s * (0.46 - i * 0.07);
+      ctx.globalAlpha = vis * (1.05 - i * 0.22) * (0.78 + pulse * 0.22);
       ctx.beginPath();
-      ctx.moveTo(off - k * 0.7, -k);
-      ctx.lineTo(off + k * 0.7, 0);
-      ctx.lineTo(off - k * 0.7, k);
+      ctx.moveTo(off - k * 0.62, -k);
+      ctx.lineTo(off + k * 0.62, 0);
+      ctx.lineTo(off - k * 0.62, k);
       ctx.stroke();
     }
 
     /* head */
     ctx.globalAlpha = vis;
-    ctx.fillStyle = rgba(C.accent, 0.94);
+    ctx.fillStyle = rgba(C.accent, 0.96);
     ctx.beginPath();
-    ctx.moveTo(s * 1.02, 0);
-    ctx.lineTo(-s * 0.52, -s * 0.78);
-    ctx.lineTo(-s * 0.2, 0);
-    ctx.lineTo(-s * 0.52, s * 0.78);
+    ctx.moveTo(s * 1.05, 0);
+    ctx.lineTo(-s * 0.5, -s * 0.8);
+    ctx.lineTo(-s * 0.14, 0);
+    ctx.lineTo(-s * 0.5, s * 0.8);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = 'rgba(3,7,14,0.85)';
-    ctx.lineWidth = Math.max(1, s * 0.06);
+    ctx.strokeStyle = 'rgba(3,7,14,0.9)';
+    ctx.lineWidth = Math.max(1, s * 0.07);
+    ctx.lineJoin = 'miter';
     ctx.stroke();
 
     ctx.restore();
@@ -1271,19 +1297,20 @@ export class Hud {
 
   /** Crisp DOM label welded to whichever director is live. */
   private placeGateTag(w: number, h: number, vs: VecState, onScreen: boolean): void {
+    const vmin = Math.min(w, h);
     let x: number;
     let y: number;
     if (onScreen) {
       x = vs.gateX;
-      y = vs.gateY + vs.gateR * 1.22 + Math.min(w, h) * 0.032;
+      y = vs.gateY + Math.max(vs.gateR * 1.2, vmin * 0.026) + vmin * 0.026;
     } else {
+      /* welded to the tail of the chevron runway so arrow + range read as one object */
       const cx = w * 0.5;
       const cy = h * 0.5;
-      const vmin = Math.min(w, h);
-      const rx = Math.min(w * 0.40, vmin * 0.62) - vmin * 0.085;
-      const ry = Math.min(h * 0.40, vmin * 0.62) - vmin * 0.085;
+      const rx = Math.min(w * 0.375, vmin * 0.58) - vmin * 0.058;
+      const ry = Math.min(h * 0.375, vmin * 0.58) - vmin * 0.058;
       x = cx + Math.cos(vs.gateAngle) * rx;
-      y = cy - Math.sin(vs.gateAngle) * ry;
+      y = cy - Math.sin(vs.gateAngle) * ry + vmin * 0.048;
     }
     x = clamp(x, w * 0.06, w * 0.94);
     y = clamp(y, h * 0.08, h * 0.9);
@@ -1311,5 +1338,3 @@ export class Hud {
     }
   }
 }
-
-const ATT_SIDES = [-1, 1] as const;

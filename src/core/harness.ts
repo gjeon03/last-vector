@@ -43,6 +43,27 @@ export interface PerfSample {
   textures: number;
 }
 
+/** Read-only physical state, so a driver can prove six-axis motion without game internals. */
+export interface HarnessPose {
+  position: [number, number, number];
+  /** x, y, z, w. */
+  quaternion: [number, number, number, number];
+  velocity: [number, number, number];
+  /** Body-frame rates: pitch, yaw, roll. */
+  angularVelocity: [number, number, number];
+  forward: [number, number, number];
+}
+
+export interface GatePassRecord {
+  index: number;
+  /** Run time at the crossing, seconds. */
+  time: number;
+  /** Metres from the gate axis at the crossing. */
+  radialDistance: number;
+  speed: number;
+  cleared: boolean;
+}
+
 export interface HarnessApi {
   readonly version: string;
   /** Resolves once the first frame has been presented. */
@@ -69,6 +90,14 @@ export interface HarnessApi {
   vantages(): string[];
   /** Advance the simulation by a fixed step count without waiting on rAF. */
   step(frames: number, dt?: number): Promise<void>;
+  /** Renders one frame and resolves after it has been presented. */
+  present(): Promise<void>;
+  /** Physical state of the ship this frame. */
+  pose(): HarnessPose;
+  /** The pilot command actually applied this frame, after overrides and assists. */
+  activeInput(): Required<HarnessInput>;
+  /** Every gate crossing so far, in order. Survives until the next `startRun`. */
+  gateHistory(): GatePassRecord[];
   /** Collect a perf sample over `seconds` of real time. */
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;

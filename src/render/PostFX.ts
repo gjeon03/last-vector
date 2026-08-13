@@ -125,7 +125,10 @@ const GODRAY_FRAG = /* glsl */ `
       vec2 c = clamp(uv, 0.0, 1.0);
       float depth = texture2D(tDepth, c).r;
       float sky = step(0.9999, depth);
-      vec3 s = texture2D(tScene, c).rgb * sky;
+      // Only light close to the star seeds a shaft; anything else is a bright object that
+      // merely happens to have nothing solid behind it.
+      float nearSun = smoothstep(0.55, 0.06, length((c - uSun) * vec2(1.0, 0.5625)));
+      vec3 s = texture2D(tScene, c).rgb * sky * nearSun;
       accum += s * illumination * uWeight;
       illumination *= uDecay;
     }
@@ -210,9 +213,11 @@ const COMPOSITE_FRAG = /* glsl */ `
       scene = sampleScene(uv);
     }
 
-    // Lateral chromatic aberration, strongest at the frame edge.
+    // Lateral chromatic aberration. Centred on the optical axis and zero in the middle of
+    // the frame, so it fringes the edges of a wide shot without smearing every highlight.
     if (uAberration > 0.0001) {
-      vec2 ca = toCentre * (r2 + 0.25) * uAberration;
+      vec2 fromAxis = uv - 0.5;
+      vec2 ca = fromAxis * dot(fromAxis, fromAxis) * uAberration;
       scene.r = sampleScene(uv + ca).r;
       scene.b = sampleScene(uv - ca).b;
     }
