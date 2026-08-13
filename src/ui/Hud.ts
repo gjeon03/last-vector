@@ -214,7 +214,15 @@ export class Hud {
   private readonly nSector: HTMLElement;
   private readonly nFps: HTMLElement;
   private readonly nFpsFrame: HTMLElement;
-  private readonly nSpeed: RollingNumber;
+  /**
+   * Speed is written directly rather than through the odometer. An odometer animates each
+   * digit over ~0.26 s, but airspeed changes every single frame, so the transition restarts
+   * before it can ever land and the digit column sits permanently between two glyphs. The
+   * rolling treatment is right for values that settle — splits, gate counts — and wrong for
+   * a live instrument.
+   */
+  private readonly nSpeed: HTMLElement;
+  private shownSpeed = -1;
   private readonly nGload: HTMLElement;
   private readonly nThrottleFill: HTMLElement;
   private readonly nThrottleGhost: HTMLElement;
@@ -401,9 +409,9 @@ export class Hud {
     thr.append(el('div', 'lv-thr-k', 'THR'), thrTrack, this.nThrottlePct);
 
     const speed = el('div', 'lv-speed');
-    this.nSpeed = new RollingNumber(4, 'lv-roll lv-roll--speed');
+    this.nSpeed = el('div', 'lv-readout lv-readout--speed', '0');
     const speedRow = el('div', 'lv-speed-row');
-    speedRow.append(this.nSpeed.el, el('span', 'lv-speed-u', 'M/S'));
+    speedRow.append(this.nSpeed, el('span', 'lv-speed-u', 'M/S'));
     this.nGload = el('div', 'lv-gload', '0.0 G');
     speed.append(speedRow, this.nGload);
 
@@ -597,7 +605,11 @@ export class Hud {
 
     /* speed odometer */
     this.eSpeed.target = t.speed;
-    this.nSpeed.set(this.eSpeed.step(dt));
+    const speed = Math.round(this.eSpeed.step(dt));
+    if (speed !== this.shownSpeed) {
+      this.shownSpeed = speed;
+      this.nSpeed.textContent = String(speed);
+    }
 
     /* g-load: contract gives m/s^2 */
     this.eG.target = Math.abs(t.gLoad) / 9.80665;
