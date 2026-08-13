@@ -2,6 +2,14 @@
  * Shared contracts between independently-developed subsystems.
  * Anything crossing a module boundary (game -> hud, game -> audio) lives here.
  * Keep it dependency-free: no three.js imports, no DOM handles.
+ *
+ * NOTE FOR ANYONE ADDING A FIELD: `Telemetry` and `HudHost` have consumers outside this
+ * repository. The interface layer is developed against a standalone probe page that mounts
+ * `Overlay` over synthetic telemetry, because several HUD states — the off-screen director, the
+ * proximity ring, the impact pulse — are hard to reach in a real run. Adding a required field or
+ * method silently breaks that harness: it has happened twice, once for `HudHost.pause()` and
+ * once for `Telemetry.velocityAnchor`. It is not a reason to avoid changing the contract; it is
+ * a reason to say so when you do.
  */
 
 export type Phase = 'boot' | 'title' | 'briefing' | 'countdown' | 'flying' | 'finished';
