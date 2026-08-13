@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLSL_NOISE } from './glslNoise.ts';
 import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.ts';
-import { PALETTE, SCALE } from '../core/art.ts';
+import { PALETTE } from '../core/art.ts';
 import { Rng } from '../core/rng.ts';
 import { clamp01, damp, smoothstep } from '../core/mathx.ts';
 
@@ -492,4 +492,3 @@ export class Gate {
   }
 }
 
-export const GATE_RADIUS = SCALE.gateRadius;

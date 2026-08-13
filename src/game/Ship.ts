@@ -33,13 +33,6 @@ const MAX_RATE = {
   roll: 2.7,
 };
 
-export interface ShipImpact {
-  point: THREE.Vector3;
-  normal: THREE.Vector3;
-  speed: number;
-  severity: number;
-}
-
 export class Ship {
   readonly position = new THREE.Vector3();
   readonly quaternion = new THREE.Quaternion();

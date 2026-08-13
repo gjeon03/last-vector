@@ -431,7 +431,10 @@ export class SfxKit {
    * enough to still belong to it. The ticks sit at 880-1250 Hz for the same reason as above.
    */
   private boostEmpty(_intensity: number, when: number): void {
-    const v = this.begin(when, 1.35, 0.1);
+    // Level is set so this lands alongside `finish` as the loudest thing in the game and not
+    // above it: the audibility comes from the 400-1500 Hz placement and the 110 ms displacement,
+    // not from brute level. Pushing it louder only made it the loudest event in the mix.
+    const v = this.begin(when, 1.05, 0.1);
     const gap = 0.11;
     for (let k = 0; k < 3; k++) {
       this.noise(v, {
