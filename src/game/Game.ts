@@ -129,6 +129,7 @@ export class Game {
   private damageFlash = 0;
   private proximity = 0;
   private cinematicTime = 0;
+  private boostBlend = 0;
   private wasBoosting = false;
   private wasBoostLocked = false;
   private gateTickTimer = 0;
@@ -789,7 +790,13 @@ export class Game {
   private updateVisuals(dt: number): void {
     const speed01 = this.ship.speed01;
     const boost = this.ship.boosting ? 1 : 0;
-    const boostBlend = damp(this.grade.warp / 0.075, boost, 0.22, dt);
+    // Boost is a first-class piece of state, not something to reconstruct by dividing another
+    // effect's uniform by its own scale factor. Reading it back out of `grade.warp` meant every
+    // boost-driven effect — FOV kick, streak length, dust density, plume, trail width, lens warp
+    // — was keyed off a value that had already been through two independent smoothers, so it lagged
+    // badly and never reached full strength. That is why boost barely deformed the frame.
+    this.boostBlend = damp(this.boostBlend, boost, 0.16, dt);
+    const boostBlend = this.boostBlend;
 
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
@@ -827,10 +834,10 @@ export class Game {
 
     // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
     // short at cruise and only tearing open under boost — that contrast is the point.
-    const stretch = 0.003 + speed01 * 0.01 + boostBlend * 0.028;
+    const stretch = 0.008 + speed01 * 0.026 + boostBlend * 0.055;
     // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
     // wall of streaks under boost, which is where the cue is actually wanted.
-    const dustOpacity = 0.05 + speed01 * speed01 * 0.24 + boostBlend * 0.3;
+    const dustOpacity = 0.07 + speed01 * speed01 * 0.26 + boostBlend * 0.34;
     this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
 
     this.shipModel.update(
@@ -939,11 +946,11 @@ export class Game {
     }
 
     const target = this.grade;
-    target.blurStrength = damp(target.blurStrength, speed01 * 0.012 + boost * 0.03, 0.18, dt);
+    target.blurStrength = damp(target.blurStrength, speed01 * 0.016 + boost * 0.055, 0.18, dt);
     // No constant term: aberration is a speed effect, and a base value meant the title
     // screen was fringing every star while standing still.
     target.aberration = damp(target.aberration, speed01 * speed01 * 0.0035 + boost * 0.011, 0.2, dt);
-    target.warp = damp(target.warp, boost * 0.075, 0.2, dt);
+    target.warp = damp(target.warp, boost * 0.15, 0.2, dt);
     target.vignette = damp(target.vignette, 0.42 + boost * 0.2 + this.proximity * 0.14, 0.3, dt);
     target.damage = clamp01(this.damageFlash * 0.9 + (1 - this.ship.hull) * 0.12);
     target.exposure = damp(target.exposure, 1.3 - boost * 0.08, 0.5, dt);

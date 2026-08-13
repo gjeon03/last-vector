@@ -130,7 +130,7 @@ export class ChaseCamera {
     }
 
     // --- field of view ----------------------------------------------------------------
-    const targetFov = this.baseFov + speed01 * 7.5 + boost * 15 + shake.impact * 4;
+    const targetFov = this.baseFov + speed01 * 8 + boost * 17 + shake.impact * 4;
     this.fov = damp(this.fov, targetFov, boost > 0.5 ? 0.16 : 0.28, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;
