@@ -98,6 +98,13 @@ async function boot(): Promise<void> {
   loader.setProgress(1, 'ready');
   loader.done();
 
+  game.onContextLost = () => {
+    fail(
+      'GRAPHICS CONTEXT LOST',
+      'The browser dropped the WebGL context — usually a driver reset, a GPU switch, or another tab exhausting video memory. Reload the page to continue.',
+    );
+  };
+
   installHarness(game);
 }
 

@@ -153,6 +153,7 @@ export class Overlay {
   setCountdown(value: number | null): void {
     this.countdown = value;
     this.screens.setCountdown(value);
+    this.hud.setCountdownActive(value !== null);
     this.applyHudActivity();
   }
 

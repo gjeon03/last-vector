@@ -257,8 +257,15 @@ export class SfxKit {
     const root = 462 * Math.pow(2, intensity * 0.62) * this.jitter(40);
     const drop = 1.24 + this.rng() * 0.12;
     const bright = 0.55 + intensity * 0.45;
+    // Ring length varies more per call than pitch does. Nine gates in a run are separated by
+    // seconds, so a 40 cent pitch jitter is not recallable — but a chime that rings for 1.9 s
+    // next to one that rings for 3.0 s plainly is. This is the main anti-repetition lever.
+    const ringScale = 0.78 + this.rng() * 0.44;
+    // Occasionally mute one upper partial, which changes the timbre of the tail outright.
+    const muted = 3 + Math.floor(this.rng() * 3);
 
     for (let p = 0; p < METAL_RATIOS.length; p++) {
+      if (p === muted && this.rng() < 0.5) continue;
       const ratio = METAL_RATIOS[p] * this.jitter(14);
       const freq = root * ratio;
       if (freq > 15000) continue;
@@ -271,7 +278,7 @@ export class SfxKit {
         glideTime: 0.1 + p * 0.012,
         peak: (0.3 * fall) * (p >= 3 ? bright : 1),
         attack: 0.004 + p * 0.002,
-        decay: 2.4 * Math.pow(0.72, p) + 0.25,
+        decay: (2.4 * Math.pow(0.72, p) + 0.25) * ringScale,
       });
     }
 
@@ -303,12 +310,15 @@ export class SfxKit {
    * the canopy, which reads as the interval tightening even at a constant repeat rate.
    */
   private gateNear(intensity: number, when: number): void {
-    const v = this.begin(when, 0.3, 0.18);
+    const v = this.begin(when, 0.45, 0.18);
     const freq = 1180 + intensity * 1250;
+    // Amplitude is deliberately flat across intensity. The game already raises the repeat rate
+    // from ~3 Hz to 8.3 Hz as the gate closes; letting loudness climb on top of that is what
+    // turns a proximity cue into a smoke alarm. Rate and pitch carry the urgency, level does not.
     this.tone(v, {
       type: 'sine',
       freq,
-      peak: 0.24 + intensity * 0.2,
+      peak: 0.36 - intensity * 0.04,
       attack: 0.001,
       decay: 0.075 - intensity * 0.045,
     });
@@ -317,7 +327,7 @@ export class SfxKit {
       filter: 'bandpass',
       freq: freq * 1.6,
       q: 7,
-      peak: 0.18,
+      peak: 0.2 - intensity * 0.03,
       attack: 0.001,
       decay: 0.045,
     });
@@ -361,68 +371,101 @@ export class SfxKit {
   // boost
   // -------------------------------------------------------------------------------------
 
-  /** Pressure dumping into the ducts: a rising bandpass sweep over a rising sub. */
+  /**
+   * Pressure dumping into the ducts.
+   *
+   * All three boost events fight the drive itself, which is at its loudest exactly when they
+   * fire. Measured against the engine bed under boost, the spectrum is roughly
+   * 46/22/8/18/6 % across <120 / 120-400 / 400-1.5k / 1.5-5k / >5k Hz — so 400-1500 Hz is the
+   * one window that is genuinely open. Every boost event therefore carries its identity there
+   * rather than in the sub, where an earlier version put it and was completely masked.
+   */
   private boostStart(intensity: number, when: number): void {
-    const v = this.begin(when, 0.5, 0.22);
+    const v = this.begin(when, 1.05, 0.22);
     this.noise(v, {
       colour: 'air',
       filter: 'bandpass',
-      freq: 280,
-      freqTo: 4200,
+      freq: 420,
+      freqTo: 5200,
       sweepTime: 0.34,
-      q: 1.2,
-      peak: 0.62 + intensity * 0.22,
+      q: 1.0,
+      peak: 0.7 + intensity * 0.22,
       attack: 0.012,
       decay: 0.55,
     });
-    this.tone(v, { type: 'sine', freq: 62, glideTo: 138, glideTime: 0.32, peak: 0.28, attack: 0.02, decay: 0.6 });
-    this.tone(v, { type: 'sawtooth', freq: 180, glideTo: 420, glideTime: 0.3, peak: 0.17, attack: 0.02, decay: 0.45 });
-    this.noise(v, { colour: 'spark', filter: 'highpass', freq: 5200, peak: 0.13, attack: 0.001, decay: 0.14 });
+    // Ignition: a resonant strike in the open band, so the event has an onset and not just a swell.
+    this.noise(v, { colour: 'spark', filter: 'bandpass', freq: 1150, q: 6, peak: 0.42, attack: 0.001, decay: 0.13 });
+    this.tone(v, { type: 'sawtooth', freq: 300, glideTo: 900, glideTime: 0.3, peak: 0.3, attack: 0.02, decay: 0.45 });
+    // Just enough sub to feel the shove; it is masked by the drive and is not carrying the cue.
+    this.tone(v, { type: 'sine', freq: 62, glideTo: 138, glideTime: 0.32, peak: 0.16, attack: 0.02, decay: 0.6 });
+    this.noise(v, { colour: 'spark', filter: 'highpass', freq: 5200, peak: 0.2, attack: 0.001, decay: 0.14 });
     this.finishVoice(v);
   }
 
-  /** The mirror image: the ducts closing, energy draining downward. */
+  /** The mirror image: the ducts closing. The sweep floors at 620 Hz so it stays over the drive. */
   private boostEnd(intensity: number, when: number): void {
-    const v = this.begin(when, 0.63, 0.28);
+    const v = this.begin(when, 0.85, 0.28);
     this.noise(v, {
       colour: 'air',
       filter: 'bandpass',
-      freq: 3000,
-      freqTo: 340,
+      freq: 3400,
+      freqTo: 620,
       sweepTime: 0.6,
       q: 1.5,
-      peak: 0.32 + intensity * 0.1,
+      peak: 0.36 + intensity * 0.1,
       attack: 0.02,
       decay: 0.72,
     });
+    // Spool-down in the open band — the part the player can actually hear letting go.
+    this.tone(v, { type: 'triangle', freq: 900, glideTo: 380, glideTime: 0.42, peak: 0.2, attack: 0.012, decay: 0.5 });
     this.tone(v, { type: 'sine', freq: 126, glideTo: 58, glideTime: 0.5, peak: 0.3, attack: 0.02, decay: 0.6 });
     this.finishVoice(v);
   }
 
-  /** Dry, mechanical, unsatisfying on purpose: three failed ignition ticks and a sag. */
+  /**
+   * Reserve dry. Dry, mechanical, unsatisfying on purpose: three failed ignition ticks and a sag.
+   *
+   * The game clears `boosting` and sets `boostLocked` in the same frame, so this arrives at the
+   * same instant as `boostEnd`. Two simultaneous events read as one, so the whole thing is
+   * displaced 110 ms — long enough to be heard as a separate consequence of the cut-out, short
+   * enough to still belong to it. The ticks sit at 880-1250 Hz for the same reason as above.
+   */
   private boostEmpty(_intensity: number, when: number): void {
-    const v = this.begin(when, 0.6, 0.1);
+    const v = this.begin(when, 1.35, 0.1);
+    const gap = 0.11;
     for (let k = 0; k < 3; k++) {
       this.noise(v, {
         colour: 'spark',
         filter: 'bandpass',
-        freq: 780 - k * 90,
-        q: 5,
-        peak: 0.3 - k * 0.06,
+        freq: 1250 - k * 185,
+        q: 7,
+        peak: 0.46 - k * 0.09,
         attack: 0.001,
-        decay: 0.05,
-        delay: k * 0.058,
+        decay: 0.055,
+        delay: gap + k * 0.062,
       });
     }
+    // Power sag: a falling tone that stays inside the band the drive leaves open.
     this.tone(v, {
       type: 'triangle',
-      freq: 214,
-      glideTo: 88,
-      glideTime: 0.26,
-      peak: 0.2,
+      freq: 620,
+      glideTo: 300,
+      glideTime: 0.3,
+      peak: 0.3,
       attack: 0.008,
-      decay: 0.32,
-      delay: 0.02,
+      decay: 0.36,
+      delay: gap + 0.02,
+    });
+    // A small low sag underneath for weight, not for information.
+    this.tone(v, {
+      type: 'sine',
+      freq: 190,
+      glideTo: 92,
+      glideTime: 0.28,
+      peak: 0.22,
+      attack: 0.01,
+      decay: 0.34,
+      delay: gap + 0.02,
     });
     this.finishVoice(v);
   }

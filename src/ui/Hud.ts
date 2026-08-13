@@ -129,6 +129,33 @@ function mix(a: RGB, b: RGB, t: number, out: number[]): string {
   return `rgb(${out[0]},${out[1]},${out[2]})`;
 }
 
+/**
+ * Dark casing colour. The scene puts a blown-out cyan gate aperture, a gold armed ring and a
+ * lit gas giant behind the instruments, so every vector stroke is laid over a darker, wider
+ * copy of itself. That is what keeps a 1 px line readable on an emissive background, and it
+ * costs one extra stroke of an already-built path.
+ */
+const CASING = 'rgba(2,6,13,0.8)';
+const INK_SOLID = UI.ink;
+
+/**
+ * Stroke the path currently on `ctx` twice: dark casing first, then the bright line.
+ * The caller owns `globalAlpha`; this only touches strokeStyle and lineWidth.
+ */
+function casedStroke(
+  ctx: CanvasRenderingContext2D,
+  colour: string,
+  width: number,
+  casingPad = 0,
+): void {
+  ctx.strokeStyle = CASING;
+  ctx.lineWidth = width + (casingPad || Math.max(2.4, width * 1.1));
+  ctx.stroke();
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
 /* ------------------------------------------------------------ rolling digits */
 
 /**
@@ -508,11 +535,28 @@ export class Hud {
     this.el.dataset['active'] = active ? '1' : '0';
     this.el.dataset['dim'] = dim ? '1' : '0';
     this.eAlpha.target = active ? (dim ? 0.45 : 1) : 0;
+    /**
+     * Callouts opt out of the dim. `--a` eases from 0.45 to 1 across the countdown -> flying
+     * boundary, which is exactly when the run's ENGAGE callout fires, so riding `--a` rendered
+     * the loudest beat of the run at 45% over a blown-out gate aperture. An alert is never
+     * ambient: it is either shown at full strength or not shown.
+     */
+    this.el.style.setProperty('--ca', active ? '1' : '0');
   }
 
   setShowFps(show: boolean): void {
     this.showFps = show;
     this.nFpsFrame.dataset['on'] = show ? '1' : '0';
+  }
+
+  /**
+   * The countdown owns the start beat. The game also fires an ENGAGE callout on the
+   * countdown -> flying edge, so without this the player gets `GO`, `VECTOR LIVE` and
+   * `ENGAGE / VESPER TERMINUS` stacked up the centre of the screen at the same instant.
+   * The callout is held, not dropped: it reappears the moment the countdown clears.
+   */
+  setCountdownActive(active: boolean): void {
+    this.el.dataset['countdown'] = active ? '1' : '0';
   }
 
   setDestination(name: string): void {
@@ -946,7 +990,9 @@ export class Hud {
     this.eAlign.target = clamp(gate.alignment, 0, 1);
     vs.gateAlign = this.eAlign.step(dt);
 
-    const targetR = clamp((140 / Math.max(gate.distance, 60)) * h * 0.62, h * 0.022, h * 0.34);
+    /* Upper clamp is 0.26h, not 0.34h: past that the brackets stop reading as a reticle and
+       start reading as four unrelated corner marks parked near the screen edges. */
+    const targetR = clamp((140 / Math.max(gate.distance, 60)) * h * 0.62, h * 0.022, h * 0.26);
     this.eGateR.target = targetR;
     vs.gateR = this.eGateR.step(dt);
     vs.gateX = w * 0.5 + gate.anchor.x * w * 0.5;
@@ -1001,9 +1047,11 @@ export class Hud {
       if (Math.abs(y) > reach) continue;
       const fade = clamp(1 - Math.abs(y) / reach, 0, 1);
       const major = step === 0;
-      const a = (major ? 0.26 : 0.13) * fade;
+      /* Fade rides on globalAlpha so the dark casing dims in step with the line it backs;
+         baking the fade into the stroke colour alone would leave a dark halo behind nothing. */
+      const a = (major ? 0.42 : 0.24) * fade;
       if (a < 0.012) continue;
-      ctx.strokeStyle = rgba(C.ink, a);
+      ctx.globalAlpha = vs.alpha * a;
       const len = major ? reach : inner + vmin * 0.026;
       for (let s = 0; s < 2; s++) {
         const side = s === 0 ? -1 : 1;
@@ -1011,7 +1059,7 @@ export class Hud {
         ctx.moveTo(side * inner, y);
         ctx.lineTo(side * len, y);
         if (!major) ctx.lineTo(side * len, y + (step > 0 ? -1 : 1) * vmin * 0.009);
-        ctx.stroke();
+        casedStroke(ctx, INK_SOLID, 1, 2.4);
       }
     }
     ctx.restore();
@@ -1026,37 +1074,39 @@ export class Hud {
     const span = 0.78;
 
     ctx.save();
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = vs.alpha;
 
-    ctx.strokeStyle = rgba(C.ink, 0.2);
+    ctx.globalAlpha = vs.alpha * 0.3;
     ctx.beginPath();
     ctx.arc(cx, cy, r, -Math.PI / 2 - span, -Math.PI / 2 + span);
-    ctx.stroke();
+    casedStroke(ctx, INK_SOLID, 1, 2.4);
 
     for (let i = -3; i <= 3; i++) {
       const a = -Math.PI / 2 + (i / 3) * span;
       const major = i === 0 || Math.abs(i) === 3;
       const len = major ? vmin * 0.014 : vmin * 0.008;
-      ctx.strokeStyle = rgba(C.ink, major ? 0.5 : 0.28);
+      ctx.globalAlpha = vs.alpha * (major ? 0.72 : 0.42);
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
       ctx.lineTo(cx + Math.cos(a) * (r + len), cy + Math.sin(a) * (r + len));
-      ctx.stroke();
+      casedStroke(ctx, INK_SOLID, 1.4, 2.6);
     }
 
     const pa = -Math.PI / 2 + clamp(vs.roll, -span, span);
     const px = cx + Math.cos(pa) * (r - vmin * 0.003);
     const py = cy + Math.sin(pa) * (r - vmin * 0.003);
     const s = vmin * 0.0095;
+    ctx.globalAlpha = vs.alpha;
     ctx.translate(px, py);
     ctx.rotate(pa + Math.PI / 2);
-    ctx.fillStyle = rgba(C.primary, 0.8);
     ctx.beginPath();
     ctx.moveTo(0, -s * 0.9);
     ctx.lineTo(s * 0.78, s * 0.55);
     ctx.lineTo(-s * 0.78, s * 0.55);
     ctx.closePath();
+    ctx.strokeStyle = CASING;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = rgba(C.primary, 0.95);
     ctx.fill();
     ctx.restore();
   }
@@ -1075,16 +1125,15 @@ export class Hud {
     const r = vmin * (0.088 - p * 0.014);
     const col = mix(C.warn, C.bad, clamp((p - 0.3) / 0.5, 0, 1), this.mixBuf);
     ctx.save();
-    ctx.strokeStyle = col;
     ctx.globalAlpha = vs.alpha * clamp(p, 0, 1) * (0.42 + pulse * 0.5);
-    ctx.lineWidth = Math.max(1.6, vmin * 0.0026);
+    const lw = Math.max(1.6, vmin * 0.0026);
     const seg = 4;
     for (let i = 0; i < seg; i++) {
       const a0 = (i / seg) * Math.PI * 2 + 0.34;
       const a1 = a0 + (Math.PI * 2) / seg - 0.68;
       ctx.beginPath();
       ctx.arc(cx, cy, r, a0, a1);
-      ctx.stroke();
+      casedStroke(ctx, col, lw);
     }
     ctx.restore();
   }
@@ -1096,7 +1145,13 @@ export class Hud {
   private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState, vmin: number): void {
     const r = vs.gateR;
     const near = clamp(1 - vs.gateDist / 2600, 0, 1);
-    const col = mix(C.primary, C.accent, vs.gateAlign * 0.9, this.mixBuf);
+    /**
+     * White, not amber. An armed cairn renders as a hot gold ring and its aperture blows out
+     * to cyan at close range, so amber-on-gold and amber-on-cyan both vanish exactly when the
+     * player is on the approach and needs the director most. Alignment is now signalled by
+     * stroke weight plus the amber arc, never by tinting the brackets themselves.
+     */
+    const col = mix(C.ink, C.primary, 0.35 - vs.gateAlign * 0.25, this.mixBuf);
     const a = vs.alpha * vs.gateOn;
     const small = vmin * 0.05;
 
@@ -1107,20 +1162,17 @@ export class Hud {
     if (r < small) {
       /* far: a fixed-size acquisition diamond keeps the target findable at a glance */
       const d = vmin * 0.016;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 1.8;
       ctx.beginPath();
       ctx.moveTo(0, -d);
       ctx.lineTo(d, 0);
       ctx.lineTo(0, d);
       ctx.lineTo(-d, 0);
       ctx.closePath();
-      ctx.stroke();
+      casedStroke(ctx, col, 1.8);
       /* same bracket language as the near reticle, just fixed-size */
       const br = d * 2.15;
       const arm = d * 0.5;
-      ctx.globalAlpha = a * 0.7;
-      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = a * 0.75;
       for (let i = 0; i < 4; i++) {
         const sx = i === 0 || i === 3 ? -1 : 1;
         const sy = i < 2 ? -1 : 1;
@@ -1128,13 +1180,12 @@ export class Hud {
         ctx.moveTo(sx * br, sy * (br - arm));
         ctx.lineTo(sx * br, sy * br);
         ctx.lineTo(sx * (br - arm), sy * br);
-        ctx.stroke();
+        casedStroke(ctx, col, 1.5);
       }
     } else {
       const br = r * (1.2 - near * 0.14);
       const arm = r * (0.4 - near * 0.24) + vmin * 0.006;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = Math.max(1.8, r * 0.03);
+      const lw = Math.max(1.8, Math.min(r * 0.03, vmin * 0.006)) * (1 + vs.gateAlign * 0.45);
       for (let i = 0; i < 4; i++) {
         const sx = i === 0 || i === 3 ? -1 : 1;
         const sy = i < 2 ? -1 : 1;
@@ -1142,18 +1193,17 @@ export class Hud {
         ctx.moveTo(sx * br, sy * (br - arm));
         ctx.lineTo(sx * br, sy * br);
         ctx.lineTo(sx * (br - arm), sy * br);
-        ctx.stroke();
+        casedStroke(ctx, col, lw);
       }
 
       /* Alignment: a short arc under the reticle, grouped with the range readout. Kept off
-         the top so it never fights the roll scale, which lives at top-centre. */
-      const ar = br * 1.13;
-      ctx.lineWidth = Math.max(1.5, r * 0.022);
-      ctx.strokeStyle = rgba(C.ink, 0.12);
+         the top so it never fights the roll scale, and radius-capped so a gate filling the
+         frame does not sweep a 900 px arc across the lower third. */
+      const ar = Math.min(br * 1.13, vmin * 0.17);
+      const aw = Math.max(1.5, Math.min(r * 0.022, vmin * 0.0045));
       ctx.beginPath();
       ctx.arc(0, 0, ar, Math.PI * 0.26, Math.PI * 0.74);
-      ctx.stroke();
-      ctx.strokeStyle = rgba(C.accent, 0.9);
+      casedStroke(ctx, rgba(C.ink, 0.16), aw);
       ctx.beginPath();
       ctx.arc(
         0,
@@ -1162,7 +1212,7 @@ export class Hud {
         Math.PI * 0.5 - Math.PI * 0.24 * vs.gateAlign,
         Math.PI * 0.5 + Math.PI * 0.24 * vs.gateAlign,
       );
-      ctx.stroke();
+      casedStroke(ctx, rgba(C.accent, 0.95), aw);
     }
 
     ctx.restore();
@@ -1250,12 +1300,11 @@ export class Hud {
     const r = vmin * 0.0125;
 
     ctx.save();
-    ctx.globalAlpha = vs.alpha * 0.8;
-    ctx.strokeStyle = rgba(C.primary, 0.9);
-    ctx.lineWidth = Math.max(1.25, vmin * 0.0016);
+    ctx.globalAlpha = vs.alpha * 0.9;
+    const lw = Math.max(1.4, vmin * 0.0018);
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.stroke();
+    casedStroke(ctx, rgba(C.primary, 0.95), lw);
     ctx.beginPath();
     ctx.moveTo(x - r, y);
     ctx.lineTo(x - r * 2.15, y);
@@ -1263,7 +1312,7 @@ export class Hud {
     ctx.lineTo(x + r * 2.15, y);
     ctx.moveTo(x, y - r);
     ctx.lineTo(x, y - r * 1.9);
-    ctx.stroke();
+    casedStroke(ctx, rgba(C.primary, 0.95), lw);
     ctx.restore();
   }
 
@@ -1276,14 +1325,17 @@ export class Hud {
     const locked = vs.bore;
 
     ctx.save();
-    ctx.globalAlpha = vs.alpha * (0.5 + locked * 0.45);
-    ctx.fillStyle = locked > 0.5 ? rgba(C.accent, 0.95) : rgba(C.ink, 0.8);
+    ctx.globalAlpha = vs.alpha * (0.62 + locked * 0.38);
+    /* White core, never amber: the pipper sits dead centre, which is exactly where a lit gate
+       aperture ends up on the approach. Lock is signalled by the ring, not by a hue swap. */
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = CASING;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = INK_SOLID;
     ctx.fill();
 
-    ctx.strokeStyle = locked > 0.5 ? rgba(C.accent, 0.7) : rgba(C.ink, 0.42);
-    ctx.lineWidth = 1;
     const g0 = vmin * 0.014;
     const g1 = vmin * 0.024;
     for (let i = 0; i < 4; i++) {
@@ -1293,16 +1345,14 @@ export class Hud {
       ctx.beginPath();
       ctx.moveTo(cx + dx * g0, cy + dy * g0);
       ctx.lineTo(cx + dx * g1, cy + dy * g1);
-      ctx.stroke();
+      casedStroke(ctx, INK_SOLID, 1.2, 2.4);
     }
 
     if (locked > 0.02) {
-      ctx.globalAlpha = vs.alpha * locked * 0.8;
-      ctx.strokeStyle = rgba(C.accent, 0.9);
-      ctx.lineWidth = 1.4;
+      ctx.globalAlpha = vs.alpha * locked;
       ctx.beginPath();
       ctx.arc(cx, cy, vmin * 0.0285, 0, Math.PI * 2);
-      ctx.stroke();
+      casedStroke(ctx, rgba(C.accent, 0.95), 1.6);
     }
     ctx.restore();
   }

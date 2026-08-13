@@ -118,7 +118,10 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
     const fine = fbm3(nx * 5.1 + ox, ny * 5.1 + oy, nz * 5.1 + oz, 3);
     // A couple of large concave bites read as impact craters at a glance.
     const crater = Math.max(0, fbm3(nx * 2.2 - ox, ny * 2.2 - oy, nz * 2.2 - oz, 2));
-    const displacement = 1 + big * bigAmp + fine * fineAmp - Math.pow(crater, 3) * 0.3;
+    // Shallower than it was: at 0.3 the bite cut deep enough that a good fraction of the rocks
+    // read as annular, and with only eight variants the same doughnut silhouette recurred
+    // across the whole field.
+    const displacement = 1 + big * bigAmp + fine * fineAmp - Math.pow(crater, 3) * 0.17;
 
     const x = nx * displacement * sx;
     const y = ny * displacement * sy;
@@ -199,10 +202,15 @@ export class AsteroidField {
       vertexColors: true,
     });
 
-    const VARIANTS = 8;
+    // Sixteen silhouettes rather than eight: a field of a thousand rocks makes any repetition
+    // obvious, and silhouette is the thing the eye actually matches on.
+    const VARIANTS = 16;
+    // Detail is banded by index, and an instance picks its band from its *size* below — a
+    // three-hundred-triangle variant on a two-hundred-metre boulder is what put visible facets
+    // on the largest objects in the frame.
+    const detailFor = (v: number): number => (v < 4 ? 5 : v < 9 ? 4 : 3);
     for (let v = 0; v < VARIANTS; v++) {
-      // Bigger rocks get more geometric detail; small ones never fill enough pixels to matter.
-      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), v < 3 ? 4 : 3));
+      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), detailFor(v)));
     }
 
     const perVariant: AsteroidInstance[][] = Array.from({ length: VARIANTS }, () => []);
@@ -230,7 +238,9 @@ export class AsteroidField {
       const scale =
         options.minRadius * Math.pow(options.maxRadius / options.minRadius, spread01) *
         (rng.bool(0.035) ? 3.4 : 1);
-      const variant = rng.int(0, VARIANTS);
+      // Pick the detail band from the instance's size, then a silhouette within that band.
+      const size01 = Math.min(1, (scale - options.minRadius) / (options.maxRadius - options.minRadius));
+      const variant = size01 > 0.55 ? rng.int(0, 4) : size01 > 0.22 ? rng.int(4, 9) : rng.int(9, VARIANTS);
 
       const instance: AsteroidInstance = {
         position: point.clone().add(offset),

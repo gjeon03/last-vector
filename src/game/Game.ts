@@ -174,6 +174,7 @@ export class Game {
 
   private readonly vantages: Vantage[] = [];
   private disposed = false;
+  private contextLost = false;
   private firstFrameResolve: (() => void) | null = null;
   private readonly firstFrame: Promise<void>;
 
@@ -263,20 +264,27 @@ export class Game {
       lighting: this.lighting,
       spine: this.course.spine,
       seed: seed ^ 0x1a77,
-      count: 14,
+      count: 7,
     });
     this.mainScene.add(this.derelicts.object);
 
     // Placed just off the middle of the route, so the player passes it broadside at the point
     // where the legs are longest and the frame would otherwise be emptiest.
-    const spanAnchor = this.course.spine[Math.floor(this.course.spine.length * 0.52)];
+    // Anchored to the course's own frame rather than to world axes, so it reliably sits off
+    // the player's starboard side through the middle legs instead of wherever the route
+    // happened to be pointing.
+    const spanIndex = Math.floor(this.course.spine.length * 0.5);
+    const spanAnchor = this.course.spine[spanIndex];
+    const spanAhead = this.course.spine[Math.min(this.course.spine.length - 1, spanIndex + 6)];
+    const spanForward = new THREE.Vector3().subVectors(spanAhead, spanAnchor).normalize();
+    const spanRight = new THREE.Vector3().crossVectors(spanForward, new THREE.Vector3(0, 1, 0)).normalize();
     this.shelfSpan = new ShelfSpan({
       lighting: this.lighting,
-      position: new THREE.Vector3(
-        spanAnchor.x + 4200,
-        spanAnchor.y - 1500,
-        spanAnchor.z + 1800,
-      ),
+      position: spanAnchor
+        .clone()
+        .addScaledVector(spanRight, 5200)
+        .addScaledVector(spanForward, 2600)
+        .add(new THREE.Vector3(0, -900, 0)),
       seed: seed ^ 0x5bd1,
     });
     this.mainScene.add(this.shelfSpan.object);
@@ -348,6 +356,11 @@ export class Game {
     this.onSettingsChanged(this.settings.value);
     this.applyQualityPopulations();
 
+    // A lost context is not recoverable without rebuilding every buffer, program and target in
+    // the renderer. Rather than pretend, the game stops cleanly and says so: a frozen or
+    // black canvas with no explanation is the worst possible outcome for the player.
+    this.canvas.addEventListener('webglcontextlost', this.handleContextLost);
+    this.canvas.addEventListener('webglcontextrestored', this.handleContextRestored);
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('error', this.handleError);
     window.addEventListener('unhandledrejection', this.handleRejection);
@@ -502,7 +515,7 @@ export class Game {
 
   /** Advances simulation and renders one frame. Called by the rAF loop and by the harness. */
   frame(rawDt: number): void {
-    if (this.disposed) return;
+    if (this.disposed || this.contextLost) return;
     const dt = this.fixedTimestep ?? clamp(rawDt, 0.0005, 0.05);
     this.clock += dt;
     this.grade.time = this.clock;
@@ -1122,6 +1135,24 @@ export class Game {
     this.farCamera.updateProjectionMatrix();
   };
 
+  /** Fired when the browser or driver drops the GPU context. */
+  onContextLost: (() => void) | null = null;
+
+  private readonly handleContextLost = (event: Event): void => {
+    // Preventing the default is what allows a restore event to ever fire.
+    event.preventDefault();
+    this.contextLost = true;
+    this.paused = true;
+    this.audio.suspend();
+    this.input.releaseLock();
+    this.errors.push('webgl context lost');
+    this.onContextLost?.();
+  };
+
+  private readonly handleContextRestored = (): void => {
+    this.errors.push('webgl context restored (a reload is required to resume)');
+  };
+
   private readonly handleError = (e: ErrorEvent): void => {
     this.errors.push(`${e.message} @ ${e.filename}:${e.lineno}`);
   };
@@ -1315,6 +1346,8 @@ export class Game {
     window.removeEventListener('error', this.handleError);
     window.removeEventListener('unhandledrejection', this.handleRejection);
     document.removeEventListener('visibilitychange', this.handleVisibility);
+    this.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored);
     this.input.dispose();
     this.overlay.dispose();
     this.audio.dispose();

@@ -666,14 +666,29 @@
   flex-direction: column;
   align-items: center;
   gap: 0.32em;
+  padding: 0.7em 3.2em;
   text-align: center;
   opacity: 0;
   pointer-events: none;
   white-space: nowrap;
+  /* Its own scrim: a callout lands centre-upper, which is where a lit gate or the star ends
+     up during an approach, and thin 200-weight letterforms lose that fight on shadow alone. */
+  background: radial-gradient(
+    ellipse 60% 140% at 50% 50%,
+    rgba(2, 6, 13, 0.72),
+    rgba(2, 6, 13, 0.3) 55%,
+    rgba(2, 6, 13, 0) 100%
+  );
 }
 
+/* Rides --ca (binary: HUD active or not), never --a, so an alert is never half-dimmed. */
 .lv-callout[data-on='1'] {
-  opacity: calc(var(--a) * var(--f));
+  opacity: calc(var(--ca, 1) * var(--f));
+}
+
+/* The countdown owns the centre of the screen while it is running. */
+.lv-hud[data-countdown='1'] .lv-callout[data-on='1'] {
+  opacity: 0;
 }
 
 .lv-callout-t {
@@ -841,11 +856,18 @@
   gap: 0.5em;
 }
 
+/* The rail sits bottom-centre, which is where the gate glow lands on a close approach.
+   Its scrim has to be wide and strong enough to carry hairlines over that. */
 .lv-rail::before {
   content: '';
   position: absolute;
-  inset: -60% -12%;
-  background: radial-gradient(ellipse at 50% 60%, rgba(2, 5, 11, 0.72), rgba(2, 5, 11, 0) 74%);
+  inset: -160% -20%;
+  background: radial-gradient(
+    ellipse at 50% 58%,
+    rgba(2, 5, 11, 0.88),
+    rgba(2, 5, 11, 0.55) 44%,
+    rgba(2, 5, 11, 0) 78%
+  );
   z-index: -1;
 }
 
@@ -866,8 +888,9 @@
 
 .lv-rail-track {
   position: relative;
-  height: 1px;
-  background: rgba(185, 204, 221, 0.28);
+  height: 2px;
+  background: rgba(185, 204, 221, 0.42);
+  box-shadow: 0 0 0 1px rgba(2, 6, 13, 0.75);
 }
 
 .lv-rail-fill {
@@ -909,6 +932,9 @@
 
 /* --- gate distance tag --- */
 
+/* The range tag lands on whatever the gate is made of — a blown-out cyan aperture at close
+   range, a hot gold ring on approach. Text shadow alone loses that fight, so the tag carries
+   its own scrim. */
 .lv-gatetag {
   position: absolute;
   top: 0;
@@ -916,11 +942,18 @@
   display: flex;
   align-items: baseline;
   gap: 0.3em;
+  padding: 0.2em 0.7em;
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
   opacity: var(--a);
   white-space: nowrap;
   will-change: transform;
+  background: radial-gradient(
+    ellipse 68% 130% at 50% 50%,
+    rgba(2, 6, 13, 0.86),
+    rgba(2, 6, 13, 0.5) 58%,
+    rgba(2, 6, 13, 0) 100%
+  );
 }
 
 .lv-gatetag-n {

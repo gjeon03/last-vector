@@ -161,7 +161,9 @@ function buildRingHull(
     const sa = Math.sin(a);
     // A fragment tapers to nothing at both broken ends, which closes the surface without a
     // cap and reads as a shear rather than a sawn-off tube.
-    const taper = partial ? Math.min(1, Math.sin(Math.PI * t) * 3.2) : 1;
+    // Full section for almost the whole arc, then a fast shear at each broken end. A slow
+    // taper reads as a deflated tube rather than as something that was torn apart.
+    const taper = partial ? Math.min(1, Math.sin(Math.PI * t) * 9.0) : 1;
     // Frame: outward is radial, axial is the ring's own normal.
     for (let j = 0; j <= sides; j++) {
       const b = (j / sides) * Math.PI * 2;
@@ -468,13 +470,15 @@ export class ShelfSpan {
 
     const radius = 12_000;
     const arc = 0.78;
-    const main = buildRingHull(radius, 260, 420, 96, 14, 4.2, arc);
+    // A nine-kilometre object fills a large solid angle, so it needs real tessellation: at 96
+    // segments each facet was a hundred metres across and the silhouette read as origami.
+    const main = buildRingHull(radius, 260, 420, 260, 22, 4.2, arc);
     this.geometries.push(main);
     this.object.add(new THREE.Mesh(main, this.material));
 
     // An inner rail and a scatter of ribs give the fragment internal structure, so it reads as
     // engineered wreckage instead of a bent pipe.
-    const rail = buildRingHull(radius - 520, 90, 150, 96, 10, 3.4, arc * 0.92);
+    const rail = buildRingHull(radius - 520, 90, 150, 220, 14, 3.4, arc * 0.92);
     this.geometries.push(rail);
     const railMesh = new THREE.Mesh(rail, this.material);
     railMesh.rotation.z = arc * 0.04;
@@ -560,10 +564,16 @@ export class DerelictField {
 
       // A torn hull section: full section forward, ragged and thinning aft.
       const stations: LoftStation[] = [];
-      const segments = 7;
+      // A wreck a kilometre long and two kilometres away fills a large part of the frame, so
+      // seven stations and fourteen radial segments showed as origami. Detail here is cheap:
+      // there are only fourteen of these in the whole sector.
+      const segments = 14;
       for (let s = 0; s <= segments; s++) {
         const u = s / segments;
-        const taper = Math.max(0.08, 1 - Math.pow(u, 1.7) * rng.range(0.7, 1.05));
+        // A hull *section*, not a cone. The old taper ran almost to a point, and with only the
+        // forward end capped you could see straight down the inside, so a wreck read as an
+        // abstract open tube rather than as a piece of a ship.
+        const taper = Math.max(0.42, 1 - Math.pow(u, 2.2) * rng.range(0.35, 0.62));
         stations.push({
           z: -length * 0.5 + length * u,
           width: width * taper * rng.range(0.85, 1.15),
@@ -571,14 +581,14 @@ export class DerelictField {
           squareness: rng.range(3, 6),
         });
       }
-      const geometry = loft({ stations, radialSegments: 14, capStart: true });
+      const geometry = loft({ stations, radialSegments: 26, capStart: true, capEnd: true });
       this.geometries.push(geometry);
 
       const mesh = new THREE.Mesh(geometry, this.material);
       const dir = { x: 0, y: 0, z: 0 };
       rng.onSphere(dir);
       // Close enough to read as a known-size object, far enough to stay out of the racing line.
-      const distance = rng.range(1700, 6200);
+      const distance = rng.range(2600, 7400);
       mesh.position.set(
         anchor.x + dir.x * distance,
         anchor.y + dir.y * distance * 0.4,
