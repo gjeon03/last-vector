@@ -145,26 +145,33 @@ function buildRingHull(
   segments: number,
   sides: number,
   squareness: number,
+  /** Radians of arc. Less than a full turn produces a broken fragment. */
+  arc = Math.PI * 2,
 ): THREE.BufferGeometry {
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
   const n = 2 / squareness;
+  const partial = arc < Math.PI * 2 - 1e-4;
 
   for (let i = 0; i <= segments; i++) {
-    const a = (i / segments) * Math.PI * 2;
+    const t = i / segments;
+    const a = t * arc;
     const ca = Math.cos(a);
     const sa = Math.sin(a);
+    // A fragment tapers to nothing at both broken ends, which closes the surface without a
+    // cap and reads as a shear rather than a sawn-off tube.
+    const taper = partial ? Math.min(1, Math.sin(Math.PI * t) * 3.2) : 1;
     // Frame: outward is radial, axial is the ring's own normal.
     for (let j = 0; j <= sides; j++) {
       const b = (j / sides) * Math.PI * 2;
       const cb = Math.cos(b);
       const sb = Math.sin(b);
-      const r = Math.sign(cb) * Math.pow(Math.abs(cb), n) * halfRadial;
-      const z = Math.sign(sb) * Math.pow(Math.abs(sb), n) * halfAxial;
+      const r = Math.sign(cb) * Math.pow(Math.abs(cb), n) * halfRadial * taper;
+      const z = Math.sign(sb) * Math.pow(Math.abs(sb), n) * halfAxial * taper;
       const rr = radius + r;
       positions.push(ca * rr, sa * rr, z);
-      uvs.push(i / segments, j / sides);
+      uvs.push(t, j / sides);
     }
   }
 
@@ -417,6 +424,102 @@ export class Terminus {
     this.hullMat.dispose();
     this.lightMat.dispose();
     this.bandMat.dispose();
+  }
+}
+
+export interface ShelfSpanOptions {
+  lighting: LightingUniforms;
+  /** World position of the fragment's centre. */
+  position: THREE.Vector3;
+  seed: number;
+}
+
+/**
+ * THE BROKEN SPAN — a nine-kilometre fragment of a ring far older than the terminus, hanging
+ * across the middle of the route.
+ *
+ * It exists for one reason: scale. A sector of rocks and gates has no object of known enormous
+ * size, so a 200 m boulder at 400 m and a 2 km wreck at 4 km look identical. One landmark that
+ * is unmistakably kilometres long, that the player flies *past* rather than through, calibrates
+ * every other distance in the frame.
+ */
+export class ShelfSpan {
+  readonly object = new THREE.Group();
+  private readonly material: THREE.ShaderMaterial;
+  private readonly geometries: THREE.BufferGeometry[] = [];
+  private readonly spin: number;
+
+  constructor(options: ShelfSpanOptions) {
+    const rng = new Rng(options.seed);
+    this.spin = rng.signed(0.0016);
+
+    this.material = new THREE.ShaderMaterial({
+      uniforms: withLighting(options.lighting, {
+        uCameraPos: { value: new THREE.Vector3() },
+        uBase: { value: new THREE.Color(0x3b3a36) },
+        uAccent: { value: new THREE.Color(0x77706a) },
+        uWindow: { value: new THREE.Color(0xff9a55).multiplyScalar(0.5) },
+        uWindowDensity: { value: 0.06 },
+        uTime: { value: 0 },
+      }),
+      vertexShader: STRUCTURE_VERT,
+      fragmentShader: STRUCTURE_FRAG,
+    });
+
+    const radius = 12_000;
+    const arc = 0.78;
+    const main = buildRingHull(radius, 260, 420, 96, 14, 4.2, arc);
+    this.geometries.push(main);
+    this.object.add(new THREE.Mesh(main, this.material));
+
+    // An inner rail and a scatter of ribs give the fragment internal structure, so it reads as
+    // engineered wreckage instead of a bent pipe.
+    const rail = buildRingHull(radius - 520, 90, 150, 96, 10, 3.4, arc * 0.92);
+    this.geometries.push(rail);
+    const railMesh = new THREE.Mesh(rail, this.material);
+    railMesh.rotation.z = arc * 0.04;
+    this.object.add(railMesh);
+
+    const ribGeo = new THREE.BoxGeometry(620, 180, 700);
+    this.geometries.push(ribGeo);
+    const ribCount = 26;
+    const ribs = new THREE.InstancedMesh(ribGeo, this.material, ribCount);
+    const matrix = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scale = new THREE.Vector3(1, 1, 1);
+    for (let i = 0; i < ribCount; i++) {
+      const a = (i / (ribCount - 1)) * arc;
+      const r = radius - 260 + rng.signed(120);
+      pos.set(Math.cos(a) * r, Math.sin(a) * r, rng.signed(260));
+      quat.setFromEuler(new THREE.Euler(rng.signed(0.2), rng.signed(0.2), a));
+      scale.setScalar(rng.range(0.6, 1.5));
+      matrix.compose(pos, quat, scale);
+      ribs.setMatrixAt(i, matrix);
+    }
+    ribs.instanceMatrix.needsUpdate = true;
+    this.object.add(ribs);
+
+    // Recentre the arc on its own midpoint so `position` means what it says.
+    const mid = arc * 0.5;
+    this.object.children.forEach((child) => {
+      child.position.x -= Math.cos(mid) * radius;
+      child.position.y -= Math.sin(mid) * radius;
+    });
+
+    this.object.position.copy(options.position);
+    this.object.rotation.set(rng.range(-0.4, 0.4), rng.range(0, Math.PI * 2), rng.range(-0.5, 0.5));
+  }
+
+  update(time: number, cameraPosition: THREE.Vector3): void {
+    this.material.uniforms.uTime.value = time;
+    this.material.uniforms.uCameraPos.value.copy(cameraPosition);
+    this.object.rotation.z += this.spin * 0.016;
+  }
+
+  dispose(): void {
+    for (const g of this.geometries) g.dispose();
+    this.material.dispose();
   }
 }
 

@@ -11,7 +11,7 @@ import { bakeNebula } from '../render/Nebula.ts';
 import { AsteroidField } from '../render/Asteroids.ts';
 import { DustField } from '../render/Dust.ts';
 import { Trail } from '../render/Trail.ts';
-import { DerelictField, Terminus } from '../render/Structures.ts';
+import { DerelictField, ShelfSpan, Terminus } from '../render/Structures.ts';
 import { createLightingUniforms } from '../render/lighting.ts';
 import { Input, type FlightCommand } from '../core/Input.ts';
 import {
@@ -105,6 +105,7 @@ export class Game {
   private readonly nebulaTarget: THREE.WebGLCubeRenderTarget;
   private readonly asteroids: AsteroidField;
   private readonly derelicts: DerelictField;
+  private readonly shelfSpan: ShelfSpan;
   private readonly dust: DustField;
   private readonly terminus: Terminus;
   private readonly course: Course;
@@ -265,6 +266,20 @@ export class Game {
       count: 14,
     });
     this.mainScene.add(this.derelicts.object);
+
+    // Placed just off the middle of the route, so the player passes it broadside at the point
+    // where the legs are longest and the frame would otherwise be emptiest.
+    const spanAnchor = this.course.spine[Math.floor(this.course.spine.length * 0.52)];
+    this.shelfSpan = new ShelfSpan({
+      lighting: this.lighting,
+      position: new THREE.Vector3(
+        spanAnchor.x + 4200,
+        spanAnchor.y - 1500,
+        spanAnchor.z + 1800,
+      ),
+      seed: seed ^ 0x5bd1,
+    });
+    this.mainScene.add(this.shelfSpan.object);
 
     this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
     this.mainScene.add(this.dust.object);
@@ -763,6 +778,7 @@ export class Game {
     const camPos = this.chase.camera.position;
     this.asteroids.update(dt, camPos);
     this.derelicts.update(this.clock, camPos);
+    this.shelfSpan.update(this.clock, camPos);
     this.terminus.update(this.clock, camPos, pixelScale);
     this.course.update3d(dt, this.clock, camPos, pixelScale);
 
@@ -1309,6 +1325,7 @@ export class Game {
     this.nebulaTarget.dispose();
     this.asteroids.dispose();
     this.derelicts.dispose();
+    this.shelfSpan.dispose();
     this.dust.dispose();
     this.terminus.dispose();
     this.course.dispose();
