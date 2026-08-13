@@ -110,6 +110,7 @@ export class Overlay {
         this.paused = false;
         host.quitToTitle();
       },
+      pause: () => host.pause(),
       setSetting: (key, value) => host.setSetting(key, value),
       getSettings: () => host.getSettings(),
     };
@@ -167,6 +168,7 @@ export class Overlay {
     if (!locked && this.phase === 'flying' && !this.paused) {
       this.paused = true;
       this.applyView();
+      this.host.pause();
     }
   }
 
@@ -254,6 +256,7 @@ export class Overlay {
           ev.preventDefault();
           this.paused = true;
           this.applyView();
+          this.host.pause();
           this.emitSound('back');
         }
         return;

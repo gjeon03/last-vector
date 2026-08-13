@@ -10,10 +10,17 @@ import { Planet } from '../render/Planet.ts';
 import { bakeNebula } from '../render/Nebula.ts';
 import { AsteroidField } from '../render/Asteroids.ts';
 import { DustField } from '../render/Dust.ts';
+import { Trail } from '../render/Trail.ts';
 import { DerelictField, Terminus } from '../render/Structures.ts';
 import { createLightingUniforms } from '../render/lighting.ts';
 import { Input, type FlightCommand } from '../core/Input.ts';
-import { SettingsStore, readBestTime, writeBestTime, type QualityProfile } from '../core/Settings.ts';
+import {
+  SettingsStore,
+  qualityProfile,
+  readBestTime,
+  writeBestTime,
+  type QualityProfile,
+} from '../core/Settings.ts';
 import { AudioEngine } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
 import { FICTION, FLIGHT, SCALE } from '../core/art.ts';
@@ -105,6 +112,7 @@ export class Game {
   private readonly shipModel: ShipModel;
   private readonly shipRoot = new THREE.Group();
   private readonly shipMeshHolder = new THREE.Group();
+  private readonly trails: Trail[] = [];
 
   private phase: Phase = 'boot';
   private elapsed = 0;
@@ -136,6 +144,16 @@ export class Game {
   private fpsAccumulator = 0;
   private fpsFrames = 0;
 
+  /**
+   * Adaptive resolution. The internal buffer is scaled to hold the frame budget while the
+   * canvas stays at native size — the only honest way to promise a smooth frame on hardware
+   * you cannot see. The player's renderScale setting is the *ceiling*, not the value.
+   */
+  private dynamicScale = 1;
+  private adaptAccumulator = 0;
+  private adaptFrames = 0;
+  private adaptCooldown = 0;
+
   private readonly telemetry: Telemetry;
   private calloutId = 0;
   private logId = 0;
@@ -156,6 +174,7 @@ export class Game {
 
   constructor(options: GameOptions) {
     const seed = options.seed ?? hashSeed('cairn-drift-01');
+    this.seed = seed;
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'lv-canvas';
@@ -193,7 +212,10 @@ export class Game {
     this.nebulaTarget = nebula.target;
     this.farScene.background = nebula.texture;
 
-    this.starfield = new Starfield(profile.starCount, 90, seed ^ 0x51ed);
+    // Populations are always allocated at the highest quality and trimmed per setting, so a
+    // change in the menu takes effect on the next frame rather than on the next reload.
+    const maxProfile = qualityProfile('ultra');
+    this.starfield = new Starfield(maxProfile.starCount, 90, seed ^ 0x51ed);
     this.farScene.add(this.starfield.object);
 
     this.star = new Star(60, Math.atan(SCALE.starRadius / SCALE.starDistance), sunDir);
@@ -221,7 +243,7 @@ export class Game {
     this.mainScene.add(this.terminus.object);
 
     this.asteroids = new AsteroidField({
-      count: profile.asteroidCount,
+      count: maxProfile.asteroidCount,
       lighting: this.lighting,
       spine: this.course.spine,
       spread: SCALE.asteroidFieldRadius,
@@ -240,7 +262,7 @@ export class Game {
     });
     this.mainScene.add(this.derelicts.object);
 
-    this.dust = new DustField(profile.dustCount, 1100, seed ^ 0x99ab);
+    this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
     this.mainScene.add(this.dust.object);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
@@ -248,9 +270,21 @@ export class Game {
     this.shipRoot.add(this.shipMeshHolder);
     this.mainScene.add(this.shipRoot);
 
+    // Trails live in world space rather than under the ship, because the whole point of them
+    // is that they stay where the ship *was*.
+    for (let i = 0; i < this.shipModel.nozzles.length; i++) {
+      const trail = new Trail({
+        capacity: 56,
+        width: 0.3,
+        nearColor: new THREE.Color(0xbfeaff),
+        farColor: new THREE.Color(0x2f6cff),
+      });
+      this.trails.push(trail);
+      this.mainScene.add(trail.object);
+    }
+
     // --- input, ui, audio -------------------------------------------------------------
     this.input = new Input(this.canvas);
-    this.input.onPause = () => this.togglePause();
     this.input.onLockChange = (locked) => this.overlay.setPointerLocked(locked);
     this.input.onAction = (action) => {
       if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
@@ -260,6 +294,7 @@ export class Game {
     this.overlay = new Overlay(options.root, {
       start: () => this.beginRun(),
       restart: () => this.restart(),
+      pause: () => this.pause(),
       resume: () => this.resume(),
       quitToTitle: () => this.toTitle(),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
@@ -292,6 +327,7 @@ export class Game {
 
     this.settings.subscribe((s) => this.onSettingsChanged(s));
     this.onSettingsChanged(this.settings.value);
+    this.applyQualityPopulations();
 
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('error', this.handleError);
@@ -365,6 +401,7 @@ export class Game {
     this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
+    for (const trail of this.trails) trail.reset();
   }
 
   private setPhase(phase: Phase): void {
@@ -404,11 +441,27 @@ export class Game {
     this.beginRun();
   }
 
+  /**
+   * Pause is requested by the interface layer, which is the only component that knows whether
+   * a menu is open. Both methods are idempotent because pointer-lock loss and the Escape key
+   * can legitimately arrive in the same frame.
+   */
+  pause(): void {
+    if (this.paused || this.phase !== 'flying') return;
+    this.paused = true;
+    this.input.releaseLock();
+    this.audio.suspend();
+  }
+
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
     this.audio.resume();
     if (this.phase === 'flying') this.input.requestLock();
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
   }
 
   toTitle(): void {
@@ -422,25 +475,6 @@ export class Game {
     this.activeVantage = this.vantages[0];
     this.input.releaseLock();
     this.setPhase('title');
-  }
-
-  private togglePause(): void {
-    if (this.phase === 'title' || this.phase === 'briefing') return;
-    if (this.phase === 'finished') {
-      this.toTitle();
-      return;
-    }
-    this.paused = !this.paused;
-    if (this.paused) {
-      this.input.releaseLock();
-      this.audio.suspend();
-      this.overlay.setPhase('briefing');
-      this.overlay.setPhase(this.phase);
-    } else {
-      this.audio.resume();
-      this.input.requestLock();
-    }
-    this.overlay.setPointerLocked(this.input.pointerLocked && !this.paused);
   }
 
   // ---------------------------------------------------------------------------------
@@ -461,6 +495,7 @@ export class Game {
       this.fpsAccumulator = 0;
       this.fpsFrames = 0;
     }
+    if (!this.driven) this.adaptResolution(rawDt);
     if (this.frameTimes.length < 6000) this.frameTimes.push(rawDt * 1000);
 
     if (!this.paused) this.simulate(dt);
@@ -472,6 +507,37 @@ export class Game {
       this.firstFrameResolve = null;
       resolve();
     }
+  }
+
+  /**
+   * Moves the internal resolution toward the frame budget. Deliberately slow and asymmetric:
+   * it drops quickly when the frame is over budget and creeps back up when there is comfort,
+   * so a single hitch never causes a visible resolution oscillation.
+   */
+  private adaptResolution(rawDt: number): void {
+    this.adaptAccumulator += rawDt;
+    this.adaptFrames++;
+    this.adaptCooldown -= rawDt;
+    if (this.adaptFrames < 20 || this.adaptCooldown > 0) return;
+
+    const meanMs = (this.adaptAccumulator / this.adaptFrames) * 1000;
+    this.adaptAccumulator = 0;
+    this.adaptFrames = 0;
+
+    const ceiling = this.settings.value.renderScale;
+    const floor = 0.58;
+    const before = this.dynamicScale;
+
+    // 16.7 ms budget with a little headroom either side of the deadband.
+    if (meanMs > 18.5) {
+      this.dynamicScale = Math.max(floor, this.dynamicScale - (meanMs > 26 ? 0.12 : 0.06));
+      this.adaptCooldown = 0.35;
+    } else if (meanMs < 13.8 && this.dynamicScale < ceiling) {
+      this.dynamicScale = Math.min(ceiling, this.dynamicScale + 0.04);
+      this.adaptCooldown = 0.9;
+    }
+
+    if (Math.abs(this.dynamicScale - before) > 0.001) this.handleResize();
   }
 
   private simulate(dt: number): void {
@@ -701,8 +767,8 @@ export class Game {
     const stretch = 0.003 + speed01 * 0.01 + boostBlend * 0.028;
     // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
     // wall of streaks under boost, which is where the cue is actually wanted.
-    const dustOpacity = 0.02 + speed01 * speed01 * 0.2 + boostBlend * 0.24;
-    this.dust.update(this.ship.position, this.ship.velocity, stretch, dustOpacity);
+    const dustOpacity = 0.05 + speed01 * speed01 * 0.24 + boostBlend * 0.3;
+    this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
 
     this.shipModel.update(
       this.clock,
@@ -711,6 +777,16 @@ export class Game {
       boostBlend,
       1 - this.ship.hull,
     );
+
+    const trailIntensity =
+      clamp01(this.ship.throttleSmoothed * 0.5 + boostBlend * 0.55) * clamp01(speed01 * 3.2);
+    for (let i = 0; i < this.trails.length; i++) {
+      this.tmpA
+        .copy(this.shipModel.nozzles[i].position)
+        .applyQuaternion(this.ship.quaternion)
+        .add(this.ship.position);
+      this.trails[i].update(this.tmpA, camPos, trailIntensity, 1 + boostBlend * 1.6);
+    }
     this.shipModel.setVisible(!this.cinematic || this.activeVantage !== null || this.phase !== 'boot');
 
     this.updateGrade(dt, speed01, boostBlend);
@@ -862,6 +938,10 @@ export class Game {
 
   private render(): void {
     const renderer = this.renderer;
+    // three resets info at every render() call by default, so reading it afterwards reports
+    // only the final fullscreen composite. Reset once here and read the aggregate instead.
+    renderer.info.autoReset = false;
+    renderer.info.reset();
     renderer.setRenderTarget(this.post.sceneTarget);
     renderer.clear(true, true, true);
     renderer.render(this.farScene, this.farCamera);
@@ -947,14 +1027,25 @@ export class Game {
       grain: s.filmGrain,
       chromaticAberration: s.chromaticAberration,
     });
+    this.applyQualityPopulations();
     this.handleResize();
+  }
+
+  /** Trims drawn populations to the current quality level. Cheap and immediate. */
+  private applyQualityPopulations(): void {
+    const profile = this.settings.profile;
+    const max = qualityProfile('ultra');
+    this.starfield.setVisibleCount(profile.starCount);
+    this.dust.setVisibleCount(profile.dustCount);
+    this.asteroids.setVisibleFraction(profile.asteroidCount / max.asteroidCount);
   }
 
   private readonly handleResize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = this.settings.value.renderScale;
+    this.dynamicScale = Math.min(this.dynamicScale, this.settings.value.renderScale);
+    const scale = this.dynamicScale;
     const bufferWidth = Math.max(320, Math.round(width * dpr * scale));
     const bufferHeight = Math.max(240, Math.round(height * dpr * scale));
 
@@ -1037,6 +1128,7 @@ export class Game {
     this.course.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
     this.ship.reset(this.tmpA, this.tmpQuat, FLIGHT.cruiseSpeed);
     this.chase.snapTo(this.ship);
+    for (const trail of this.trails) trail.reset();
     // Re-arm the course so gate state matches where the ship actually is.
     this.course.reset();
     const index = Math.min(this.course.gates.length - 1, Math.floor(clamp01(t) * this.course.gates.length));
@@ -1136,6 +1228,9 @@ export class Game {
       programs: info.programs?.length ?? 0,
       geometries: info.memory.geometries,
       textures: info.memory.textures,
+      renderScale: this.dynamicScale,
+      drawingBufferWidth: this.renderer.domElement.width,
+      drawingBufferHeight: this.renderer.domElement.height,
     };
   }
 
@@ -1159,8 +1254,12 @@ export class Game {
     this.terminus.dispose();
     this.course.dispose();
     this.shipModel.dispose();
+    for (const trail of this.trails) trail.dispose();
     this.renderer.dispose();
   }
+
+  /** The seed the world was actually generated from, for reproducible reports. */
+  readonly seed: number;
 
   get qualityProfile(): QualityProfile {
     return this.settings.profile;

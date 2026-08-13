@@ -77,8 +77,10 @@ function blackBody(kelvin: number, out: THREE.Color): THREE.Color {
 export class Starfield {
   readonly object: THREE.Points;
   private readonly material: THREE.ShaderMaterial;
+  private readonly capacity: number;
 
   constructor(count: number, radius: number, seed = 1337) {
+    this.capacity = count;
     const rng = new Rng(seed);
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
@@ -147,6 +149,12 @@ export class Starfield {
     this.object = new THREE.Points(geometry, this.material);
     this.object.frustumCulled = false;
     this.object.renderOrder = -100;
+  }
+
+  /** Quality scaling: stars are allocated once and the draw range is trimmed. */
+  setVisibleCount(count: number): void {
+    const n = Math.max(1, Math.min(this.capacity, Math.floor(count)));
+    this.object.geometry.setDrawRange(0, n);
   }
 
   /** Point size is in device pixels, so it has to track the drawing-buffer height. */

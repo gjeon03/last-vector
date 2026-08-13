@@ -61,7 +61,6 @@ export class Input {
   private gamepadIndex: number | null = null;
   private disposed = false;
 
-  onPause: (() => void) | null = null;
   onLockChange: ((locked: boolean) => void) | null = null;
   onAction: ((action: 'restart' | 'view' | 'match') => void) | null = null;
 
@@ -221,14 +220,8 @@ export class Input {
       if (e.code === 'Space') e.preventDefault();
       return;
     }
-    if (e.code === 'Escape') {
-      this.onPause?.();
-      return;
-    }
-    if (e.code === 'KeyP') {
-      this.onPause?.();
-      return;
-    }
+    // Escape is deliberately NOT handled here. The interface layer owns pause; two owners
+    // means two flags, and two flags means the timer can run behind a PAUSED screen.
     if (e.code === 'KeyT') this.onAction?.('match');
     if (e.code === 'KeyV') this.onAction?.('view');
     if (e.code === 'KeyN') this.onAction?.('restart');

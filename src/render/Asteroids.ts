@@ -46,9 +46,14 @@ const ASTEROID_FRAG = /* glsl */ `
 
   void main() {
     vec3 N = normalize(vNormal);
-    vec3 V = normalize(uCameraPos - vWorldPos);
+    vec3 toEye = uCameraPos - vWorldPos;
+    float dist = length(toEye);
+    vec3 V = toEye / max(dist, 1e-4);
 
-    float h = fbm(vWorldPos * uDetailScale, 3);
+    // Surface detail is a near-field affordance. Past a few hundred metres a rock covers a
+    // handful of pixels, so the octave count drops and the whole vein pass is skipped.
+    int detailOctaves = dist < 900.0 ? 3 : (dist < 3000.0 ? 2 : 1);
+    float h = fbm(vWorldPos * uDetailScale, detailOctaves);
 
     // Gradient of the height field straight from screen-space derivatives. One noise tap.
     vec3 dpdx = dFdx(vWorldPos);
@@ -69,14 +74,14 @@ const ASTEROID_FRAG = /* glsl */ `
 
     // Mineral veins glow faintly, and only deep inside cracks. Kept sparse: it is an accent,
     // and at field density anything brighter turns the shelf into fairy lights.
-    float vein = smoothstep(0.66, 0.86, fbm(vWorldPos * uDetailScale * 0.34 + 11.0, 4));
-    vein *= 1.0 - smoothstep(0.15, 0.55, cavity);
-    // Veins are a close-range detail. Beyond a few hundred metres a rock is a handful of
-    // pixels and an emissive vein becomes a coloured speck floating in the sky.
-    vein *= 1.0 - smoothstep(400.0, 1600.0, length(uCameraPos - vWorldPos));
-    color += uMineral * vein * 0.3;
+    if (dist < 1600.0) {
+      float vein = smoothstep(0.66, 0.86, fbm(vWorldPos * uDetailScale * 0.34 + 11.0, 3));
+      vein *= 1.0 - smoothstep(0.15, 0.55, cavity);
+      vein *= 1.0 - smoothstep(400.0, 1600.0, dist);
+      color += uMineral * vein * 0.3;
+    }
 
-    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
+    gl_FragColor = vec4(applyHaze(color, dist), 1.0);
   }
 `;
 
@@ -197,7 +202,7 @@ export class AsteroidField {
     const VARIANTS = 8;
     for (let v = 0; v < VARIANTS; v++) {
       // Bigger rocks get more geometric detail; small ones never fill enough pixels to matter.
-      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), v < 4 ? 5 : 4));
+      this.variantGeometries.push(buildAsteroidGeometry(rng.fork(v), v < 3 ? 4 : 3));
     }
 
     const perVariant: AsteroidInstance[][] = Array.from({ length: VARIANTS }, () => []);
@@ -291,6 +296,18 @@ export class AsteroidField {
   }
 
   private readonly spinScratch = new THREE.Quaternion();
+
+  /**
+   * Quality scales the *drawn* population rather than rebuilding the field. Instances are
+   * always allocated at the highest count, so switching quality in the menu takes effect on
+   * the very next frame instead of silently doing nothing until reload.
+   */
+  setVisibleFraction(fraction: number): void {
+    const f = Math.max(0, Math.min(1, fraction));
+    for (const batch of this.batches) {
+      batch.mesh.count = Math.max(1, Math.round(batch.instances.length * f));
+    }
+  }
 
   dispose(): void {
     for (const batch of this.batches) batch.mesh.dispose();

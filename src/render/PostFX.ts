@@ -16,7 +16,7 @@ import { clamp01 } from '../core/mathx.ts';
  * like white paint.
  */
 
-const BLOOM_MIPS = 6;
+const BLOOM_MIPS = 5;
 
 const PREFILTER_FRAG = /* glsl */ `
   precision highp float;

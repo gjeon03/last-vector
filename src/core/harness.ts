@@ -41,6 +41,13 @@ export interface PerfSample {
   programs: number;
   geometries: number;
   textures: number;
+  /**
+   * Effective internal render scale during the sample. Adaptive resolution moves this to hold
+   * the frame budget, so an fps number is only meaningful alongside it.
+   */
+  renderScale: number;
+  drawingBufferWidth: number;
+  drawingBufferHeight: number;
 }
 
 /** Read-only physical state, so a driver can prove six-axis motion without game internals. */
@@ -66,10 +73,16 @@ export interface GatePassRecord {
 
 export interface HarnessApi {
   readonly version: string;
+  /**
+   * The seed the loaded world was generated from. The course is built once at boot, so the
+   * seed cannot be changed at runtime — load `?seed=<uint32>` to select a different one.
+   * Reporting it here is what makes a failing run reproducible.
+   */
+  readonly seed: number;
   /** Resolves once the first frame has been presented. */
   ready(): Promise<void>;
   /** Skip menus and begin a run immediately. */
-  startRun(options?: { seed?: number; skipIntro?: boolean }): void;
+  startRun(options?: { skipIntro?: boolean }): void;
   /** Latest telemetry snapshot. */
   telemetry(): Telemetry;
   phase(): Phase;
@@ -88,7 +101,16 @@ export interface HarnessApi {
   vantage(name: string): void;
   /** Names accepted by `vantage`. */
   vantages(): string[];
-  /** Advance the simulation by a fixed step count without waiting on rAF. */
+  /**
+   * Takes frame pacing away from requestAnimationFrame so the caller drives the simulation.
+   * While driven, the rAF loop renders nothing and advances nothing.
+   */
+  setDriven(driven: boolean): void;
+  /**
+   * Advance the simulation by exactly `frames` steps of `dt`. Implies `setDriven(true)` and
+   * leaves it enabled, so elapsed time advances by exactly `frames * dt` and not one frame
+   * more. Call `setDriven(false)` to hand pacing back.
+   */
   step(frames: number, dt?: number): Promise<void>;
   /** Renders one frame and resolves after it has been presented. */
   present(): Promise<void>;

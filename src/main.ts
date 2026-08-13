@@ -76,9 +76,15 @@ async function boot(): Promise<void> {
   loader.setProgress(0.15, 'charting the drift');
   await nextPaint();
 
+  // A seed can be pinned from the URL so a failing headless run is reproducible. The world
+  // is generated once at construction, which is why this is a boot-time input, not a method.
+  const seedParam = new URLSearchParams(window.location.search).get('seed');
+  const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
+
   let game: Game;
   try {
-    game = new Game({ root: root! });
+    game = new Game(seed === undefined ? { root: root! } : { root: root!, seed });
   } catch (error) {
     fail('FAILED TO LAUNCH', String(error instanceof Error ? error.message : error));
     return;
@@ -108,11 +114,9 @@ function installHarness(game: Game): void {
 
   const api: HarnessApi = {
     version: '1.0.0',
+    seed: game.seed,
     ready: () => game.ready(),
-    startRun: (options) => {
-      if (options?.skipIntro !== false) game.beginRun();
-      else game.beginRun();
-    },
+    startRun: () => game.beginRun(),
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
@@ -121,14 +125,22 @@ function installHarness(game: Game): void {
     seekCourse: (t) => game.seekCourse(t),
     vantage: (name) => game.setVantage(name),
     vantages: () => game.vantageNames(),
+    setDriven: (driven: boolean) => {
+      game.setDriven(driven);
+      if (!driven) game.setFixedTimestep(null);
+    },
     step: async (frames, dt = 1 / 60) => {
+      // Driven mode stays on for the whole call *and* afterwards: releasing it before the
+      // await lets the rAF loop sneak in an extra simulated frame, which silently corrupts
+      // any measurement that assumes elapsed === frames * dt.
       game.setDriven(true);
       game.setFixedTimestep(dt);
       for (let i = 0; i < frames; i++) game.frame(dt);
-      game.setDriven(false);
-      await waitFrames(1);
+      await Promise.resolve();
     },
     present: async () => {
+      // Safe in either mode: while driven the rAF loop advances nothing, so this only waits
+      // for the compositor to show what the last step already rendered.
       await waitFrames(2);
     },
     pose: () => game.getPose(),

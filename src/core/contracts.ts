@@ -101,6 +101,12 @@ export interface RunResult {
 export interface HudHost {
   start(): void;
   restart(): void;
+  /**
+   * The interface layer is the single owner of "a menu is showing", because only it knows
+   * about sub-views. It therefore drives the simulation's pause state rather than the two
+   * sides each keeping their own flag — which is exactly how they drifted apart.
+   */
+  pause(): void;
   resume(): void;
   quitToTitle(): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
