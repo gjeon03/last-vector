@@ -105,6 +105,50 @@ async function runPlaytest({ report, session, options }) {
     verify(typeof evidence.result.destinationName === 'string' && evidence.result.destinationName.trim().length > 0, 'Run result has no destination name.', evidence);
     return evidence;
   });
+
+  // Regression guard. The overdrive latch has failed twice in two different ways: it re-lit
+  // for a fraction of a second every two seconds at a 20% re-arm level, and before that it
+  // re-lit for a single frame whenever regeneration crossed a hair above empty. Both read as a
+  // fault rather than a resource, and neither is visible in a screenshot or a completion time.
+  const boostOutcome = await report.check({
+    id: 'FEEL.boost-latch',
+    name: 'Overdrive latches cleanly instead of stuttering',
+    criteria: [criterion('M2', 'partial', 'Covers the boost resource state machine, which no other check exercises.')],
+    assertion:
+      'With boost held continuously for 24 simulated seconds, the drive produces a small number of '
+      + 'sustained bursts (each at least 0.6 s) rather than many short re-ignitions, and the reserve '
+      + 'never sits pinned just above empty while the key is down.',
+  }, async () => {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'step', [240, 1 / 60]);
+    await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
+
+    const samples = [];
+    for (let i = 0; i < 120; i += 1) {
+      await callHarness(page, 'step', [12, 1 / 60]);
+      const telemetry = await callHarness(page, 'telemetry');
+      samples.push({ energy: telemetry.energy, boosting: telemetry.boosting });
+    }
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setDriven', [false]);
+
+    const bursts = [];
+    let run = 0;
+    for (const sample of samples) {
+      if (sample.boosting) run += 1;
+      else if (run > 0) { bursts.push(run * 0.2); run = 0; }
+    }
+    if (run > 0) bursts.push(run * 0.2);
+
+    const evidence = { samples: samples.length, bursts, shortest: bursts.length ? Math.min(...bursts) : null };
+    verify(bursts.length > 0, 'Boost never engaged while the key was held.', evidence);
+    verify(bursts.length <= 8, `Boost re-ignited ${bursts.length} times in 24 s; the latch is stuttering.`, evidence);
+    verify(bursts.every((d) => d >= 0.6), `Shortest boost burst was ${evidence.shortest} s; bursts under 0.6 s read as a fault.`, evidence);
+    return evidence;
+  });
+  void boostOutcome;
 }
 
 async function collectInputEvidence(page, options) {

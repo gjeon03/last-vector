@@ -4,3 +4,6 @@ dist/
 .omc/
 .agent-relay/
 playtest-out/
+
+# ad-hoc diagnostic probes kept out of the tree; the durable checks live in scripts/playtest
+.lv-*.mjs
