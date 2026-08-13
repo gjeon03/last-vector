@@ -5,6 +5,8 @@ import { Rng } from '../core/rng.ts';
 import { SCALE } from '../core/art.ts';
 import { clamp01 } from '../core/mathx.ts';
 
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
 /**
  * The course through THE CAIRN DRIFT.
  *
@@ -71,6 +73,8 @@ export class Course {
   private readonly scratchA = new THREE.Vector3();
   private readonly scratchB = new THREE.Vector3();
   private readonly crossing = new THREE.Vector3();
+  private readonly scratchC = new THREE.Vector3();
+  private readonly poseMatrix = new THREE.Matrix4();
 
   onPass: ((event: CoursePassEvent) => void) | null = null;
   onMiss: ((gate: Gate) => void) | null = null;
@@ -282,12 +286,10 @@ export class Course {
     const clamped = clamp01(t);
     this.curve.getPointAt(clamped, position);
     this.curve.getTangentAt(clamped, this.scratchB).normalize();
-    const m = new THREE.Matrix4().lookAt(
-      this.scratchA.set(0, 0, 0),
-      this.scratchB.clone().negate(),
-      new THREE.Vector3(0, 1, 0),
-    );
-    quaternion.setFromRotationMatrix(m);
+    this.scratchA.set(0, 0, 0);
+    this.scratchC.copy(this.scratchB).negate();
+    this.poseMatrix.lookAt(this.scratchA, this.scratchC, WORLD_UP);
+    quaternion.setFromRotationMatrix(this.poseMatrix);
   }
 
   update3d(dt: number, time: number, cameraPosition: THREE.Vector3, pixelScale: number): void {

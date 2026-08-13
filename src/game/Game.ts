@@ -163,6 +163,7 @@ export class Game {
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+  private readonly scratchEuler = new THREE.Euler();
   private readonly sunScreen = new THREE.Vector2(0.5, 0.5);
   private readonly blurCentre = new THREE.Vector2(0.5, 0.5);
   private readonly grade: GradeParams;
@@ -867,35 +868,42 @@ export class Game {
     target.fade = this.fade;
   }
 
+  /** Never hand a non-finite number to the interface layer: canvas APIs throw on them. */
+  private static num(value: number, fallback = 0): number {
+    return Number.isFinite(value) ? value : fallback;
+  }
+
   private updateTelemetry(dt: number): void {
     const t = this.telemetry;
+    const num = Game.num;
     t.phase = this.phase;
-    t.speed = this.ship.speed;
-    t.throttle = this.ship.throttleSmoothed;
+    t.speed = num(this.ship.speed);
+    t.throttle = num(this.ship.throttleSmoothed);
     t.boosting = this.ship.boosting;
-    t.energy = this.ship.energy01;
-    t.hull = this.ship.hull;
-    t.gLoad = this.ship.gForce;
-    t.elapsed = this.elapsed;
-    t.proximity = this.proximity;
-    t.fps = this.fps;
-    t.courseRemaining = this.course.remainingDistance(this.ship.position);
+    t.energy = num(this.ship.energy01);
+    t.hull = num(this.ship.hull, 1);
+    t.gLoad = num(this.ship.gForce);
+    t.elapsed = num(this.elapsed);
+    t.proximity = num(this.proximity);
+    t.fps = num(this.fps, 60);
+    t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
 
-    const euler = new THREE.Euler().setFromQuaternion(this.ship.quaternion, 'ZYX');
-    t.roll = euler.z;
-    t.pitch = euler.x;
+    // Reused scratch: this runs 60 times a second and allocating an Euler here was measurable.
+    this.scratchEuler.setFromQuaternion(this.ship.quaternion, 'ZYX');
+    t.roll = num(this.scratchEuler.z);
+    t.pitch = num(this.scratchEuler.x);
 
     const gate = this.course.nextGate;
     const targetPosition = gate ? gate.position : this.terminus.position;
     t.gate.index = this.course.nextIndex;
     t.gate.total = this.course.gates.length;
     t.gate.name = gate ? gate.name : FICTION.destinationName;
-    t.gate.distance = this.ship.position.distanceTo(targetPosition);
+    t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
     this.tmpA.copy(targetPosition).project(this.chase.camera);
     const onScreen = this.tmpA.z > -1 && this.tmpA.z < 1 && Math.abs(this.tmpA.x) <= 1 && Math.abs(this.tmpA.y) <= 1;
-    t.gate.anchor.x = this.tmpA.x;
-    t.gate.anchor.y = this.tmpA.y;
+    t.gate.anchor.x = num(this.tmpA.x);
+    t.gate.anchor.y = num(this.tmpA.y);
     t.gate.anchor.onScreen = onScreen;
     t.gate.anchor.distance = t.gate.distance;
 
@@ -903,10 +911,10 @@ export class Game {
     // camera-space vector instead of the projected point.
     this.tmpB.copy(targetPosition).applyMatrix4(this.chase.camera.matrixWorldInverse);
     const sign = this.tmpB.z > 0 ? -1 : 1;
-    t.gate.anchor.angle = Math.atan2(this.tmpB.y * sign, this.tmpB.x * sign);
+    t.gate.anchor.angle = num(Math.atan2(this.tmpB.y * sign, this.tmpB.x * sign));
 
     this.ship.getForward(this.tmpC);
-    t.gate.alignment = gate ? gate.alignment(this.tmpC) : 1;
+    t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
 
     if (t.callout) {
       t.callout.ttl -= dt;

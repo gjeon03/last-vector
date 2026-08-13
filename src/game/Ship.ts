@@ -73,6 +73,17 @@ export class Ship {
   private readonly lateral = new THREE.Vector3();
   private readonly scratch = new THREE.Vector3();
   private readonly rotationDelta = new THREE.Quaternion();
+  private readonly rotationEuler = new THREE.Euler(0, 0, 0, 'XYZ');
+
+  /**
+   * Last state known to be entirely finite. A single non-finite value anywhere in the
+   * integration poisons position, orientation and every downstream consumer within one frame,
+   * and the interface layer is full of canvas calls that throw on NaN. Rather than sprinkle
+   * guards through the renderer, the simulation refuses to emit a broken state at all.
+   */
+  private readonly lastGoodPosition = new THREE.Vector3();
+  private readonly lastGoodQuaternion = new THREE.Quaternion();
+  private readonly lastGoodVelocity = new THREE.Vector3();
 
   reset(position: THREE.Vector3, quaternion: THREE.Quaternion, speed: number): void {
     this.position.copy(position);
@@ -91,6 +102,9 @@ export class Ship {
     this.smoothedThrottle = 0;
     this.gLoad = 0;
     this.shakeImpulse = 0;
+    this.lastGoodPosition.copy(this.position);
+    this.lastGoodQuaternion.copy(this.quaternion);
+    this.lastGoodVelocity.copy(this.velocity);
   }
 
   getForward(out: THREE.Vector3): THREE.Vector3 {
@@ -174,9 +188,13 @@ export class Ship {
     );
     this.angularVelocity.z = damp(this.angularVelocity.z, targetRoll, 0.13, dt);
 
-    this.rotationDelta.setFromEuler(
-      new THREE.Euler(this.angularVelocity.x * dt, this.angularVelocity.y * dt, this.angularVelocity.z * dt, 'XYZ'),
+    this.rotationEuler.set(
+      this.angularVelocity.x * dt,
+      this.angularVelocity.y * dt,
+      this.angularVelocity.z * dt,
+      'XYZ',
     );
+    this.rotationDelta.setFromEuler(this.rotationEuler);
     this.quaternion.multiply(this.rotationDelta).normalize();
     this.getForward(this.forward);
     this.right.set(1, 0, 0).applyQuaternion(this.quaternion);
@@ -223,6 +241,42 @@ export class Ship {
     this.lastVelocity.copy(this.velocity);
 
     this.shakeImpulse = damp(this.shakeImpulse, 0, 0.28, dt);
+    this.guardState();
+  }
+
+  private static finiteVector(v: THREE.Vector3): boolean {
+    return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+  }
+
+  /** Rolls back to the last finite state if the integration produced anything that is not. */
+  private guardState(): void {
+    const ok =
+      Ship.finiteVector(this.position) &&
+      Ship.finiteVector(this.velocity) &&
+      Ship.finiteVector(this.angularVelocity) &&
+      Number.isFinite(this.quaternion.x) &&
+      Number.isFinite(this.quaternion.y) &&
+      Number.isFinite(this.quaternion.z) &&
+      Number.isFinite(this.quaternion.w) &&
+      Number.isFinite(this.energy) &&
+      Number.isFinite(this.hull);
+
+    if (ok) {
+      this.lastGoodPosition.copy(this.position);
+      this.lastGoodQuaternion.copy(this.quaternion);
+      this.lastGoodVelocity.copy(this.velocity);
+      return;
+    }
+
+    this.position.copy(this.lastGoodPosition);
+    this.quaternion.copy(this.lastGoodQuaternion);
+    this.velocity.copy(this.lastGoodVelocity);
+    this.angularVelocity.set(0, 0, 0);
+    this.lastVelocity.copy(this.velocity);
+    if (!Number.isFinite(this.energy)) this.energy = FLIGHT.boostCapacity;
+    if (!Number.isFinite(this.hull)) this.hull = 1;
+    this.gLoad = 0;
+    this.smoothedThrottle = clamp01(this.smoothedThrottle) || 0;
   }
 
   /** Applies a collision response and returns the severity, 0..1. */
