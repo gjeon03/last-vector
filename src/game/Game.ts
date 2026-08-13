@@ -727,7 +727,8 @@ export class Game {
   }
 
   private updateProximity(dt: number): void {
-    this.damageFlash = damp(this.damageFlash, 0, 0.35, dt);
+    // Short: an impact should punch and clear, not linger over the next four seconds.
+    this.damageFlash = damp(this.damageFlash, 0, 0.16, dt);
     if (this.proximity > 0.72 && this.phase === 'flying') {
       if (Math.floor(this.clock * 3) !== Math.floor((this.clock - dt) * 3)) {
         this.audio.play('warnProximity', this.proximity);
@@ -952,7 +953,9 @@ export class Game {
     target.aberration = damp(target.aberration, speed01 * speed01 * 0.0035 + boost * 0.011, 0.2, dt);
     target.warp = damp(target.warp, boost * 0.15, 0.2, dt);
     target.vignette = damp(target.vignette, 0.42 + boost * 0.2 + this.proximity * 0.14, 0.3, dt);
-    target.damage = clamp01(this.damageFlash * 0.9 + (1 - this.ship.hull) * 0.12);
+    // The flash carries the event; the standing term is a whisper. A persistent tint
+    // proportional to accumulated damage means a scratched hull recolours the whole run.
+    target.damage = clamp01(this.damageFlash * 0.75 + (1 - this.ship.hull) * 0.05);
     target.exposure = damp(target.exposure, 1.3 - boost * 0.08, 0.5, dt);
     target.saturation = damp(target.saturation, 1.0 + boost * 0.05, 0.4, dt);
     target.bloomStrength = this.settings.profile.bloomStrength * (1 + boost * 0.22);

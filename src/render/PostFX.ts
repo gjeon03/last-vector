@@ -269,8 +269,14 @@ const COMPOSITE_FRAG = /* glsl */ `
     float vig = smoothstep(1.15, 0.62, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
     color *= mix(1.0, vig, uVignette);
     if (uDamage > 0.001) {
-      float edge = smoothstep(0.28, 0.85, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
-      color += vec3(0.85, 0.06, 0.12) * edge * uDamage;
+      // A damage flash is a RIM, not a wash. Starting at 28% of the way to the corner it
+      // covered most of the frame, and at a 14:1:2 ratio it dyed the entire image rose — for
+      // several seconds after every glancing contact, and permanently at low hull. It was
+      // strong enough that I twice mistook it for a palette defect in the nebula.
+      float r = length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0));
+      float edge = smoothstep(0.68, 1.15, r);
+      // Less saturated: a warning the pilot reads at the edge of vision, not a colour cast.
+      color += vec3(0.62, 0.10, 0.11) * edge * uDamage;
     }
 
     color = clamp(color, 0.0, 1.0);
