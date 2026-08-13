@@ -12,6 +12,7 @@
     "serve:dist": "node scripts/static-server.mjs"
   },
   "devDependencies": {
+    "@types/three": "0.172.0",
     "typescript": "^5.7.3",
     "vite": "^6.0.11"
   },

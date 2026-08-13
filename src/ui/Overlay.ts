@@ -1,0 +1,271 @@
+/**
+ * Root of the interface layer. Owns the DOM tree, the phase -> screen mapping, global
+ * keyboard routing, and the pause state (which the Phase contract does not model).
+ *
+ * The game only ever talks to this class. Everything below it is private.
+ */
+
+import './styles.css';
+
+import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
+import { FONT, UI } from '../core/art.ts';
+import { Hud, el } from './Hud.ts';
+import { Screens, type ScreenView, type UiSound } from './Screens.ts';
+
+/** Views that are reachable from more than one place and therefore need a return target. */
+const SUB_VIEWS: readonly ScreenView[] = ['settings', 'controls'];
+
+export class Overlay {
+  private readonly root: HTMLElement;
+  private readonly hud: Hud;
+  private readonly screens: Screens;
+  private readonly host: HudHost;
+  private readonly grain: HTMLElement;
+
+  private phase: Phase = 'boot';
+  private paused = false;
+  private returnTo: ScreenView = 'title';
+  private pointerLocked = false;
+  private showFps = false;
+  private countdown: number | null = null;
+  private disposed = false;
+  private resizeObserver: ResizeObserver | null = null;
+
+  constructor(rootEl: HTMLElement, host: HudHost) {
+    this.host = host;
+
+    this.root = el('div', 'lv-root');
+    this.root.dataset['phase'] = 'boot';
+    this.applyTokens();
+
+    this.grain = el('div', 'lv-veneer');
+    this.grain.setAttribute('aria-hidden', 'true');
+    this.grain.append(el('i', 'lv-veneer-scan'), el('i', 'lv-veneer-grain'));
+    this.root.appendChild(this.grain);
+
+    this.hud = new Hud();
+    this.hud.mount(this.root);
+
+    this.screens = new Screens(this.proxyHost(), {
+      onSettingChanged: () => this.syncSettings(),
+      onSound: (kind) => this.emitSound(kind),
+      onBack: () => this.back(),
+    });
+    this.screens.mount(this.root);
+
+    rootEl.appendChild(this.root);
+
+    window.addEventListener('keydown', this.onKeyDown, true);
+    window.addEventListener('resize', this.onResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(this.onResize);
+      this.resizeObserver.observe(this.root);
+    }
+
+    this.syncSettings();
+    this.hud.resize();
+  }
+
+  /* ------------------------------------------------------------------ tokens */
+
+  private applyTokens(): void {
+    const s = this.root.style;
+    s.setProperty('--c-primary', UI.primary);
+    s.setProperty('--c-primary-dim', UI.primaryDim);
+    s.setProperty('--c-accent', UI.accent);
+    s.setProperty('--c-good', UI.good);
+    s.setProperty('--c-warn', UI.warn);
+    s.setProperty('--c-bad', UI.bad);
+    s.setProperty('--c-ink', UI.ink);
+    s.setProperty('--c-ink-dim', UI.inkDim);
+    s.setProperty('--c-ink-faint', UI.inkFaint);
+    s.setProperty('--c-panel', UI.panel);
+    s.setProperty('--c-panel-solid', UI.panelSolid);
+    s.setProperty('--c-hairline', UI.hairline);
+    s.setProperty('--c-scanline', UI.scanline);
+    s.setProperty('--f-mono', FONT.mono);
+    s.setProperty('--f-display', FONT.display);
+  }
+
+  /* ------------------------------------------------------------- host bridge */
+
+  /** Wraps the game host so screen state stays consistent with what the game is told. */
+  private proxyHost(): HudHost {
+    const host = this.host;
+    return {
+      start: () => {
+        this.paused = false;
+        host.start();
+      },
+      restart: () => {
+        this.paused = false;
+        host.restart();
+      },
+      resume: () => {
+        this.paused = false;
+        this.applyView();
+        host.resume();
+      },
+      quitToTitle: () => {
+        this.paused = false;
+        host.quitToTitle();
+      },
+      setSetting: (key, value) => host.setSetting(key, value),
+      getSettings: () => host.getSettings(),
+    };
+  }
+
+  private syncSettings(): void {
+    const settings: Settings = this.host.getSettings();
+    if (settings.showFps !== this.showFps) {
+      this.showFps = settings.showFps;
+      this.hud.setShowFps(settings.showFps);
+    }
+  }
+
+  private emitSound(kind: UiSound): void {
+    this.root.dispatchEvent(
+      new CustomEvent('lv-ui', { detail: kind, bubbles: true, composed: true }),
+    );
+  }
+
+  /* --------------------------------------------------------------- lifecycle */
+
+  update(t: Telemetry, dt: number): void {
+    if (this.disposed) return;
+    this.hud.update(t, dt);
+  }
+
+  setPhase(phase: Phase): void {
+    if (phase === this.phase) return;
+    this.phase = phase;
+    this.root.dataset['phase'] = phase;
+    if (phase !== 'flying') this.paused = false;
+    if (phase === 'title' || phase === 'briefing') this.returnTo = phase;
+    this.applyView();
+  }
+
+  showResult(result: RunResult): void {
+    this.screens.showResult(result);
+  }
+
+  setCountdown(value: number | null): void {
+    this.countdown = value;
+    this.screens.setCountdown(value);
+    this.applyHudActivity();
+  }
+
+  radio(speaker: string, text: string): void {
+    this.hud.radio(speaker, text);
+  }
+
+  setPointerLocked(locked: boolean): void {
+    if (locked === this.pointerLocked) return;
+    this.pointerLocked = locked;
+    this.root.dataset['locked'] = locked ? '1' : '0';
+    /* Losing the pointer mid-flight is the universal "I need a menu" gesture. */
+    if (!locked && this.phase === 'flying' && !this.paused) {
+      this.paused = true;
+      this.applyView();
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    window.removeEventListener('keydown', this.onKeyDown, true);
+    window.removeEventListener('resize', this.onResize);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.screens.dispose();
+    this.hud.dispose();
+    this.root.remove();
+  }
+
+  /* -------------------------------------------------------------- view logic */
+
+  private applyView(): void {
+    const view = this.screens.current();
+    if (SUB_VIEWS.includes(view)) return;
+    this.screens.show(this.viewForState());
+    this.applyHudActivity();
+  }
+
+  private viewForState(): ScreenView {
+    if (this.paused && this.phase === 'flying') return 'pause';
+    switch (this.phase) {
+      case 'title':
+        return 'title';
+      case 'briefing':
+        return 'briefing';
+      case 'finished':
+        return 'results';
+      default:
+        return 'none';
+    }
+  }
+
+  private applyHudActivity(): void {
+    const flying = this.phase === 'flying';
+    const counting = this.phase === 'countdown' || this.countdown !== null;
+    this.hud.setActive(flying || counting, counting || this.paused);
+    const menuish =
+      this.phase === 'title' || this.phase === 'briefing' || this.phase === 'finished' || this.paused;
+    this.grain.dataset['on'] = menuish ? '1' : '0';
+  }
+
+  private back(): void {
+    const view = this.screens.current();
+    if (SUB_VIEWS.includes(view)) {
+      const target = this.paused && this.phase === 'flying' ? 'pause' : this.viewForState();
+      this.screens.show(target === 'none' ? this.returnTo : target);
+      this.applyHudActivity();
+      this.emitSound('back');
+      return;
+    }
+    if (view === 'pause') {
+      this.paused = false;
+      this.applyView();
+      this.host.resume();
+      this.emitSound('back');
+      return;
+    }
+    if (view === 'briefing') {
+      this.host.quitToTitle();
+      this.emitSound('back');
+    }
+  }
+
+  /* ---------------------------------------------------------------- keyboard */
+
+  private onKeyDown = (ev: KeyboardEvent): void => {
+    if (this.disposed) return;
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+      if (ev.key !== 'Escape' && ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    }
+
+    if (ev.key === 'Escape') {
+      const view = this.screens.current();
+      if (view === 'none') {
+        if (this.phase === 'flying') {
+          ev.preventDefault();
+          this.paused = true;
+          this.applyView();
+          this.emitSound('back');
+        }
+        return;
+      }
+      ev.preventDefault();
+      this.back();
+      return;
+    }
+
+    if (this.screens.current() === 'none') return;
+    if (this.screens.handleKey(ev)) ev.preventDefault();
+  };
+
+  private onResize = (): void => {
+    this.hud.resize();
+  };
+}

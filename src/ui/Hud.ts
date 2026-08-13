@@ -1,0 +1,1315 @@
+/**
+ * In-flight HUD for LAST VECTOR.
+ *
+ * Split of responsibilities:
+ *  - DOM  : typography, layout, anything the player reads as *text*. Crisp, accessible.
+ *  - Canvas: the vector instruments — pipper, flight-path marker, gate director, off-screen
+ *    chase arrow, attitude ladder, proximity ring. Per-frame vector work belongs here.
+ *
+ * `update()` runs 60x/s. Every node reference is cached, every write is guarded by a
+ * "did it actually change" check, and nothing allocates in the steady state.
+ */
+
+import type { LogLine, Telemetry } from '../core/contracts.ts';
+import { UI } from '../core/art.ts';
+
+/* ------------------------------------------------------------------ utilities */
+
+export const clamp = (v: number, lo: number, hi: number): number =>
+  v < lo ? lo : v > hi ? hi : v;
+
+export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/** Frame-rate independent exponential smoothing. */
+export const damp = (current: number, target: number, rate: number, dt: number): number =>
+  current + (target - current) * (1 - Math.exp(-rate * dt));
+
+/** Mutable eased scalar. Cheap, no allocation after construction. */
+export class Eased {
+  value: number;
+  target: number;
+  rate: number;
+
+  constructor(initial: number, rate: number) {
+    this.value = initial;
+    this.target = initial;
+    this.rate = rate;
+  }
+
+  step(dt: number): number {
+    this.value = damp(this.value, this.target, this.rate, dt);
+    return this.value;
+  }
+
+  snap(v: number): void {
+    this.value = v;
+    this.target = v;
+  }
+}
+
+const PAD2 = (n: number): string => (n < 10 ? '0' + n : '' + n);
+
+/** `m:ss.cc` — the canonical run clock. */
+export function formatTime(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '--:--.--';
+  const total = Math.floor(seconds * 100);
+  const cs = total % 100;
+  const s = Math.floor(total / 100) % 60;
+  const m = Math.floor(total / 6000);
+  return `${PAD2(m)}:${PAD2(s)}.${PAD2(cs)}`;
+}
+
+/** Signed delta, e.g. `-1.24` / `+0.08`. */
+export function formatDelta(seconds: number): string {
+  const sign = seconds > 0 ? '+' : seconds < 0 ? '−' : '±';
+  const a = Math.abs(seconds);
+  return `${sign}${a.toFixed(2)}`;
+}
+
+/** Metres below 10 km, kilometres above. Thin space between thousands. */
+export function formatDistance(metres: number): string {
+  if (!Number.isFinite(metres)) return '----';
+  if (metres >= 10000) return (metres / 1000).toFixed(1);
+  const v = Math.round(metres);
+  return v >= 1000 ? `${Math.floor(v / 1000)} ${PAD3(v % 1000)}` : `${v}`;
+}
+
+export function distanceUnit(metres: number): string {
+  return metres >= 10000 ? 'KM' : 'M';
+}
+
+const PAD3 = (n: number): string => (n < 10 ? '00' + n : n < 100 ? '0' + n : '' + n);
+
+/* --------------------------------------------------------------- dom helpers */
+
+export function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** Restart a CSS animation on an element without touching layout twice. */
+export function retrigger(node: HTMLElement, cls: string): void {
+  node.classList.remove(cls);
+  void node.offsetWidth;
+  node.classList.add(cls);
+}
+
+/* ------------------------------------------------------------ canvas palette */
+
+type RGB = readonly [number, number, number];
+
+function parseHex(hex: string): RGB {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+const C = {
+  primary: parseHex(UI.primary),
+  accent: parseHex(UI.accent),
+  good: parseHex(UI.good),
+  warn: parseHex(UI.warn),
+  bad: parseHex(UI.bad),
+  ink: parseHex(UI.ink),
+} as const;
+
+function rgba(c: RGB, a: number): string {
+  return `rgba(${c[0]},${c[1]},${c[2]},${a < 0 ? 0 : a > 1 ? 1 : a})`;
+}
+
+function mix(a: RGB, b: RGB, t: number, out: number[]): string {
+  out[0] = Math.round(lerp(a[0], b[0], t));
+  out[1] = Math.round(lerp(a[1], b[1], t));
+  out[2] = Math.round(lerp(a[2], b[2], t));
+  return `rgb(${out[0]},${out[1]},${out[2]})`;
+}
+
+/* ------------------------------------------------------------ rolling digits */
+
+/**
+ * Odometer readout. Each cell holds a 0-9 strip translated by transform, so a value
+ * change costs one style write on the digits that actually moved.
+ */
+export class RollingNumber {
+  readonly el: HTMLElement;
+  private readonly strips: HTMLElement[] = [];
+  private readonly cells: HTMLElement[] = [];
+  private readonly shown: number[] = [];
+  private lead = -1;
+
+  constructor(digits: number, className = 'lv-roll') {
+    this.el = el('div', className);
+    this.el.setAttribute('aria-hidden', 'true');
+    for (let i = 0; i < digits; i++) {
+      const cell = el('span', 'lv-roll-cell');
+      const strip = el('span', 'lv-roll-strip');
+      for (let d = 0; d <= 9; d++) strip.appendChild(el('span', 'lv-roll-glyph', String(d)));
+      cell.appendChild(strip);
+      this.el.appendChild(cell);
+      this.cells.push(cell);
+      this.strips.push(strip);
+      this.shown.push(-1);
+    }
+  }
+
+  set(value: number): void {
+    const n = this.strips.length;
+    let v = clamp(Math.round(value), 0, Math.pow(10, n) - 1);
+    let lead = n - 1;
+    for (let i = n - 1; i >= 0; i--) {
+      const d = v % 10;
+      v = (v - d) / 10;
+      if (this.shown[i] !== d) {
+        this.shown[i] = d;
+        this.strips[i]!.style.transform = `translate3d(0,${-d * 10}%,0)`;
+      }
+      if (d !== 0) lead = i;
+    }
+    if (lead !== this.lead) {
+      for (let i = 0; i < n; i++) this.cells[i]!.classList.toggle('is-lead', i < lead);
+      this.lead = lead;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ hud state */
+
+/** Single reusable scratch record. Never reallocated. */
+interface VecState {
+  slipX: number;
+  slipY: number;
+  roll: number;
+  pitch: number;
+  gateX: number;
+  gateY: number;
+  gateR: number;
+  gateOn: number;
+  gateAngle: number;
+  gateAlign: number;
+  gateDist: number;
+  proximity: number;
+  bore: number;
+  time: number;
+  alpha: number;
+  reduced: boolean;
+}
+
+/* ------------------------------------------------------------------- the HUD */
+
+export class Hud {
+  readonly el: HTMLElement;
+
+  private readonly canvas: HTMLCanvasElement;
+  private readonly ctx: CanvasRenderingContext2D;
+  private cw = 1;
+  private ch = 1;
+  private dpr = 1;
+
+  /* text nodes cached once */
+  private readonly nSector: HTMLElement;
+  private readonly nFps: HTMLElement;
+  private readonly nFpsFrame: HTMLElement;
+  private readonly nSpeed: RollingNumber;
+  private readonly nGload: HTMLElement;
+  private readonly nThrottleFill: HTMLElement;
+  private readonly nThrottleGhost: HTMLElement;
+  private readonly nThrottlePct: HTMLElement;
+  private readonly nBoostFill: HTMLElement;
+  private readonly nBoostGhost: HTMLElement;
+  private readonly nBoostRow: HTMLElement;
+  private readonly nHullFill: HTMLElement;
+  private readonly nHullRow: HTMLElement;
+  private readonly nGateCur: RollingNumber;
+  private readonly nGateTot: HTMLElement;
+  private readonly nGateName: HTMLElement;
+  private readonly nSplit: HTMLElement;
+  private readonly nTotal: HTMLElement;
+  private readonly nBest: HTMLElement;
+  private readonly nSplitFeed: HTMLElement;
+  private readonly nCallout: HTMLElement;
+  private readonly nCalloutTitle: HTMLElement;
+  private readonly nCalloutSub: HTMLElement;
+  private readonly nLog: HTMLElement;
+  private readonly nRail: HTMLElement;
+  private readonly nRailFill: HTMLElement;
+  private readonly nRailTicks: HTMLElement;
+  private readonly nGateLabel: HTMLElement;
+  private readonly nGateLabelDist: HTMLElement;
+  private readonly nGateLabelUnit: HTMLElement;
+  private readonly nProxVignette: HTMLElement;
+  private readonly nImpact: HTMLElement;
+  private readonly nBoostFx: HTMLElement;
+  private readonly nRadio: HTMLElement;
+  private readonly nRadioWho: HTMLElement;
+  private readonly nRadioText: HTMLElement;
+
+  /* eased values */
+  private readonly eThrottle = new Eased(0, 14);
+  private readonly eThrottleGhost = new Eased(0, 3.4);
+  private readonly eBoost = new Eased(1, 16);
+  private readonly eBoostGhost = new Eased(1, 3.2);
+  private readonly eHull = new Eased(1, 9);
+  private readonly eSpeed = new Eased(0, 9);
+  private readonly eG = new Eased(0, 5);
+  private readonly eProx = new Eased(0, 8);
+  private readonly eRail = new Eased(0, 5);
+  private readonly eGateR = new Eased(0, 11);
+  private readonly eGateOn = new Eased(0, 12);
+  private readonly eAlign = new Eased(0, 7);
+  private readonly eAlpha = new Eased(0, 5);
+  private readonly eSlipX = new Eased(0, 4.5);
+  private readonly eSlipY = new Eased(0, 4.5);
+  private readonly eRoll = new Eased(0, 18);
+  private readonly ePitch = new Eased(0, 18);
+
+  /* change guards — avoid touching the DOM when nothing moved */
+  private pThrottle = -1;
+  private pThrottleGhost = -1;
+  private pThrottlePct = -1;
+  private pBoost = -1;
+  private pBoostGhost = -1;
+  private pBoostEmpty = false;
+  private pHull = -1;
+  private pHullState = '';
+  private pGload = -1;
+  private pSector = '';
+  private pFps = -1;
+  private pGateTot = -1;
+  private pGateName = '';
+  private pSplit = '';
+  private pTotal = '';
+  private pBest = '';
+  private pCalloutId = -1;
+  private pCalloutTone = '';
+  private pCalloutFade = -1;
+  private pSplitCount = -1;
+  private pCleared = -1;
+  private pRail = -1;
+  private pLabelOn = false;
+  private pLabelX = -9999;
+  private pLabelY = -9999;
+  private pLabelDist = '';
+  private pLabelUnit = '';
+  private pProx = -1;
+  private pHullPrev = 1;
+  private pBoosting = false;
+  private pRailTicks = -1;
+  private pGateCur = -1;
+  private pDestination = '';
+  private pAlpha = -1;
+  private cleared = false;
+
+  /* rolling feeds */
+  private readonly logNodes = new Map<number, HTMLElement>();
+  private readonly logPool: HTMLElement[] = [];
+  private readonly logAlpha = new Map<number, number>();
+  private readonly splitNodes: HTMLElement[] = [];
+  private readonly splitTtl: number[] = [];
+
+  private prevRoll = 0;
+  private prevPitch = 0;
+  private radioTtl = 0;
+  private clock = 0;
+  private active = false;
+  private showFps = false;
+  private readonly reduced: boolean;
+  private readonly mixBuf = [0, 0, 0];
+
+  private readonly vs: VecState = {
+    slipX: 0,
+    slipY: 0,
+    roll: 0,
+    pitch: 0,
+    gateX: 0,
+    gateY: 0,
+    gateR: 0,
+    gateOn: 0,
+    gateAngle: 0,
+    gateAlign: 0,
+    gateDist: 0,
+    proximity: 0,
+    bore: 0,
+    time: 0,
+    alpha: 0,
+    reduced: false,
+  };
+
+  constructor() {
+    this.reduced =
+      typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.vs.reduced = this.reduced;
+
+    this.el = el('div', 'lv-hud');
+    this.el.dataset['active'] = '0';
+
+    this.canvas = el('canvas', 'lv-vec');
+    this.canvas.setAttribute('aria-hidden', 'true');
+    const ctx = this.canvas.getContext('2d', { alpha: true, desynchronized: true });
+    if (!ctx) throw new Error('LAST VECTOR: 2D canvas unavailable');
+    this.ctx = ctx;
+    this.el.appendChild(this.canvas);
+
+    /* ---- vignettes / full-bleed effects ---- */
+    this.nProxVignette = el('div', 'lv-fx lv-fx--prox');
+    this.nImpact = el('div', 'lv-fx lv-fx--impact');
+    this.nBoostFx = el('div', 'lv-fx lv-fx--boost');
+    this.el.append(this.nProxVignette, this.nBoostFx, this.nImpact);
+
+    /* ---- floating gate distance tag (follows the reticle) ---- */
+    this.nGateLabel = el('div', 'lv-gatetag');
+    this.nGateLabelDist = el('span', 'lv-gatetag-n', '0');
+    this.nGateLabelUnit = el('span', 'lv-gatetag-u', 'M');
+    this.nGateLabel.append(this.nGateLabelDist, this.nGateLabelUnit);
+    this.el.appendChild(this.nGateLabel);
+
+    /* ---- safe frame ---- */
+    const frame = el('div', 'lv-frame');
+    this.el.appendChild(frame);
+
+    /* top strip */
+    const top = el('div', 'lv-top');
+    this.nSector = el('div', 'lv-sector');
+    const fpsWrap = el('div', 'lv-fpswrap');
+    this.nFpsFrame = fpsWrap;
+    fpsWrap.append(el('span', 'lv-fps-k', 'FPS'));
+    this.nFps = el('span', 'lv-fps-v', '--');
+    fpsWrap.appendChild(this.nFps);
+    top.append(this.nSector, fpsWrap);
+    frame.appendChild(top);
+
+    /* ---- LEFT cluster: throttle / speed / bars ---- */
+    const left = el('div', 'lv-left');
+
+    const thr = el('div', 'lv-thr');
+    const thrTrack = el('div', 'lv-thr-track');
+    this.nThrottleGhost = el('div', 'lv-thr-ghost');
+    this.nThrottleFill = el('div', 'lv-thr-fill');
+    const thrTicks = el('div', 'lv-thr-ticks');
+    for (let i = 0; i <= 8; i++) {
+      const tick = el('i', i % 4 === 0 ? 'lv-thr-tick is-major' : 'lv-thr-tick');
+      tick.style.setProperty('--i', String(i / 8));
+      thrTicks.appendChild(tick);
+    }
+    thrTrack.append(this.nThrottleGhost, this.nThrottleFill, thrTicks);
+    this.nThrottlePct = el('div', 'lv-thr-pct', '000');
+    thr.append(el('div', 'lv-thr-k', 'THR'), thrTrack, this.nThrottlePct);
+
+    const speed = el('div', 'lv-speed');
+    this.nSpeed = new RollingNumber(4, 'lv-roll lv-roll--speed');
+    const speedRow = el('div', 'lv-speed-row');
+    speedRow.append(this.nSpeed.el, el('span', 'lv-speed-u', 'M/S'));
+    this.nGload = el('div', 'lv-gload', '0.0 G');
+    speed.append(speedRow, this.nGload);
+
+    const bars = el('div', 'lv-bars');
+    this.nBoostRow = this.buildBar('BOOST', 'boost');
+    this.nBoostFill = this.nBoostRow.querySelector('.lv-bar-fill') as HTMLElement;
+    this.nBoostGhost = this.nBoostRow.querySelector('.lv-bar-ghost') as HTMLElement;
+    this.nHullRow = this.buildBar('HULL', 'hull');
+    this.nHullFill = this.nHullRow.querySelector('.lv-bar-fill') as HTMLElement;
+    bars.append(this.nBoostRow, this.nHullRow);
+
+    left.append(thr, speed, bars);
+    frame.appendChild(left);
+
+    /* ---- RIGHT cluster: gate counter / timers ---- */
+    const right = el('div', 'lv-right');
+    const gateCount = el('div', 'lv-gatecount');
+    this.nGateCur = new RollingNumber(2, 'lv-roll lv-roll--gate');
+    this.nGateTot = el('span', 'lv-gatecount-t', '00');
+    gateCount.append(this.nGateCur.el, el('span', 'lv-gatecount-s', '/'), this.nGateTot);
+    this.nGateName = el('div', 'lv-gatename', '');
+
+    const times = el('dl', 'lv-times');
+    this.nSplit = this.buildTime(times, 'SPLIT', 'is-split');
+    this.nTotal = this.buildTime(times, 'ELAPSED', 'is-total');
+    this.nBest = this.buildTime(times, 'BEST', 'is-best');
+
+    this.nSplitFeed = el('ul', 'lv-splitfeed');
+    right.append(el('div', 'lv-right-k', 'NEXT MARKER'), gateCount, this.nGateName, times, this.nSplitFeed);
+    frame.appendChild(right);
+
+    /* ---- centre-upper callout ---- */
+    this.nCallout = el('div', 'lv-callout');
+    this.nCalloutTitle = el('div', 'lv-callout-t', '');
+    this.nCalloutSub = el('div', 'lv-callout-s', '');
+    this.nCallout.append(this.nCalloutTitle, this.nCalloutSub);
+    this.nCallout.setAttribute('role', 'status');
+    this.nCallout.setAttribute('aria-live', 'polite');
+    frame.appendChild(this.nCallout);
+
+    /* ---- lower-left: comms + log ---- */
+    const feed = el('div', 'lv-feed');
+    this.nRadio = el('div', 'lv-radio');
+    this.nRadioWho = el('span', 'lv-radio-who', '');
+    this.nRadioText = el('span', 'lv-radio-text', '');
+    const bars3 = el('span', 'lv-radio-eq');
+    bars3.append(el('i'), el('i'), el('i'), el('i'));
+    this.nRadio.append(bars3, this.nRadioWho, this.nRadioText);
+    this.nLog = el('ul', 'lv-log');
+    this.nLog.setAttribute('aria-live', 'polite');
+    feed.append(this.nRadio, this.nLog);
+    frame.appendChild(feed);
+
+    /* ---- bottom: course rail ---- */
+    this.nRail = el('div', 'lv-rail');
+    const railTrack = el('div', 'lv-rail-track');
+    this.nRailFill = el('div', 'lv-rail-fill');
+    this.nRailTicks = el('div', 'lv-rail-ticks');
+    railTrack.append(this.nRailFill, this.nRailTicks);
+    const railKeys = el('div', 'lv-rail-keys');
+    railKeys.append(el('span', '', 'DEPARTURE'), el('span', 'lv-rail-dest', 'TERMINUS'));
+    this.nRail.append(railKeys, railTrack);
+    frame.appendChild(this.nRail);
+
+    this.setShowFps(false);
+  }
+
+  private buildBar(label: string, kind: string): HTMLElement {
+    const row = el('div', `lv-bar lv-bar--${kind}`);
+    const track = el('div', 'lv-bar-track');
+    track.append(el('div', 'lv-bar-ghost'), el('div', 'lv-bar-fill'));
+    row.append(el('span', 'lv-bar-k', label), track);
+    return row;
+  }
+
+  private buildTime(parent: HTMLElement, label: string, cls: string): HTMLElement {
+    const row = el('div', `lv-time ${cls}`);
+    const dt = el('dt', 'lv-time-k', label);
+    const dd = el('dd', 'lv-time-v', '--:--.--');
+    row.append(dt, dd);
+    parent.appendChild(row);
+    return dd;
+  }
+
+  /* ------------------------------------------------------------------ public */
+
+  mount(parent: HTMLElement): void {
+    parent.appendChild(this.el);
+    this.resize();
+  }
+
+  setActive(active: boolean, dim = false): void {
+    this.active = active;
+    this.el.dataset['active'] = active ? '1' : '0';
+    this.el.dataset['dim'] = dim ? '1' : '0';
+    this.eAlpha.target = active ? (dim ? 0.45 : 1) : 0;
+  }
+
+  setShowFps(show: boolean): void {
+    this.showFps = show;
+    this.nFpsFrame.dataset['on'] = show ? '1' : '0';
+  }
+
+  setDestination(name: string): void {
+    const dest = this.nRail.querySelector('.lv-rail-dest');
+    if (dest) dest.textContent = name;
+  }
+
+  radio(speaker: string, text: string): void {
+    this.nRadioWho.textContent = speaker;
+    this.nRadioText.textContent = text;
+    this.radioTtl = 3.2 + Math.min(text.length, 120) * 0.035;
+    retrigger(this.nRadio, 'is-in');
+    this.nRadio.dataset['on'] = '1';
+  }
+
+  resize(): void {
+    const rect = this.el.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 2.5);
+    if (w === this.cw && h === this.ch && dpr === this.dpr) return;
+    this.cw = w;
+    this.ch = h;
+    this.dpr = dpr;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+  }
+
+  dispose(): void {
+    this.logNodes.clear();
+    this.logAlpha.clear();
+    this.el.remove();
+  }
+
+  /* ------------------------------------------------------------------ update */
+
+  update(t: Telemetry, dt: number): void {
+    const d = clamp(dt, 0, 0.1);
+    this.clock += d;
+
+    /* comms survives the HUD being off — it plays over briefings too */
+    this.updateRadio(d);
+
+    const alpha = this.eAlpha.step(d);
+    const aq = Math.round(alpha * 200);
+    if (aq !== this.pAlpha) {
+      this.pAlpha = aq;
+      this.el.style.setProperty('--a', (aq / 200).toFixed(3));
+    }
+    if (alpha < 0.004 && !this.active) {
+      if (!this.cleared) {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.cleared = true;
+      }
+      return;
+    }
+    this.cleared = false;
+
+    this.updateText(t, d);
+    this.updateBars(t, d);
+    this.updateCallout(t, d);
+    this.updateLog(t.log, d);
+    this.updateSplits(t, d);
+    this.updateFx(t, d);
+    this.paint(t, d, alpha);
+  }
+
+  /* ---------------------------------------------------------------- sections */
+
+  private updateText(t: Telemetry, dt: number): void {
+    if (t.sectorName !== this.pSector) {
+      this.pSector = t.sectorName;
+      this.nSector.textContent = t.sectorName;
+    }
+    if (t.destinationName !== this.pDestination) {
+      this.pDestination = t.destinationName;
+      this.setDestination(t.destinationName);
+    }
+
+    if (this.showFps) {
+      const fps = Math.round(t.fps);
+      if (fps !== this.pFps) {
+        this.pFps = fps;
+        this.nFps.textContent = fps > 0 ? String(fps) : '--';
+        this.nFpsFrame.dataset['low'] = fps > 0 && fps < 50 ? '1' : '0';
+      }
+    }
+
+    /* speed odometer */
+    this.eSpeed.target = t.speed;
+    this.nSpeed.set(this.eSpeed.step(dt));
+
+    /* g-load: contract gives m/s^2 */
+    this.eG.target = Math.abs(t.gLoad) / 9.80665;
+    const g = this.eG.step(dt);
+    const gq = Math.round(g * 10);
+    if (gq !== this.pGload) {
+      this.pGload = gq;
+      this.nGload.textContent = `${(gq / 10).toFixed(1)} G`;
+      this.nGload.dataset['hot'] = gq >= 55 ? '1' : '0';
+    }
+
+    /* gate counter — splits.length is the unambiguous "cleared" count */
+    const total = Math.max(1, t.gate.total);
+    const cleared = clamp(t.splits.length, 0, total);
+    const current = Math.min(cleared + 1, total);
+    if (current !== this.pGateCur) {
+      this.pGateCur = current;
+      this.nGateCur.set(current);
+    }
+    if (total !== this.pGateTot) {
+      this.pGateTot = total;
+      this.nGateTot.textContent = PAD2(total);
+    }
+    if (t.gate.name !== this.pGateName) {
+      this.pGateName = t.gate.name;
+      this.nGateName.textContent = t.gate.name;
+      retrigger(this.nGateName, 'is-in');
+    }
+
+    /* timers */
+    const splitBase = t.splits.length > 0 ? t.splits[t.splits.length - 1]! : 0;
+    const splitStr = formatTime(Math.max(0, t.elapsed - splitBase));
+    if (splitStr !== this.pSplit) {
+      this.pSplit = splitStr;
+      this.nSplit.textContent = splitStr;
+    }
+    const totalStr = formatTime(t.elapsed);
+    if (totalStr !== this.pTotal) {
+      this.pTotal = totalStr;
+      this.nTotal.textContent = totalStr;
+    }
+    const bestStr = formatTime(t.bestTime);
+    if (bestStr !== this.pBest) {
+      this.pBest = bestStr;
+      this.nBest.textContent = bestStr;
+    }
+
+    /* course rail */
+    if (total !== this.pRailTicks) {
+      this.pRailTicks = total;
+      this.nRailTicks.textContent = '';
+      for (let i = 0; i < total; i++) {
+        const tick = el('i', 'lv-rail-tick');
+        tick.style.setProperty('--i', String(total === 1 ? 1 : (i + 1) / total));
+        this.nRailTicks.appendChild(tick);
+      }
+      this.pCleared = -1;
+    }
+    if (cleared !== this.pCleared) {
+      this.pCleared = cleared;
+      const ticks = this.nRailTicks.children;
+      for (let i = 0; i < ticks.length; i++) {
+        const node = ticks[i] as HTMLElement;
+        node.classList.toggle('is-clear', i < cleared);
+        node.classList.toggle('is-next', i === cleared);
+      }
+    }
+    const prog =
+      t.courseTotal > 0 ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1) : cleared / total;
+    this.eRail.target = prog;
+    const railV = this.eRail.step(dt);
+    const railQ = Math.round(railV * 400);
+    if (railQ !== this.pRail) {
+      this.pRail = railQ;
+      this.nRailFill.style.transform = `scaleX(${(railQ / 400).toFixed(4)})`;
+    }
+  }
+
+  private updateBars(t: Telemetry, dt: number): void {
+    this.eThrottle.target = clamp(t.throttle, 0, 1);
+    this.eThrottleGhost.target = this.eThrottle.target;
+    const thr = this.eThrottle.step(dt);
+    const thrG = this.eThrottleGhost.step(dt);
+    const q = Math.round(thr * 400);
+    if (q !== this.pThrottle) {
+      this.pThrottle = q;
+      this.nThrottleFill.style.transform = `scaleY(${(q / 400).toFixed(4)})`;
+    }
+    const qg = Math.round(thrG * 400);
+    if (qg !== this.pThrottleGhost) {
+      this.pThrottleGhost = qg;
+      this.nThrottleGhost.style.transform = `scaleY(${(qg / 400).toFixed(4)})`;
+    }
+    const pct = Math.round(thr * 100);
+    if (pct !== this.pThrottlePct) {
+      this.pThrottlePct = pct;
+      this.nThrottlePct.textContent = PAD3(pct);
+    }
+
+    this.eBoost.target = clamp(t.energy, 0, 1);
+    this.eBoostGhost.target = this.eBoost.target;
+    const bo = this.eBoost.step(dt);
+    const bg = this.eBoostGhost.step(dt);
+    const bq = Math.round(bo * 400);
+    if (bq !== this.pBoost) {
+      this.pBoost = bq;
+      this.nBoostFill.style.transform = `scaleX(${(bq / 400).toFixed(4)})`;
+    }
+    const bgq = Math.round(bg * 400);
+    if (bgq !== this.pBoostGhost) {
+      this.pBoostGhost = bgq;
+      this.nBoostGhost.style.transform = `scaleX(${(bgq / 400).toFixed(4)})`;
+    }
+    const empty = t.energy <= 0.035;
+    if (empty !== this.pBoostEmpty) {
+      this.pBoostEmpty = empty;
+      this.nBoostRow.classList.toggle('is-empty', empty);
+    }
+    if (t.boosting !== this.pBoosting) {
+      this.pBoosting = t.boosting;
+      this.nBoostRow.classList.toggle('is-live', t.boosting);
+      this.nBoostFx.dataset['on'] = t.boosting ? '1' : '0';
+    }
+
+    this.eHull.target = clamp(t.hull, 0, 1);
+    const hull = this.eHull.step(dt);
+    const hq = Math.round(hull * 400);
+    if (hq !== this.pHull) {
+      this.pHull = hq;
+      this.nHullFill.style.transform = `scaleX(${(hq / 400).toFixed(4)})`;
+    }
+    const state = hull < 0.3 ? 'crit' : hull < 0.65 ? 'warn' : 'ok';
+    if (state !== this.pHullState) {
+      this.pHullState = state;
+      this.nHullRow.dataset['state'] = state;
+    }
+  }
+
+  private updateCallout(t: Telemetry, _dt: number): void {
+    const c = t.callout;
+    if (!c) {
+      if (this.pCalloutId !== -1) {
+        this.pCalloutId = -1;
+        this.nCallout.dataset['on'] = '0';
+      }
+      return;
+    }
+    if (c.id !== this.pCalloutId) {
+      this.pCalloutId = c.id;
+      this.nCalloutTitle.textContent = c.title;
+      this.nCalloutSub.textContent = c.sub ?? '';
+      this.nCalloutSub.dataset['on'] = c.sub ? '1' : '0';
+      if (c.tone !== this.pCalloutTone) {
+        this.pCalloutTone = c.tone;
+        this.nCallout.dataset['tone'] = c.tone;
+      }
+      this.nCallout.dataset['on'] = '1';
+      retrigger(this.nCallout, 'is-in');
+      this.pCalloutFade = -1;
+    }
+    const fade = clamp(c.ttl / 0.45, 0, 1);
+    const fq = Math.round(fade * 20);
+    if (fq !== this.pCalloutFade) {
+      this.pCalloutFade = fq;
+      this.nCallout.style.setProperty('--f', (fq / 20).toFixed(2));
+    }
+  }
+
+  private updateLog(lines: LogLine[], _dt: number): void {
+    /* structural reconcile only when the id set changed */
+    let structural = lines.length !== this.logNodes.size;
+    if (!structural) {
+      for (let i = 0; i < lines.length; i++) {
+        if (!this.logNodes.has(lines[i]!.id)) {
+          structural = true;
+          break;
+        }
+      }
+    }
+
+    if (structural) {
+      /* drop nodes whose line is gone */
+      for (const [id, node] of this.logNodes) {
+        let found = false;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i]!.id === id) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          node.remove();
+          this.logNodes.delete(id);
+          this.logAlpha.delete(id);
+          if (this.logPool.length < 12) this.logPool.push(node);
+        }
+      }
+      /* add + order */
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        let node = this.logNodes.get(line.id);
+        if (!node) {
+          node = this.logPool.pop() ?? el('li', 'lv-log-line');
+          node.className = 'lv-log-line';
+          node.textContent = line.text;
+          node.dataset['tone'] = line.tone;
+          this.logNodes.set(line.id, node);
+          this.nLog.appendChild(node);
+          retrigger(node, 'is-in');
+          this.logAlpha.set(line.id, -1);
+        } else if (this.nLog.children[i] !== node) {
+          this.nLog.appendChild(node);
+        }
+      }
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const node = this.logNodes.get(line.id);
+      if (!node) continue;
+      const recency = lines.length - 1 - i;
+      const byAge = clamp(1 - (line.age - 3.4) / 2.2, 0.12, 1);
+      const byDepth = clamp(1 - recency * 0.17, 0.2, 1);
+      const a = Math.round(byAge * byDepth * 20);
+      if (a !== this.logAlpha.get(line.id)) {
+        this.logAlpha.set(line.id, a);
+        node.style.opacity = (a / 20).toFixed(2);
+      }
+    }
+  }
+
+  private updateSplits(t: Telemetry, dt: number): void {
+    if (this.pSplitCount === -1) this.pSplitCount = t.splits.length;
+    if (t.splits.length > this.pSplitCount) {
+      for (let i = this.pSplitCount; i < t.splits.length; i++) {
+        const prev = i > 0 ? t.splits[i - 1]! : 0;
+        const seg = t.splits[i]! - prev;
+        const node = el('li', 'lv-splitfeed-row');
+        node.append(
+          el('span', 'lv-splitfeed-i', PAD2(i + 1)),
+          el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!)),
+          el('span', 'lv-splitfeed-d', `+${seg.toFixed(2)}`),
+        );
+        this.nSplitFeed.appendChild(node);
+        retrigger(node, 'is-in');
+        this.splitNodes.push(node);
+        this.splitTtl.push(3.6);
+      }
+      this.pSplitCount = t.splits.length;
+    } else if (t.splits.length < this.pSplitCount) {
+      this.pSplitCount = t.splits.length;
+    }
+
+    for (let i = this.splitTtl.length - 1; i >= 0; i--) {
+      this.splitTtl[i] = this.splitTtl[i]! - dt;
+      if (this.splitTtl[i]! <= 0) {
+        const node = this.splitNodes[i]!;
+        if (!node.classList.contains('is-out')) node.classList.add('is-out');
+        if (this.splitTtl[i]! < -0.5) {
+          node.remove();
+          this.splitNodes.splice(i, 1);
+          this.splitTtl.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  private updateRadio(dt: number): void {
+    if (this.radioTtl <= 0) return;
+    this.radioTtl -= dt;
+    if (this.radioTtl <= 0) this.nRadio.dataset['on'] = '0';
+  }
+
+  private updateFx(t: Telemetry, dt: number): void {
+    this.eProx.target = clamp(t.proximity, 0, 1);
+    const prox = this.eProx.step(dt);
+    const pq = Math.round(prox * 50);
+    if (pq !== this.pProx) {
+      this.pProx = pq;
+      this.nProxVignette.style.setProperty('--p', (pq / 50).toFixed(2));
+      this.nProxVignette.dataset['crit'] = prox > 0.72 ? '1' : '0';
+    }
+    /* impact = hull dropped this frame */
+    if (t.hull < this.pHullPrev - 0.0015) {
+      retrigger(this.nImpact, 'is-hit');
+      this.nImpact.style.setProperty(
+        '--i',
+        clamp((this.pHullPrev - t.hull) * 6, 0.35, 1).toFixed(2),
+      );
+    }
+    this.pHullPrev = t.hull;
+  }
+
+  /* ----------------------------------------------------------- canvas layer */
+
+  private paint(t: Telemetry, dt: number, alpha: number): void {
+    this.resize();
+    const ctx = this.ctx;
+    const w = this.cw;
+    const h = this.ch;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (alpha <= 0.01) return;
+
+    const vs = this.vs;
+    vs.time = this.clock;
+    vs.alpha = alpha;
+
+    /* --- attitude --- */
+    this.eRoll.target = t.roll;
+    this.ePitch.target = t.pitch;
+    vs.roll = this.eRoll.step(dt);
+    vs.pitch = this.ePitch.step(dt);
+
+    /* --- flight-path marker ---
+     * Telemetry has no lateral-slip vector, so derive a plausible one: the marker slides
+     * with bank and lags vertical nose rate, which is what a real FPM does. */
+    const rollRate = dt > 0 ? (t.roll - this.prevRoll) / dt : 0;
+    const pitchRate = dt > 0 ? (t.pitch - this.prevPitch) / dt : 0;
+    this.prevRoll = t.roll;
+    this.prevPitch = t.pitch;
+    const load = clamp(Math.abs(t.gLoad) / 26, 0, 1);
+    this.eSlipX.target = clamp(Math.sin(t.roll) * load * 0.9 - rollRate * 0.045, -1, 1);
+    this.eSlipY.target = clamp(-pitchRate * 0.55, -1, 1);
+    vs.slipX = this.eSlipX.step(dt);
+    vs.slipY = this.eSlipY.step(dt);
+
+    /* --- gate director --- */
+    const gate = t.gate;
+    this.eGateOn.target = gate.anchor.onScreen ? 1 : 0;
+    vs.gateOn = this.eGateOn.step(dt);
+    vs.gateAngle = gate.anchor.angle;
+    vs.gateDist = gate.distance;
+    this.eAlign.target = clamp(gate.alignment, 0, 1);
+    vs.gateAlign = this.eAlign.step(dt);
+
+    const targetR = clamp((140 / Math.max(gate.distance, 60)) * h * 0.62, h * 0.022, h * 0.34);
+    this.eGateR.target = targetR;
+    vs.gateR = this.eGateR.step(dt);
+    vs.gateX = w * 0.5 + gate.anchor.x * w * 0.5;
+    vs.gateY = h * 0.5 - gate.anchor.y * h * 0.5;
+    vs.proximity = this.eProx.value;
+
+    const dx = vs.gateX - w * 0.5;
+    const dy = vs.gateY - h * 0.5;
+    const boreR = Math.sqrt(dx * dx + dy * dy);
+    vs.bore = gate.anchor.onScreen ? clamp(1 - boreR / (h * 0.055), 0, 1) : 0;
+
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    this.drawAttitude(ctx, w, h, vs);
+    this.drawRollArc(ctx, w, h, vs);
+    this.drawProximity(ctx, w, h, vs);
+    if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs);
+    if (vs.gateOn < 0.99) this.drawChaseArrow(ctx, w, h, vs);
+    this.drawFlightMarker(ctx, w, h, vs);
+    this.drawPipper(ctx, w, h, vs);
+
+    ctx.globalAlpha = 1;
+    this.placeGateTag(w, h, vs, gate.anchor.onScreen);
+  }
+
+  /** Faint attitude reference: a broken horizon rotated by roll, offset by pitch. */
+  private drawAttitude(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    vs: VecState,
+  ): void {
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const vmin = Math.min(w, h);
+    const inner = vmin * 0.135;
+    const outer = vmin * 0.30;
+    const pxPerRad = vmin * 0.46;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-vs.roll);
+    ctx.lineWidth = 1;
+
+    for (let step = -2; step <= 2; step++) {
+      const deg = step * 10;
+      const y = vs.pitch * pxPerRad - (deg * Math.PI) / 180 * pxPerRad;
+      if (Math.abs(y) > vmin * 0.30) continue;
+      const fade = clamp(1 - Math.abs(y) / (vmin * 0.30), 0, 1);
+      const major = step === 0;
+      const a = (major ? 0.3 : 0.15) * fade;
+      if (a < 0.012) continue;
+      ctx.strokeStyle = rgba(C.ink, a);
+      const len = major ? outer : inner + vmin * 0.05;
+      for (const side of ATT_SIDES) {
+        ctx.beginPath();
+        ctx.moveTo(side * inner, y);
+        ctx.lineTo(side * len, y);
+        if (!major) ctx.lineTo(side * len, y + (step > 0 ? -1 : 1) * vmin * 0.014);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Top-centre roll scale with a pointer that hangs from the arc. */
+  private drawRollArc(ctx: CanvasRenderingContext2D, w: number, h: number, vs: VecState): void {
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const vmin = Math.min(w, h);
+    const r = vmin * 0.345;
+    const span = 1.05;
+
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(C.ink, 0.16);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, -Math.PI / 2 - span, -Math.PI / 2 + span);
+    ctx.stroke();
+
+    for (let i = -4; i <= 4; i++) {
+      const a = -Math.PI / 2 + (i / 4) * span;
+      const major = i % 2 === 0;
+      const len = major ? vmin * 0.017 : vmin * 0.009;
+      ctx.strokeStyle = rgba(C.ink, major ? 0.34 : 0.18);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.lineTo(cx + Math.cos(a) * (r + len), cy + Math.sin(a) * (r + len));
+      ctx.stroke();
+    }
+
+    /* pointer */
+    const pa = -Math.PI / 2 + clamp(vs.roll, -span, span);
+    const px = cx + Math.cos(pa) * (r - vmin * 0.004);
+    const py = cy + Math.sin(pa) * (r - vmin * 0.004);
+    const s = vmin * 0.0135;
+    ctx.translate(px, py);
+    ctx.rotate(pa + Math.PI / 2);
+    ctx.fillStyle = rgba(C.primary, 0.82);
+    ctx.beginPath();
+    ctx.moveTo(0, -s * 0.8);
+    ctx.lineTo(s * 0.72, s * 0.62);
+    ctx.lineTo(-s * 0.72, s * 0.62);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Segmented ring that closes in as debris gets near. */
+  private drawProximity(ctx: CanvasRenderingContext2D, w: number, h: number, vs: VecState): void {
+    const p = vs.proximity;
+    if (p < 0.02) return;
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const vmin = Math.min(w, h);
+    const pulse = this.reduced ? 0.5 : 0.5 + 0.5 * Math.sin(vs.time * (5 + p * 10));
+    const r = vmin * (0.46 - p * 0.06);
+    const col = mix(C.warn, C.bad, clamp((p - 0.35) / 0.5, 0, 1), this.mixBuf);
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = vs.alpha * clamp(p * 0.8, 0, 0.85) * (0.55 + pulse * 0.45);
+    ctx.lineWidth = vmin * 0.0055;
+    const seg = 12;
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2 + 0.06;
+      const a1 = a0 + (Math.PI * 2) / seg - 0.34;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, a0, a1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Corner brackets that scale with the gate's true angular size and tighten on approach. */
+  private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState): void {
+    const r = vs.gateR;
+    const x = vs.gateX;
+    const y = vs.gateY;
+    const near = clamp(1 - vs.gateDist / 2400, 0, 1);
+    const col = mix(C.primary, C.accent, vs.gateAlign * 0.85, this.mixBuf);
+    const a = vs.alpha * vs.gateOn;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.globalAlpha = a;
+
+    /* diamond outline */
+    ctx.strokeStyle = rgba(C.primary, 0.24 + vs.gateAlign * 0.18);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r, 0);
+    ctx.closePath();
+    ctx.stroke();
+
+    /* corner brackets — arms retract as you close */
+    const br = r * (1.22 - near * 0.16);
+    const arm = r * (0.42 - near * 0.24) + 6;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1.6, r * 0.035);
+    for (let i = 0; i < 4; i++) {
+      const sx = i === 0 || i === 3 ? -1 : 1;
+      const sy = i < 2 ? -1 : 1;
+      ctx.beginPath();
+      ctx.moveTo(sx * br, sy * (br - arm));
+      ctx.lineTo(sx * br, sy * br);
+      ctx.lineTo(sx * (br - arm), sy * br);
+      ctx.stroke();
+    }
+
+    /* alignment arc — a radial gauge sat on the target */
+    if (r > 18) {
+      const ar = br * 1.16;
+      ctx.lineWidth = Math.max(1.5, r * 0.028);
+      ctx.strokeStyle = rgba(C.ink, 0.14);
+      ctx.beginPath();
+      ctx.arc(0, 0, ar, -Math.PI * 0.5, Math.PI * 1.5);
+      ctx.stroke();
+      ctx.strokeStyle = rgba(C.accent, 0.75);
+      ctx.beginPath();
+      ctx.arc(0, 0, ar, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * vs.gateAlign);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  /** Off-screen chase arrow: the single most important readability element. */
+  private drawChaseArrow(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    vs: VecState,
+  ): void {
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const vmin = Math.min(w, h);
+    const rx = Math.min(w * 0.40, vmin * 0.62);
+    const ry = Math.min(h * 0.40, vmin * 0.62);
+    const a = vs.gateAngle;
+    const ax = cx + Math.cos(a) * rx;
+    const ay = cy - Math.sin(a) * ry;
+    const vis = vs.alpha * (1 - vs.gateOn);
+    if (vis <= 0.01) return;
+
+    const pulse = this.reduced ? 0.6 : 0.5 + 0.5 * Math.sin(vs.time * 4.6);
+    const s = vmin * 0.036 * (1 + pulse * 0.09);
+
+    ctx.save();
+    ctx.globalAlpha = vis;
+
+    /* dark scrim so it survives a bright nebula behind it */
+    const grad = ctx.createRadialGradient(ax, ay, 0, ax, ay, s * 3.6);
+    grad.addColorStop(0, 'rgba(3,7,14,0.72)');
+    grad.addColorStop(1, 'rgba(3,7,14,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(ax, ay, s * 3.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* guide arc riding the ellipse */
+    ctx.strokeStyle = rgba(C.accent, 0.28 + pulse * 0.2);
+    ctx.lineWidth = Math.max(1.5, vmin * 0.0028);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, -a - 0.26, -a + 0.26);
+    ctx.stroke();
+
+    ctx.translate(ax, ay);
+    ctx.rotate(-a);
+
+    /* trailing chevrons point at the head so the eye lands instantly */
+    ctx.strokeStyle = rgba(C.accent, 0.34);
+    ctx.lineWidth = Math.max(1.6, s * 0.13);
+    for (let i = 1; i <= 2; i++) {
+      const off = -s * (0.95 + i * 0.62);
+      const k = s * (0.46 - i * 0.09);
+      ctx.globalAlpha = vis * (0.5 - i * 0.14);
+      ctx.beginPath();
+      ctx.moveTo(off - k * 0.7, -k);
+      ctx.lineTo(off + k * 0.7, 0);
+      ctx.lineTo(off - k * 0.7, k);
+      ctx.stroke();
+    }
+
+    /* head */
+    ctx.globalAlpha = vis;
+    ctx.fillStyle = rgba(C.accent, 0.94);
+    ctx.beginPath();
+    ctx.moveTo(s * 1.02, 0);
+    ctx.lineTo(-s * 0.52, -s * 0.78);
+    ctx.lineTo(-s * 0.2, 0);
+    ctx.lineTo(-s * 0.52, s * 0.78);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(3,7,14,0.85)';
+    ctx.lineWidth = Math.max(1, s * 0.06);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  /** Flight-path marker: where the ship is actually going. */
+  private drawFlightMarker(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    vs: VecState,
+  ): void {
+    const vmin = Math.min(w, h);
+    const x = w * 0.5 + vs.slipX * vmin * 0.11;
+    const y = h * 0.5 + vs.slipY * vmin * 0.11;
+    const r = vmin * 0.0125;
+
+    ctx.save();
+    ctx.globalAlpha = vs.alpha * 0.8;
+    ctx.strokeStyle = rgba(C.primary, 0.9);
+    ctx.lineWidth = Math.max(1.25, vmin * 0.0016);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r, y);
+    ctx.lineTo(x - r * 2.15, y);
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + r * 2.15, y);
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x, y - r * 1.9);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Fixed boresight. Tiny by design — the centre of the screen stays clear. */
+  private drawPipper(ctx: CanvasRenderingContext2D, w: number, h: number, vs: VecState): void {
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const vmin = Math.min(w, h);
+    const r = vmin * 0.0055;
+    const locked = vs.bore;
+
+    ctx.save();
+    ctx.globalAlpha = vs.alpha * (0.5 + locked * 0.45);
+    ctx.fillStyle = locked > 0.5 ? rgba(C.accent, 0.95) : rgba(C.ink, 0.8);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = locked > 0.5 ? rgba(C.accent, 0.7) : rgba(C.ink, 0.42);
+    ctx.lineWidth = 1;
+    const g0 = vmin * 0.014;
+    const g1 = vmin * 0.024;
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      const dx = Math.cos(a);
+      const dy = Math.sin(a);
+      ctx.beginPath();
+      ctx.moveTo(cx + dx * g0, cy + dy * g0);
+      ctx.lineTo(cx + dx * g1, cy + dy * g1);
+      ctx.stroke();
+    }
+
+    if (locked > 0.02) {
+      ctx.globalAlpha = vs.alpha * locked * 0.8;
+      ctx.strokeStyle = rgba(C.accent, 0.9);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(cx, cy, vmin * 0.0285, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Crisp DOM label welded to whichever director is live. */
+  private placeGateTag(w: number, h: number, vs: VecState, onScreen: boolean): void {
+    let x: number;
+    let y: number;
+    if (onScreen) {
+      x = vs.gateX;
+      y = vs.gateY + vs.gateR * 1.22 + Math.min(w, h) * 0.032;
+    } else {
+      const cx = w * 0.5;
+      const cy = h * 0.5;
+      const vmin = Math.min(w, h);
+      const rx = Math.min(w * 0.40, vmin * 0.62) - vmin * 0.085;
+      const ry = Math.min(h * 0.40, vmin * 0.62) - vmin * 0.085;
+      x = cx + Math.cos(vs.gateAngle) * rx;
+      y = cy - Math.sin(vs.gateAngle) * ry;
+    }
+    x = clamp(x, w * 0.06, w * 0.94);
+    y = clamp(y, h * 0.08, h * 0.9);
+
+    const qx = Math.round(x);
+    const qy = Math.round(y);
+    if (qx !== this.pLabelX || qy !== this.pLabelY) {
+      this.pLabelX = qx;
+      this.pLabelY = qy;
+      this.nGateLabel.style.transform = `translate3d(${qx}px,${qy}px,0) translate(-50%,-50%)`;
+    }
+    const dist = formatDistance(vs.gateDist);
+    if (dist !== this.pLabelDist) {
+      this.pLabelDist = dist;
+      this.nGateLabelDist.textContent = dist;
+    }
+    const unit = distanceUnit(vs.gateDist);
+    if (unit !== this.pLabelUnit) {
+      this.pLabelUnit = unit;
+      this.nGateLabelUnit.textContent = unit;
+    }
+    if (onScreen !== this.pLabelOn) {
+      this.pLabelOn = onScreen;
+      this.nGateLabel.dataset['off'] = onScreen ? '0' : '1';
+    }
+  }
+}
+
+const ATT_SIDES = [-1, 1] as const;

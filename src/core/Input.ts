@@ -1,0 +1,280 @@
+import { clamp, clamp01, deadzone, expo } from './mathx.ts';
+import type { HarnessInput } from './harness.ts';
+
+/**
+ * Pilot input. Three sources are folded into one command set:
+ *   pointer-locked mouse + keyboard, gamepad, and the automation harness.
+ *
+ * The mouse drives a *virtual stick* rather than an absolute cursor: movement deflects the
+ * stick, and the stick self-centres. That is what makes mouse flight feel like a control
+ * surface instead of a camera drag, and it is why the ship keeps turning while you hold a
+ * deflection.
+ */
+export interface FlightCommand {
+  pitch: number;
+  yaw: number;
+  roll: number;
+  throttle: number;
+  strafeX: number;
+  strafeY: number;
+  boost: boolean;
+  brake: boolean;
+  /** Pixels of raw mouse motion this frame, for the reticle's own inertia. */
+  stickX: number;
+  stickY: number;
+}
+
+const KEY_ALIASES: Record<string, string> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+};
+
+export class Input {
+  readonly command: FlightCommand = {
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    throttle: 0.85,
+    strafeX: 0,
+    strafeY: 0,
+    boost: false,
+    brake: false,
+    stickX: 0,
+    stickY: 0,
+  };
+
+  sensitivity = 1;
+  invertY = false;
+  /** When set, the harness fully overrides the human. */
+  private override: HarnessInput | null = null;
+
+  private readonly keys = new Set<string>();
+  private stickX = 0;
+  private stickY = 0;
+  private mouseDx = 0;
+  private mouseDy = 0;
+  private locked = false;
+  private throttle = 0.85;
+  private readonly canvas: HTMLElement;
+  private gamepadIndex: number | null = null;
+  private disposed = false;
+
+  onPause: (() => void) | null = null;
+  onLockChange: ((locked: boolean) => void) | null = null;
+  onAction: ((action: 'restart' | 'view' | 'match') => void) | null = null;
+
+  constructor(canvas: HTMLElement) {
+    this.canvas = canvas;
+    window.addEventListener('keydown', this.handleKeyDown, { passive: false });
+    window.addEventListener('keyup', this.handleKeyUp);
+    window.addEventListener('blur', this.handleBlur);
+    document.addEventListener('pointerlockchange', this.handlePointerLockChange);
+    document.addEventListener('mousemove', this.handleMouseMove);
+    document.addEventListener('mousedown', this.handleMouseButton);
+    document.addEventListener('mouseup', this.handleMouseButton);
+    window.addEventListener('gamepadconnected', this.handleGamepad);
+    window.addEventListener('gamepaddisconnected', this.handleGamepadLost);
+  }
+
+  get pointerLocked(): boolean {
+    return this.locked;
+  }
+
+  requestLock(): void {
+    if (this.locked || this.disposed) return;
+    void this.canvas.requestPointerLock?.();
+  }
+
+  releaseLock(): void {
+    if (!this.locked) return;
+    document.exitPointerLock?.();
+  }
+
+  setOverride(input: HarnessInput | null): void {
+    this.override = input;
+    if (input === null) return;
+    this.stickX = 0;
+    this.stickY = 0;
+  }
+
+  /** Recentres the virtual stick; used when a run starts so leftover deflection is dropped. */
+  reset(): void {
+    this.stickX = 0;
+    this.stickY = 0;
+    this.mouseDx = 0;
+    this.mouseDy = 0;
+    this.keys.clear();
+    this.throttle = 0.85;
+  }
+
+  update(dt: number): FlightCommand {
+    const c = this.command;
+
+    if (this.override) {
+      const o = this.override;
+      c.pitch = clamp(o.pitch ?? 0, -1, 1);
+      c.yaw = clamp(o.yaw ?? 0, -1, 1);
+      c.roll = clamp(o.roll ?? 0, -1, 1);
+      c.throttle = clamp01(o.throttle ?? 1);
+      c.strafeX = clamp(o.strafeX ?? 0, -1, 1);
+      c.strafeY = clamp(o.strafeY ?? 0, -1, 1);
+      c.boost = o.boost ?? false;
+      c.brake = o.brake ?? false;
+      c.stickX = c.yaw;
+      c.stickY = -c.pitch;
+      return c;
+    }
+
+    // --- virtual stick -------------------------------------------------------------
+    // Mouse deltas push the stick; it eases back to centre so the ship settles when the
+    // hand stops. The recentre is slow enough that sustained turns feel supported.
+    const gain = 0.0042 * this.sensitivity;
+    this.stickX = clamp(this.stickX + this.mouseDx * gain, -1, 1);
+    this.stickY = clamp(this.stickY + this.mouseDy * gain, -1, 1);
+    const recentre = Math.exp(-dt / 0.24);
+    this.stickX *= recentre;
+    this.stickY *= recentre;
+    c.stickX = this.stickX;
+    c.stickY = this.stickY;
+    this.mouseDx = 0;
+    this.mouseDy = 0;
+
+    const keyPitch = (this.held('down') ? 1 : 0) - (this.held('up') ? 1 : 0);
+    const keyYaw = (this.held('right') ? 1 : 0) - (this.held('left') ? 1 : 0);
+
+    let pitch = expo(-this.stickY, 0.45) + keyPitch * 0.85;
+    let yaw = expo(this.stickX, 0.45) + keyYaw * 0.85;
+    let roll = (this.held('KeyD') ? 1 : 0) - (this.held('KeyA') ? 1 : 0);
+    let strafeX = (this.held('KeyE') ? 1 : 0) - (this.held('KeyQ') ? 1 : 0);
+    let strafeY = (this.held('KeyR') ? 1 : 0) - (this.held('KeyF') ? 1 : 0);
+
+    // --- throttle ------------------------------------------------------------------
+    const throttleRate = 1.35;
+    if (this.held('KeyW')) this.throttle += throttleRate * dt;
+    if (this.held('KeyS')) this.throttle -= throttleRate * dt;
+    this.throttle = clamp01(this.throttle);
+
+    let boost = this.held('ShiftLeft') || this.held('ShiftRight');
+    let brake = this.held('Space');
+
+    // --- gamepad -------------------------------------------------------------------
+    const pad = this.readGamepad();
+    if (pad) {
+      const ax = (i: number) => deadzone(pad.axes[i] ?? 0, 0.14);
+      yaw += expo(ax(0), 0.4);
+      pitch += expo(-ax(1), 0.4);
+      roll += ax(2) * 0.9;
+      const rt = pad.buttons[7]?.value ?? 0;
+      const lt = pad.buttons[6]?.value ?? 0;
+      if (rt > 0.02 || lt > 0.02) this.throttle = clamp01(rt - lt * 0.5 + 0.5 * (1 - lt));
+      boost = boost || (pad.buttons[0]?.pressed ?? false);
+      brake = brake || (pad.buttons[1]?.pressed ?? false);
+      strafeX += (pad.buttons[15]?.value ?? 0) - (pad.buttons[14]?.value ?? 0);
+      strafeY += (pad.buttons[12]?.value ?? 0) - (pad.buttons[13]?.value ?? 0);
+    }
+
+    c.pitch = clamp(this.invertY ? -pitch : pitch, -1, 1);
+    c.yaw = clamp(yaw, -1, 1);
+    c.roll = clamp(roll, -1, 1);
+    c.strafeX = clamp(strafeX, -1, 1);
+    c.strafeY = clamp(strafeY, -1, 1);
+    c.throttle = this.throttle;
+    c.boost = boost;
+    c.brake = brake;
+    return c;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    window.removeEventListener('keydown', this.handleKeyDown);
+    window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.handleBlur);
+    document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
+    document.removeEventListener('mousemove', this.handleMouseMove);
+    document.removeEventListener('mousedown', this.handleMouseButton);
+    document.removeEventListener('mouseup', this.handleMouseButton);
+    window.removeEventListener('gamepadconnected', this.handleGamepad);
+    window.removeEventListener('gamepaddisconnected', this.handleGamepadLost);
+  }
+
+  private held(code: string): boolean {
+    return this.keys.has(code);
+  }
+
+  private readGamepad(): Gamepad | null {
+    if (this.gamepadIndex === null || !navigator.getGamepads) return null;
+    return navigator.getGamepads()[this.gamepadIndex] ?? null;
+  }
+
+  private readonly handleKeyDown = (e: KeyboardEvent): void => {
+    if (e.repeat) {
+      // Still swallow the browser default for game keys held down.
+      if (e.code === 'Space') e.preventDefault();
+      return;
+    }
+    if (e.code === 'Escape') {
+      this.onPause?.();
+      return;
+    }
+    if (e.code === 'KeyP') {
+      this.onPause?.();
+      return;
+    }
+    if (e.code === 'KeyT') this.onAction?.('match');
+    if (e.code === 'KeyV') this.onAction?.('view');
+    if (e.code === 'KeyN') this.onAction?.('restart');
+    if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
+    this.keys.add(KEY_ALIASES[e.code] ?? e.code);
+  };
+
+  private readonly handleKeyUp = (e: KeyboardEvent): void => {
+    this.keys.delete(KEY_ALIASES[e.code] ?? e.code);
+  };
+
+  private readonly handleBlur = (): void => {
+    this.keys.clear();
+    this.mouseDx = 0;
+    this.mouseDy = 0;
+  };
+
+  private readonly handlePointerLockChange = (): void => {
+    const locked = document.pointerLockElement === this.canvas;
+    if (locked === this.locked) return;
+    this.locked = locked;
+    if (!locked) {
+      this.mouseDx = 0;
+      this.mouseDy = 0;
+    }
+    this.onLockChange?.(locked);
+  };
+
+  private readonly handleMouseMove = (e: MouseEvent): void => {
+    if (!this.locked) return;
+    // Clamp per-event deltas: a dropped frame can deliver a huge accumulated movement.
+    this.mouseDx += clamp(e.movementX, -180, 180);
+    this.mouseDy += clamp(e.movementY, -180, 180);
+  };
+
+  private readonly handleMouseButton = (e: MouseEvent): void => {
+    if (!this.locked) return;
+    const down = e.type === 'mousedown';
+    if (e.button === 0) {
+      if (down) this.keys.add('ShiftLeft');
+      else this.keys.delete('ShiftLeft');
+    }
+    if (e.button === 2) {
+      if (down) this.keys.add('Space');
+      else this.keys.delete('Space');
+    }
+  };
+
+  private readonly handleGamepad = (e: GamepadEvent): void => {
+    this.gamepadIndex = e.gamepad.index;
+  };
+
+  private readonly handleGamepadLost = (e: GamepadEvent): void => {
+    if (this.gamepadIndex === e.gamepad.index) this.gamepadIndex = null;
+  };
+}
