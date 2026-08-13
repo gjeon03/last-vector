@@ -275,25 +275,36 @@ export class Gate {
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
+        varying float vDist;
         void main() {
           vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vDist = -mv.z;
+          gl_Position = projectionMatrix * mv;
         }
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
         varying vec2 vUv;
+        varying float vDist;
         uniform vec3 uColor;
         uniform float uCharge;
         uniform float uFlash;
         uniform float uTime;
         void main() {
+          // The tube is under a pixel wide past a couple of kilometres, so coverage aliases
+          // and a solid ring breaks into a dashed circle — which reads as a rendering fault
+          // and undercuts the promise that a cairn is findable from six kilometres out. Fade
+          // the ring out with range and let the beacons, which have a pixel-size floor,
+          // carry the long-distance read.
+          float ranged = 1.0 - smoothstep(1800.0, 3600.0, vDist);
+          if (ranged <= 0.002) discard;
           float across = 1.0 - abs(vUv.y - 0.5) * 2.0;
           float core = pow(across, 3.0);
           // A light pulse chases around the ring when armed: unmistakable directionality.
           float chase = smoothstep(0.55, 1.0, sin(vUv.x * 6.2831 * 2.0 - uTime * 1.9) * 0.5 + 0.5);
           float a = core * (0.18 + uCharge * 0.45 + chase * uCharge * 0.7 + uFlash * 1.2);
-          gl_FragColor = vec4(uColor * (0.4 + uCharge * 1.3 + uFlash * 3.2), a);
+          gl_FragColor = vec4(uColor * (0.4 + uCharge * 1.3 + uFlash * 3.2) * ranged, a * ranged);
         }
       `,
       transparent: true,

@@ -210,6 +210,7 @@ export class RollingNumber {
 interface VecState {
   slipX: number;
   slipY: number;
+  slipOn: number;
   roll: number;
   pitch: number;
   gateX: number;
@@ -297,8 +298,11 @@ export class Hud {
   private readonly eGateOn = new Eased(0, 12);
   private readonly eAlign = new Eased(0, 7);
   private readonly eAlpha = new Eased(0, 5);
-  private readonly eSlipX = new Eased(0, 4.5);
-  private readonly eSlipY = new Eased(0, 4.5);
+  /* Fast: this tracks a real measured vector, so the easing is jitter suppression on the
+     projection, not a stand-in for motion. Anything slower would visibly lag the truth. */
+  private readonly eSlipX = new Eased(0, 26);
+  private readonly eSlipY = new Eased(0, 26);
+  private readonly eSlipOn = new Eased(0, 9);
   private readonly eRoll = new Eased(0, 18);
   private readonly ePitch = new Eased(0, 18);
 
@@ -346,8 +350,7 @@ export class Hud {
   private readonly splitNodes: HTMLElement[] = [];
   private readonly splitTtl: number[] = [];
 
-  private prevRoll = 0;
-  private prevPitch = 0;
+  private slipHidden = true;
   private radioTtl = 0;
   private clock = 0;
   private active = false;
@@ -358,6 +361,7 @@ export class Hud {
   private readonly vs: VecState = {
     slipX: 0,
     slipY: 0,
+    slipOn: 0,
     roll: 0,
     pitch: 0,
     gateX: 0,
@@ -969,15 +973,27 @@ export class Hud {
     vs.pitch = this.ePitch.step(dt);
 
     /* --- flight-path marker ---
-     * Telemetry has no lateral-slip vector, so derive a plausible one: the marker slides
-     * with bank and lags vertical nose rate, which is what a real FPM does. */
-    const rollRate = dt > 0 ? (t.roll - this.prevRoll) / dt : 0;
-    const pitchRate = dt > 0 ? (t.pitch - this.prevPitch) / dt : 0;
-    this.prevRoll = t.roll;
-    this.prevPitch = t.pitch;
-    const load = clamp(Math.abs(t.gLoad) / 26, 0, 1);
-    this.eSlipX.target = clamp(Math.sin(t.roll) * load * 0.9 - rollRate * 0.045, -1, 1);
-    this.eSlipY.target = clamp(-pitchRate * 0.55, -1, 1);
+     * The real projected velocity vector, not an approximation of one. The gap between this
+     * and the pipper is the drift the flight model is actually producing. Below a few m/s the
+     * vector is meaningless and `onScreen` goes false, so the marker is hidden rather than
+     * pinned to centre — a marker sitting dead centre would be a claim, and a false one. */
+    const va = t.velocityAnchor;
+    this.eSlipOn.target = va.onScreen ? 1 : 0;
+    vs.slipOn = this.eSlipOn.step(dt);
+    if (va.onScreen) {
+      if (this.slipHidden) {
+        /* Snap on reacquire: easing in from wherever it was last visible would fly the marker
+           across the screen on a value that was never real. */
+        this.eSlipX.snap(va.x);
+        this.eSlipY.snap(va.y);
+        this.slipHidden = false;
+      } else {
+        this.eSlipX.target = va.x;
+        this.eSlipY.target = va.y;
+      }
+    } else {
+      this.slipHidden = true;
+    }
     vs.slipX = this.eSlipX.step(dt);
     vs.slipY = this.eSlipY.step(dt);
 
@@ -1287,20 +1303,25 @@ export class Hud {
     ctx.restore();
   }
 
-  /** Flight-path marker: where the ship is actually going. */
+  /**
+   * Flight-path marker: where the ship is actually going. Positioned by the same NDC mapping
+   * as the gate director, so the on-screen gap between this and the pipper is the real drift
+   * angle rather than a scaled stand-in for it.
+   */
   private drawFlightMarker(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     vs: VecState,
   ): void {
+    if (vs.slipOn <= 0.01) return;
     const vmin = Math.min(w, h);
-    const x = w * 0.5 + vs.slipX * vmin * 0.11;
-    const y = h * 0.5 + vs.slipY * vmin * 0.11;
+    const x = w * 0.5 + vs.slipX * w * 0.5;
+    const y = h * 0.5 - vs.slipY * h * 0.5;
     const r = vmin * 0.0125;
 
     ctx.save();
-    ctx.globalAlpha = vs.alpha * 0.9;
+    ctx.globalAlpha = vs.alpha * 0.9 * vs.slipOn;
     const lw = Math.max(1.4, vmin * 0.0018);
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);

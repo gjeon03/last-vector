@@ -64,7 +64,8 @@ const NEBULA_FRAG = /* glsl */ `
     float nearStar = pow(sunDot, 5.0);
 
     vec3 col = mix(uIndigo, uTeal, smoothstep(0.15, 0.75, base));
-    col = mix(col, uMagenta, smoothstep(0.55, 1.0, fil) * 0.75);
+    // Only in the densest filaments, and never as a base tint.
+    col = mix(col, uMagenta, smoothstep(0.78, 1.0, fil) * 0.5);
     col = mix(col, uDust, dust * 0.55);
     col *= density;
 
@@ -121,9 +122,13 @@ export function bakeNebula(
     uniforms: {
       uSunDir: { value: options.sunDirection.clone().normalize() },
       uDeep: { value: new THREE.Color(PALETTE.voidFar).multiplyScalar(0.34) },
+      // The direction is cold indigo shadow, hot amber key, cyan machine-light. Magenta is an
+      // ACCENT — ionised hydrogen seen at distance — and at 0.13 it was carrying the frame:
+      // once the grade lifted the midtones, the whole sky washed crimson and the sector read
+      // as a friendlier game than the one the fiction describes.
       uTeal: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.2) },
-      uIndigo: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.21) },
-      uMagenta: { value: new THREE.Color(PALETTE.nebulaMagenta).multiplyScalar(0.13) },
+      uIndigo: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.24) },
+      uMagenta: { value: new THREE.Color(PALETTE.nebulaMagenta).multiplyScalar(0.045) },
       uDust: { value: new THREE.Color(PALETTE.nebulaDust).multiplyScalar(0.3) },
       uStarGlow: { value: new THREE.Color(PALETTE.starGlow).multiplyScalar(0.34) },
       uSeed: { value: options.seed },

@@ -860,10 +860,32 @@ export class Game {
     }
   }
 
+  /** Pushes a camera anchor out of any asteroid it happens to be sitting inside. */
+  private clearVantageOfObstacles(point: THREE.Vector3): void {
+    for (let pass = 0; pass < 4; pass++) {
+      let moved = false;
+      for (const rock of this.asteroids.instances) {
+        const clearance = rock.radius + this.ship.radius + 220;
+        const dSq = rock.position.distanceToSquared(point);
+        if (dSq >= clearance * clearance) continue;
+        const d = Math.sqrt(dSq) || 1;
+        this.tmpB.copy(point).sub(rock.position).divideScalar(d);
+        point.copy(rock.position).addScaledVector(this.tmpB, clearance);
+        moved = true;
+      }
+      if (!moved) break;
+    }
+  }
+
   private applyVantage(v: Vantage): void {
     if (v.gateIndex !== undefined && this.course.gates[v.gateIndex]) {
       const gate = this.course.gates[v.gateIndex];
       this.tmpA.copy(gate.position).addScaledVector(gate.normal, -(v.gateStandoff ?? 800));
+      // Nudge clear of anything the ship is parked inside. A vantage that lands touching a
+      // boulder reports proximity 1.0, fills half the frame with that rock's bloom, and makes
+      // the shot useless as evidence — which is exactly how a "palette" defect turned out to
+      // be a staging defect.
+      this.clearVantageOfObstacles(this.tmpA);
       this.tmpQuat.setFromRotationMatrix(
         new THREE.Matrix4().lookAt(this.tmpA, gate.position, new THREE.Vector3(0, 1, 0)),
       );
@@ -911,7 +933,7 @@ export class Game {
     target.vignette = damp(target.vignette, 0.42 + boost * 0.2 + this.proximity * 0.14, 0.3, dt);
     target.damage = clamp01(this.damageFlash * 0.9 + (1 - this.ship.hull) * 0.12);
     target.exposure = damp(target.exposure, 1.3 - boost * 0.08, 0.5, dt);
-    target.saturation = damp(target.saturation, 1.07 + boost * 0.06, 0.4, dt);
+    target.saturation = damp(target.saturation, 1.0 + boost * 0.05, 0.4, dt);
     target.bloomStrength = this.settings.profile.bloomStrength * (1 + boost * 0.22);
 
     this.fade = damp(this.fade, this.fadeTarget, 0.22, dt);

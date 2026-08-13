@@ -984,13 +984,19 @@
 
 /* One cinematic edge scrim instead of per-cluster blobs: the HUD has to survive a lit
    planet filling the frame, and a lens-style vignette reads as photography, not a smudge. */
+/* Deliberately lighter than it wants to be. This was tuned against the old grade, where the
+   median frame sat at 6-11/255; the scene is now lifted to 32-43 and the renderer's own
+   vignette stays open across the middle two thirds. Stacking the original strength on top
+   would quietly undo that grade decision, so the sides carry roughly a third less and the
+   falloff is pulled in. The clusters no longer depend on it: their text scrims and the stroke
+   casings do that work. */
 .lv-fx--edge {
   opacity: var(--a);
   background:
-    linear-gradient(to right, rgba(2, 5, 11, 0.66), rgba(2, 5, 11, 0.16) 15%, rgba(2, 5, 11, 0) 30%),
-    linear-gradient(to left, rgba(2, 5, 11, 0.66), rgba(2, 5, 11, 0.16) 15%, rgba(2, 5, 11, 0) 30%),
-    linear-gradient(to bottom, rgba(2, 5, 11, 0.44), rgba(2, 5, 11, 0) 16%),
-    linear-gradient(to top, rgba(2, 5, 11, 0.5), rgba(2, 5, 11, 0) 20%);
+    linear-gradient(to right, rgba(2, 5, 11, 0.44), rgba(2, 5, 11, 0.1) 12%, rgba(2, 5, 11, 0) 24%),
+    linear-gradient(to left, rgba(2, 5, 11, 0.44), rgba(2, 5, 11, 0.1) 12%, rgba(2, 5, 11, 0) 24%),
+    linear-gradient(to bottom, rgba(2, 5, 11, 0.3), rgba(2, 5, 11, 0) 13%),
+    linear-gradient(to top, rgba(2, 5, 11, 0.36), rgba(2, 5, 11, 0) 16%);
 }
 
 .lv-fx--prox {
@@ -1381,6 +1387,25 @@
   text-shadow: var(--scrim);
 }
 
+/* Shortcut chip sits on the label's line so every menu row keeps the same height. */
+.lv-btn-line {
+  display: flex;
+  align-items: baseline;
+  gap: 1em;
+}
+
+.lv-btn-hint {
+  min-width: 0;
+  padding: 0.16em 0.5em;
+  opacity: 0.62;
+  transition: opacity 0.22s linear;
+}
+
+.lv-btn:hover .lv-btn-hint,
+.lv-btn:focus .lv-btn-hint {
+  opacity: 1;
+}
+
 .lv-btn::after {
   content: '';
   position: absolute;
@@ -1567,19 +1592,21 @@
   gap: 0.9em;
 }
 
+/* Same shared-column treatment as the full legend, so the descriptions align. */
 .lv-primer-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.55em 0.7em;
+  font-size: var(--fs-small);
+  color: var(--c-ink-dim);
 }
 
 .lv-primer-list li {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  align-items: baseline;
-  gap: 0.7em;
-  font-size: var(--fs-small);
-  color: var(--c-ink-dim);
+  display: contents;
+}
+
+.lv-primer-list li > * {
+  align-self: baseline;
 }
 
 kbd {
@@ -2022,13 +2049,29 @@ kbd {
   border-top: 1px solid var(--c-hairline);
 }
 
-.lv-key {
+/* One shared, content-sized key column across every row: a fixed em width either clips the
+   widest binding or leaves a dead gutter beside the narrow ones. The rows become `contents`
+   so the grid owns both columns; separators and the stagger move onto the cells. */
+.lv-keys {
   display: grid;
-  grid-template-columns: 14em minmax(0, 1fr);
-  align-items: baseline;
-  gap: 1.2em;
-  padding: 0.52em 0;
+  grid-template-columns: max-content minmax(0, 1fr);
+  /* Gap lives in the first cell's padding, not column-gap: a real gap would punch a visible
+     break through every row separator. */
+  column-gap: 0;
+}
+
+.lv-key {
+  display: contents;
+}
+
+.lv-key > * {
+  align-self: baseline;
+  padding: 0.55em 0;
   border-bottom: 1px solid rgba(185, 204, 221, 0.07);
+}
+
+.lv-key > *:first-child {
+  padding-right: clamp(14px, 1.8vmin, 30px);
 }
 
 .lv-key-keys {
@@ -2054,16 +2097,18 @@ kbd {
   color: var(--c-ink-dim);
 }
 
-.lv-screen--controls.is-in .lv-key {
+/* Animates the cells, not the row: a `display: contents` element generates no box to animate.
+   `--n` is set on the row and inherits down, so both cells move together. */
+.lv-screen--controls.is-in .lv-key > * {
   animation: lv-fade-up 0.5s var(--ease-out) both;
   animation-delay: calc(0.08s + var(--n) * 0.04s);
 }
 
 .lv-note {
-  margin-top: 1.2em;
+  margin-top: 1.6em;
   font-size: var(--fs-micro);
   letter-spacing: 0.14em;
-  color: var(--c-ink-faint);
+  color: var(--c-key);
 }
 
 /* --------------------------------------------------------------- results --- */

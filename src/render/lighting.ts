@@ -131,7 +131,7 @@ export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUni
     // single constant haze colour made far objects converge on near-black, so against a lit
     // nebula a six-kilometre rock had MORE contrast than a three-hundred-metre one and the
     // depth cue was not weak but inverted.
-    uHazeWarm: { value: new THREE.Color(0x4a3526) },
+    uHazeWarm: { value: new THREE.Color(0x3a2f28) },
     uHazeDensity: { value: 1 / 5600 },
   };
 }

@@ -55,16 +55,16 @@ const PLANET_FRAG = /* glsl */ `
     float wrap = clamp((ndl + 0.28) / 1.28, 0.0, 1.0);
     float light = pow(wrap, 1.35);
 
-    vec3 col = base * (uShadow * 0.16 + uLit * light * 1.15);
+    vec3 col = base * (uShadow * 0.16 + uLit * light * 0.92);
 
     // Forward scattering along the terminator: the classic warm rim on a lit gas giant.
     float terminator = pow(1.0 - abs(ndl), 6.0) * smoothstep(-0.35, 0.25, ndl);
-    col += vec3(1.0, 0.66, 0.42) * terminator * 0.34;
+    col += vec3(1.0, 0.72, 0.52) * terminator * 0.2;
 
     // Rayleigh-ish limb: the atmosphere is denser at grazing angles.
     vec3 viewDir = normalize(-vec3(0.0, 0.0, 1.0));
     float fres = pow(1.0 - abs(dot(n, viewDir)), 3.0);
-    col += uAtmo * fres * light * 0.3;
+    col += uAtmo * fres * light * 0.22;
 
     // Night side keeps a trace of scattered light so it never becomes a black hole in frame.
     col += uShadow * 0.05;
@@ -148,7 +148,7 @@ export class Planet {
         uSunDir: { value: sunDir },
         uColor: { value: new THREE.Color(PALETTE.planetAtmo) },
         uPower: { value: 2.4 },
-        uStrength: { value: 0.62 },
+        uStrength: { value: 0.42 },
       },
       vertexShader: ATMO_VERT,
       fragmentShader: ATMO_FRAG,
@@ -165,6 +165,8 @@ export class Planet {
     if (options.rings) body.add(this.buildRings(radius, sunDir));
 
     body.position.copy(options.direction).normalize().multiplyScalar(options.distance);
+    // The ring shadow test runs in world space, so it needs the body's world centre.
+    if (this.ringMat) this.ringMat.uniforms.uPlanetCenter.value.copy(body.position);
     // Tilt the whole system so the ring plane cuts the silhouette at an interesting angle.
     body.rotation.set(0.42, 0.9, -0.18);
     this.object.add(body);
@@ -189,13 +191,17 @@ export class Planet {
         uSunDir: { value: sunDir },
         uWarm: { value: new THREE.Color(0xd8b48a) },
         uCool: { value: new THREE.Color(0x6e7fa8) },
+        uPlanetCenter: { value: new THREE.Vector3() },
+        uPlanetRadius: { value: radius },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
         varying vec3 vNormal;
+        varying vec3 vWorldPos;
         void main() {
           vUv = uv;
           vNormal = normalize(normalMatrix * normal);
+          vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -203,9 +209,12 @@ export class Planet {
         precision highp float;
         varying vec2 vUv;
         varying vec3 vNormal;
+        varying vec3 vWorldPos;
         uniform vec3 uSunDir;
         uniform vec3 uWarm;
         uniform vec3 uCool;
+        uniform vec3 uPlanetCenter;
+        uniform float uPlanetRadius;
 
         ${GLSL_NOISE}
 
@@ -214,14 +223,32 @@ export class Planet {
           // Sharp gaps plus fine structure: rings read as billions of particles, not a decal.
           float coarse = fbm(vec3(t * 26.0, 0.0, 0.0), 4) * 0.5 + 0.5;
           float fine = fbm(vec3(t * 165.0, 3.7, 0.0), 3) * 0.5 + 0.5;
+          // A 165x radial frequency compresses to a couple of pixels at grazing angles and
+          // aliases into crawling moire. Dissolve it toward its own mean as the footprint
+          // grows — the standard fix, and it costs one fwidth.
+          fine = mix(0.5, fine, 1.0 - smoothstep(0.0015, 0.009, fwidth(t)));
           float density = smoothstep(0.28, 0.72, coarse) * (0.55 + fine * 0.45);
           density *= smoothstep(0.0, 0.06, t) * (1.0 - smoothstep(0.86, 1.0, t));
           // A couple of hard divisions.
           density *= 1.0 - smoothstep(0.30, 0.33, t) * (1.0 - smoothstep(0.36, 0.39, t));
 
+          // The planet's shadow falling across its own rings. Ray-march from this fragment
+          // toward the star and test the planet sphere: two lines, and it is the single cue
+          // that separates "rings" from "a decal painted round a ball" — everyone has seen
+          // the Cassini photographs even if they could not name what is missing.
+          vec3 rel = vWorldPos - uPlanetCenter;
+          float bq = dot(rel, uSunDir);
+          float cq = dot(rel, rel) - uPlanetRadius * uPlanetRadius;
+          float disc = bq * bq - cq;
+          // Softened by how deeply the ray passes inside the limb, giving a penumbra.
+          float shadow = (bq < 0.0) ? smoothstep(-0.04, 0.12, disc / (uPlanetRadius * uPlanetRadius)) : 0.0;
+
           float ndl = abs(dot(normalize(vNormal), uSunDir));
           vec3 col = mix(uCool, uWarm, fine) * (0.25 + ndl * 1.05);
-          gl_FragColor = vec4(col * density, density * 0.92);
+          col *= mix(1.0, 0.1, shadow);
+          // Pulled down so the rings stop out-competing the star for attention when they sit
+          // in a corner of the frame.
+          gl_FragColor = vec4(col * density * 0.86, density * 0.92);
         }
       `,
       transparent: true,

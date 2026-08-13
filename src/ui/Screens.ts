@@ -406,13 +406,36 @@ export class Screens {
     return view;
   }
 
-  private button(text: string, cls: string, onClick: () => void, sub?: string): HTMLElement {
+  /**
+   * `sub` is a second line under the label; `hint` is a keyboard shortcut chip set inline
+   * beside it. A shortcut has to stay on the label's line — as a second line it reads as a
+   * stray glyph and makes that one row taller than its neighbours, which wrecks the menu's
+   * vertical rhythm.
+   */
+  private button(
+    text: string,
+    cls: string,
+    onClick: () => void,
+    sub?: string,
+    hint?: string,
+  ): HTMLElement {
     const b = el('button', `lv-btn ${cls}`.trim());
     b.type = 'button';
     b.dataset['nav'] = 'button';
     const marker = el('span', 'lv-btn-mark');
     const wrap = el('span', 'lv-btn-body');
-    wrap.appendChild(el('span', 'lv-btn-t', text));
+    if (hint) {
+      const line = el('span', 'lv-btn-line');
+      const chip = el('kbd', 'lv-btn-hint', hint);
+      /* The chip is decoration for the eye; the shortcut is announced via aria-keyshortcuts,
+         which is what it is for. Without this the accessible name comes out as "RESTARTN". */
+      chip.setAttribute('aria-hidden', 'true');
+      b.setAttribute('aria-keyshortcuts', hint.toLowerCase());
+      line.append(el('span', 'lv-btn-t', text), chip);
+      wrap.appendChild(line);
+    } else {
+      wrap.appendChild(el('span', 'lv-btn-t', text));
+    }
     if (sub) wrap.appendChild(el('span', 'lv-btn-s', sub));
     b.append(marker, wrap);
     b.addEventListener('click', () => {
@@ -611,7 +634,7 @@ export class Screens {
       /* Second, where the genre puts it: in a time trial "go again" is the common verb, and
          N was previously the only way to do it and was documented nowhere. The sub-label
          teaches the shortcut at the point of use. */
-      this.button('RESTART', '', () => this.host.restart(), 'N'),
+      this.button('RESTART', '', () => this.host.restart(), undefined, 'N'),
       this.button('SETTINGS', '', () => this.show('settings')),
       this.button('CONTROLS', '', () => this.show('controls')),
       this.button('ABORT RUN', 'is-danger', () => this.host.quitToTitle()),
