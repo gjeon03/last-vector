@@ -32,7 +32,7 @@ const DUST_VERT = /* glsl */ `
     float toCentre = length(world - uOrigin);
     // Only the genuinely near-field motes are drawn. Streaks a few hundred metres out read as
     // a warp tunnel rather than as dust, and they bury the whole scene behind them.
-    float edge = 1.0 - smoothstep(halfBox * 0.16, halfBox * 0.42, toCentre);
+    float edge = 1.0 - smoothstep(halfBox * 0.06, halfBox * 0.24, toCentre);
     // ...and fade the ones that would be inside the cockpit.
     float near = smoothstep(6.0, 34.0, toCentre);
 

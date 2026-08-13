@@ -698,8 +698,11 @@ export class Game {
 
     // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
     // short at cruise and only tearing open under boost — that contrast is the point.
-    const stretch = 0.004 + speed01 * 0.012 + boostBlend * 0.03;
-    this.dust.update(this.ship.position, this.ship.velocity, stretch, 0.1 + speed01 * 0.2 + boostBlend * 0.22);
+    const stretch = 0.003 + speed01 * 0.01 + boostBlend * 0.028;
+    // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
+    // wall of streaks under boost, which is where the cue is actually wanted.
+    const dustOpacity = 0.02 + speed01 * speed01 * 0.2 + boostBlend * 0.24;
+    this.dust.update(this.ship.position, this.ship.velocity, stretch, dustOpacity);
 
     this.shipModel.update(
       this.clock,
@@ -776,7 +779,7 @@ export class Game {
 
     const target = this.grade;
     target.blurStrength = damp(target.blurStrength, speed01 * 0.012 + boost * 0.03, 0.18, dt);
-    target.aberration = damp(target.aberration, 0.0016 + speed01 * 0.004 + boost * 0.012, 0.2, dt);
+    target.aberration = damp(target.aberration, 0.0002 + speed01 * speed01 * 0.0035 + boost * 0.011, 0.2, dt);
     target.warp = damp(target.warp, boost * 0.075, 0.2, dt);
     target.vignette = damp(target.vignette, 0.62 + boost * 0.16 + this.proximity * 0.12, 0.3, dt);
     target.damage = clamp01(this.damageFlash * 0.9 + (1 - this.ship.hull) * 0.12);
