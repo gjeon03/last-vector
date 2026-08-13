@@ -137,3 +137,21 @@ declare global {
     __LV?: HarnessApi;
   }
 }
+
+/**
+ * READINESS CONTRACT
+ *
+ * A WebGL game cannot be ready at the `load` event: the renderer has to be created, the sky
+ * cube map baked and the asteroid field generated first, which takes on the order of a second.
+ * There is therefore no synchronous readiness signal, and any driver that inspects `window.__LV`
+ * immediately after `load` will find nothing.
+ *
+ * Wait for either of these, then call `ready()`:
+ *
+ *   await page.waitForFunction(() => Boolean(window.__LV), null, { timeout: 45000 });
+ *   await page.waitForSelector('html[data-lv-ready="1"]');
+ *
+ * The `data-lv-ready` attribute is set on the document element at the same moment `window.__LV`
+ * is assigned, so either is sufficient.
+ */
+export const HARNESS_READY_ATTRIBUTE = 'data-lv-ready';

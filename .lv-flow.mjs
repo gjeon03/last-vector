@@ -1,0 +1,35 @@
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+const OUT='/private/tmp/claude-501/-Users-jeongyeong-yeon-Documents-last-vector/29cfe0ab-5a2e-4f8b-a0b3-8a5da503442d/scratchpad/flow'; mkdirSync(OUT,{recursive:true});
+const b = await chromium.launch({ args: ['--use-gl=angle','--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist'] });
+const p = await b.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+const errs=[]; p.on('console',m=>m.type()==='error'&&errs.push(m.text())); p.on('pageerror',e=>errs.push(e.message));
+await p.goto('http://127.0.0.1:4173/', { waitUntil: 'load' });
+await p.waitForFunction(() => Boolean(window.__LV), null, { timeout: 45000 });
+await p.evaluate(() => window.__LV.ready());
+await p.waitForTimeout(1500);
+const shot = async n => { await p.screenshot({ path: `${OUT}/${n}.png` }); console.log('shot', n); };
+await shot('01-title');
+// navigate the title menu with the keyboard, like a player would
+await p.keyboard.press('ArrowDown'); await p.waitForTimeout(250);
+await p.keyboard.press('Enter'); await p.waitForTimeout(700); await shot('02-settings');
+await p.keyboard.press('Escape'); await p.waitForTimeout(500);
+await p.keyboard.press('ArrowDown'); await p.keyboard.press('ArrowDown'); await p.waitForTimeout(200);
+await p.keyboard.press('Enter'); await p.waitForTimeout(700); await shot('03-controls');
+await p.keyboard.press('Escape'); await p.waitForTimeout(500);
+await p.keyboard.press('ArrowUp'); await p.keyboard.press('ArrowUp'); await p.waitForTimeout(200);
+await p.keyboard.press('Enter'); await p.waitForTimeout(800); await shot('04-briefing');
+await p.keyboard.press('Enter'); await p.waitForTimeout(700); await shot('05-countdown');
+await p.waitForTimeout(2600); await shot('06-go');
+await p.evaluate(() => window.__LV.setAutopilot(true,{skill:1}));
+await p.waitForTimeout(9000); await shot('07-flying');
+await p.keyboard.press('Escape'); await p.waitForTimeout(700); await shot('08-pause');
+await p.keyboard.press('Escape'); await p.waitForTimeout(600);
+await p.evaluate(() => { const t=Date.now(); window.__LV.seekCourse(0.999); });
+await p.waitForTimeout(600);
+await p.evaluate(() => window.__LV.setInput({ throttle: 1, boost: false }));
+for (let i=0;i<60;i++){ const ph = await p.evaluate(()=>window.__LV.phase()); if (ph==='finished') break; await p.waitForTimeout(400); }
+await p.waitForTimeout(1400); await shot('09-results');
+console.log('phase:', await p.evaluate(()=>window.__LV.phase()));
+console.log('errors:', errs.slice(0,6));
+await b.close();
