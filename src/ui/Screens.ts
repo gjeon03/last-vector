@@ -30,16 +30,44 @@ const BRIEF_LINES: readonly string[] = [
   'Fly them in order. Do not trust the quiet between them, and do not slow for anything that is not a marker.',
 ];
 
-const CONTROLS: readonly (readonly [string, string])[] = [
-  ['MOUSE', 'Pitch / yaw'],
-  ['W  S', 'Throttle up / down'],
-  ['A  D', 'Roll left / right'],
-  ['Q  E', 'Strafe left / right'],
-  ['R  F', 'Strafe up / down'],
-  ['SHIFT', 'Overburn'],
-  ['SPACE', 'Vector brake'],
-  ['ESC', 'Pause'],
+interface ControlRow {
+  /**
+   * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
+   * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
+   */
+  readonly groups: readonly (readonly string[])[];
+  readonly action: string;
+  /** Also shown in the briefing primer. Flagged per row so reordering cannot silently change it. */
+  readonly primer?: boolean;
+}
+
+/**
+ * Authoritative bindings, mirrored from src/core/Input.ts. Boost and brake are the two verbs
+ * the game is actually about, so they lead the primer alongside steering and throttle.
+ */
+const CONTROLS: readonly ControlRow[] = [
+  { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true },
+  { groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
+  { groups: [['A', 'D']], action: 'Roll left / right', primer: true },
+  { groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
+  { groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
+  { groups: [['Q', 'E']], action: 'Strafe left / right' },
+  { groups: [['R', 'F']], action: 'Strafe up / down' },
+  { groups: [['↑', '↓', '←', '→']], action: 'Pitch / yaw without the mouse' },
+  { groups: [['ESC']], action: 'Pause' },
+  { groups: [['N']], action: 'Restart the run' },
 ];
+
+/** Key chips for one binding row, shared by the CONTROLS legend and the briefing primer. */
+function keyChips(row: ControlRow): HTMLElement {
+  const wrap = el('span', 'lv-key-keys');
+  for (let g = 0; g < row.groups.length; g++) {
+    if (g > 0) wrap.appendChild(el('span', 'lv-key-or', 'or'));
+    const group = row.groups[g]!;
+    for (let k = 0; k < group.length; k++) wrap.appendChild(el('kbd', '', group[k]!));
+  }
+  return wrap;
+}
 
 /* -------------------------------------------------------------- settings map */
 
@@ -491,10 +519,11 @@ export class Screens {
     const primer = el('div', 'lv-primer');
     primer.appendChild(el('div', 'lv-kicker', 'PRIMER'));
     const keys = el('ul', 'lv-primer-list');
-    for (let i = 0; i < 5; i++) {
-      const [k, v] = CONTROLS[i]!;
+    for (let i = 0; i < CONTROLS.length; i++) {
+      const row = CONTROLS[i]!;
+      if (!row.primer) continue;
       const li = el('li');
-      li.append(el('kbd', '', k), el('span', '', v));
+      li.append(keyChips(row), el('span', '', row.action));
       keys.appendChild(li);
     }
     primer.appendChild(keys);
@@ -579,6 +608,10 @@ export class Screens {
     const menu = el('nav', 'lv-menu lv-menu--tight');
     menu.append(
       this.button('RESUME', 'is-primary', () => this.host.resume()),
+      /* Second, where the genre puts it: in a time trial "go again" is the common verb, and
+         N was previously the only way to do it and was documented nowhere. The sub-label
+         teaches the shortcut at the point of use. */
+      this.button('RESTART', '', () => this.host.restart(), 'N'),
       this.button('SETTINGS', '', () => this.show('settings')),
       this.button('CONTROLS', '', () => this.show('controls')),
       this.button('ABORT RUN', 'is-danger', () => this.host.quitToTitle()),
@@ -736,16 +769,18 @@ export class Screens {
 
     const list = el('ul', 'lv-keys');
     for (let i = 0; i < CONTROLS.length; i++) {
-      const [k, v] = CONTROLS[i]!;
+      const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
       li.style.setProperty('--n', String(i));
-      const keys = el('span', 'lv-key-keys');
-      for (const part of k.split('  ')) keys.appendChild(el('kbd', '', part));
-      li.append(keys, el('span', 'lv-key-d', v));
+      li.append(keyChips(row), el('span', 'lv-key-d', row.action));
       list.appendChild(li);
     }
 
-    const note = el('p', 'lv-note', 'Pointer lock captures the mouse on launch. ESC releases it.');
+    const note = el(
+      'p',
+      'lv-note',
+      'Pointer lock captures the mouse on launch. ESC releases it and holds the flight.',
+    );
     const actions = el('div', 'lv-actions');
     actions.append(this.button('BACK', 'is-primary', () => this.opts.onBack()));
 

@@ -44,8 +44,17 @@ export interface Telemetry {
   /** Ship-frame roll and pitch in radians, for the artificial horizon. */
   roll: number;
   pitch: number;
-  /** Metres / second squared felt by the pilot, for the g-load readout. */
+  /** Metres per second squared felt by the pilot. The HUD renders this in G, i.e. / 9.80665. */
   gLoad: number;
+  /**
+   * Where the ship is actually going, projected to screen space — the flight-path marker.
+   *
+   * This is the single element that most sells "I am flying a real craft", because the gap
+   * between it and the centre of the screen IS the drift the flight model is simulating.
+   * Deriving it from roll and g-load only ever produces something plausible; this is the
+   * real vector. Meaningless below a few metres per second, where `onScreen` is false.
+   */
+  velocityAnchor: ScreenAnchor;
   gate: GateTelemetry;
   /** Metres remaining along the whole course. */
   courseRemaining: number;

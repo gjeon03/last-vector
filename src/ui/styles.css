@@ -1345,6 +1345,7 @@
 .lv-menu .lv-btn:nth-child(2) { --n: 1; }
 .lv-menu .lv-btn:nth-child(3) { --n: 2; }
 .lv-menu .lv-btn:nth-child(4) { --n: 3; }
+.lv-menu .lv-btn:nth-child(5) { --n: 4; }
 
 .lv-btn-mark {
   position: relative;
@@ -1573,9 +1574,10 @@
 }
 
 .lv-primer-list li {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
   align-items: baseline;
-  gap: 0.8em;
+  gap: 0.7em;
   font-size: var(--fs-small);
   color: var(--c-ink-dim);
 }
@@ -2022,7 +2024,7 @@ kbd {
 
 .lv-key {
   display: grid;
-  grid-template-columns: 11em minmax(0, 1fr);
+  grid-template-columns: 14em minmax(0, 1fr);
   align-items: baseline;
   gap: 1.2em;
   padding: 0.52em 0;
@@ -2031,7 +2033,19 @@ kbd {
 
 .lv-key-keys {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   gap: 0.35em;
+}
+
+/* Separates alternative bindings ("SHIFT or LMB") so two chips never read as a key pair. */
+.lv-key-or {
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--c-ink-faint);
+  text-transform: lowercase;
+  padding: 0 0.05em;
 }
 
 .lv-key-d {

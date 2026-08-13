@@ -98,7 +98,10 @@ export class Overlay {
         host.start();
       },
       restart: () => {
+        /* Close the pause screen before handing off, so the menu never lingers over a run
+           that has already been torn down and rebuilt underneath it. */
         this.paused = false;
+        this.applyView();
         host.restart();
       },
       resume: () => {

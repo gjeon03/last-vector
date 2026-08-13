@@ -395,6 +395,7 @@ export class Game {
       roll: 0,
       pitch: 0,
       gLoad: 0,
+      velocityAnchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
       gate: {
         index: 0,
         total: this.course.gates.length,
@@ -447,6 +448,9 @@ export class Game {
   }
 
   beginRun(): void {
+    // Clearing this matters the moment any restart affordance is reachable from the pause
+    // menu: without it the new run starts already frozen on the countdown.
+    this.paused = false;
     void this.audio.unlock();
     this.course.reset();
     this.gateHistory.length = 0;
@@ -938,6 +942,35 @@ export class Game {
     this.scratchEuler.setFromQuaternion(this.ship.quaternion, 'ZYX');
     t.roll = num(this.scratchEuler.z);
     t.pitch = num(this.scratchEuler.x);
+
+    // Every screen-space anchor below projects through the camera, and the renderer only
+    // refreshes these matrices during render() — which happens AFTER this. Without an explicit
+    // update the HUD is projecting through last frame's camera, which at several hundred
+    // metres a second puts the flight-path marker off the bottom of the screen.
+    this.chase.camera.updateMatrixWorld();
+    this.chase.camera.matrixWorldInverse.copy(this.chase.camera.matrixWorld).invert();
+
+    // --- flight-path marker ----------------------------------------------------------
+    // Projected a fixed distance along the velocity vector rather than at a fixed world point,
+    // so the marker sits at the ship's actual heading regardless of speed.
+    const speed = this.ship.speed;
+    if (speed > 6) {
+      this.tmpC.copy(this.ship.velocity).multiplyScalar(120 / speed).add(this.ship.position);
+      this.tmpA.copy(this.tmpC).project(this.chase.camera);
+      this.tmpB.copy(this.tmpC).applyMatrix4(this.chase.camera.matrixWorldInverse);
+      const ahead = this.tmpB.z < 0;
+      t.velocityAnchor.x = num(this.tmpA.x);
+      t.velocityAnchor.y = num(this.tmpA.y);
+      t.velocityAnchor.onScreen =
+        ahead && Math.abs(this.tmpA.x) <= 1 && Math.abs(this.tmpA.y) <= 1;
+      t.velocityAnchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+      t.velocityAnchor.distance = speed;
+    } else {
+      t.velocityAnchor.onScreen = false;
+      t.velocityAnchor.x = 0;
+      t.velocityAnchor.y = 0;
+      t.velocityAnchor.distance = speed;
+    }
 
     const gate = this.course.nextGate;
     const targetPosition = gate ? gate.position : this.terminus.position;
