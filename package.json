@@ -9,9 +9,14 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "serve:dist": "node scripts/static-server.mjs"
+    "serve:dist": "node scripts/static-server.mjs",
+    "playtest": "node scripts/playtest/playtest.mjs",
+    "playtest:perf": "node scripts/playtest/perf-probe.mjs",
+    "playtest:screenshots": "node scripts/playtest/screenshot-matrix.mjs",
+    "playtest:all": "node scripts/playtest/all.mjs"
   },
   "devDependencies": {
+    "playwright": "^1.62.0",
     "typescript": "^5.7.3",
     "vite": "^6.0.11"
   },
