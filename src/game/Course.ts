@@ -73,7 +73,6 @@ export class Course {
   private readonly scratchA = new THREE.Vector3();
   private readonly scratchB = new THREE.Vector3();
   private readonly crossing = new THREE.Vector3();
-  private readonly scratchC = new THREE.Vector3();
   private readonly poseMatrix = new THREE.Matrix4();
 
   onPass: ((event: CoursePassEvent) => void) | null = null;
@@ -286,9 +285,12 @@ export class Course {
     const clamped = clamp01(t);
     this.curve.getPointAt(clamped, position);
     this.curve.getTangentAt(clamped, this.scratchB).normalize();
+    // three's Matrix4.lookAt puts +Z along (eye - target), and an object's forward is -Z, so
+    // forward ends up as normalize(target - eye). The target is therefore the tangent itself:
+    // negating it here pointed the ship back down the course, which is why a seek or a
+    // cinematic vantage started with the nose facing the way it had come.
     this.scratchA.set(0, 0, 0);
-    this.scratchC.copy(this.scratchB).negate();
-    this.poseMatrix.lookAt(this.scratchA, this.scratchC, WORLD_UP);
+    this.poseMatrix.lookAt(this.scratchA, this.scratchB, WORLD_UP);
     quaternion.setFromRotationMatrix(this.poseMatrix);
   }
 

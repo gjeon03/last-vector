@@ -19,7 +19,7 @@ export interface CameraShakeSource {
   proximity: number;
 }
 
-const BASE_OFFSET = new THREE.Vector3(0, 3.15, 15.4);
+const BASE_OFFSET = new THREE.Vector3(0, 2.45, 15.4);
 
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
@@ -76,7 +76,7 @@ export class ChaseCamera {
     // Pull back and drop slightly as speed builds; under boost the arm extends further.
     this.offset.set(
       BASE_OFFSET.x,
-      BASE_OFFSET.y + speed01 * 0.5,
+      BASE_OFFSET.y + speed01 * 0.35,
       BASE_OFFSET.z + speed01 * 3.6 + boost * 4.2,
     );
     this.desiredPosition.copy(this.offset).applyQuaternion(this.boomQuaternion).add(this.boomPosition);
@@ -92,7 +92,7 @@ export class ChaseCamera {
     ship.getForward(this.scratch);
     this.lookTarget
       .copy(ship.position)
-      .addScaledVector(this.scratch, 55 + speed01 * 95);
+      .addScaledVector(this.scratch, 44 + speed01 * 78);
     if (ship.speed > 12) {
       this.lookTarget.addScaledVector(ship.velocity, 0.035 + boost * 0.02);
     }

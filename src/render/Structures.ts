@@ -450,7 +450,7 @@ export class DerelictField {
     for (let i = 0; i < options.count; i++) {
       const t = (i + 0.5) / options.count;
       const anchor = options.spine[Math.floor(t * (options.spine.length - 1))];
-      const length = rng.range(320, 1400);
+      const length = rng.range(420, 1900);
       const width = length * rng.range(0.1, 0.24);
 
       // A torn hull section: full section forward, ragged and thinning aft.
@@ -472,7 +472,8 @@ export class DerelictField {
       const mesh = new THREE.Mesh(geometry, this.material);
       const dir = { x: 0, y: 0, z: 0 };
       rng.onSphere(dir);
-      const distance = rng.range(2600, 11000);
+      // Close enough to read as a known-size object, far enough to stay out of the racing line.
+      const distance = rng.range(1700, 6200);
       mesh.position.set(
         anchor.x + dir.x * distance,
         anchor.y + dir.y * distance * 0.4,

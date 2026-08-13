@@ -247,10 +247,10 @@ export class Game {
       count: maxProfile.asteroidCount,
       lighting: this.lighting,
       spine: this.course.spine,
-      spread: SCALE.asteroidFieldRadius,
-      corridor: SCALE.gateRadius * 2.6,
-      minRadius: 12,
-      maxRadius: 130,
+      spread: SCALE.asteroidFieldRadius * 0.55,
+      corridor: SCALE.gateRadius * 1.9,
+      minRadius: 9,
+      maxRadius: 160,
       seed: seed ^ 0x2f19,
     });
     this.mainScene.add(this.asteroids.object);
@@ -259,7 +259,7 @@ export class Game {
       lighting: this.lighting,
       spine: this.course.spine,
       seed: seed ^ 0x1a77,
-      count: 9,
+      count: 14,
     });
     this.mainScene.add(this.derelicts.object);
 
