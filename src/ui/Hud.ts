@@ -212,7 +212,6 @@ interface VecState {
   slipY: number;
   slipOn: number;
   roll: number;
-  pitch: number;
   gateX: number;
   gateY: number;
   gateR: number;
@@ -304,7 +303,6 @@ export class Hud {
   private readonly eSlipY = new Eased(0, 26);
   private readonly eSlipOn = new Eased(0, 9);
   private readonly eRoll = new Eased(0, 18);
-  private readonly ePitch = new Eased(0, 18);
 
   /* change guards — avoid touching the DOM when nothing moved */
   private pThrottle = -1;
@@ -363,7 +361,6 @@ export class Hud {
     slipY: 0,
     slipOn: 0,
     roll: 0,
-    pitch: 0,
     gateX: 0,
     gateY: 0,
     gateR: 0,
@@ -966,11 +963,10 @@ export class Hud {
     vs.time = this.clock;
     vs.alpha = alpha;
 
-    /* --- attitude --- */
+    /* --- attitude ---
+     * Roll only. There is no horizon out here for a pitch ladder to reference. */
     this.eRoll.target = t.roll;
-    this.ePitch.target = t.pitch;
     vs.roll = this.eRoll.step(dt);
-    vs.pitch = this.ePitch.step(dt);
 
     /* --- flight-path marker ---
      * The real projected velocity vector, not an approximation of one. The gap between this
@@ -1024,7 +1020,6 @@ export class Hud {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    this.drawAttitude(ctx, w, h, vs);
     this.drawRollArc(ctx, w, h, vs);
     this.drawProximity(ctx, w, h, vs);
     if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs, Math.min(w, h));
@@ -1034,51 +1029,6 @@ export class Hud {
 
     ctx.globalAlpha = 1;
     this.placeGateTag(w, h, vs, gate.anchor.onScreen);
-  }
-
-  /**
-   * Attitude reference. Deliberately tiny and low-contrast: it lives just outside the pipper
-   * so it reads as part of the sight, never as debris scattered across the view.
-   */
-  private drawAttitude(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    vs: VecState,
-  ): void {
-    const cx = w * 0.5;
-    const cy = h * 0.5;
-    const vmin = Math.min(w, h);
-    const inner = vmin * 0.052;
-    const reach = vmin * 0.108;
-    const pxPerRad = vmin * 0.30;
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(-vs.roll);
-    ctx.lineWidth = 1;
-
-    for (let step = -1; step <= 1; step++) {
-      const y = vs.pitch * pxPerRad - ((step * 10 * Math.PI) / 180) * pxPerRad;
-      if (Math.abs(y) > reach) continue;
-      const fade = clamp(1 - Math.abs(y) / reach, 0, 1);
-      const major = step === 0;
-      /* Fade rides on globalAlpha so the dark casing dims in step with the line it backs;
-         baking the fade into the stroke colour alone would leave a dark halo behind nothing. */
-      const a = (major ? 0.42 : 0.24) * fade;
-      if (a < 0.012) continue;
-      ctx.globalAlpha = vs.alpha * a;
-      const len = major ? reach : inner + vmin * 0.026;
-      for (let s = 0; s < 2; s++) {
-        const side = s === 0 ? -1 : 1;
-        ctx.beginPath();
-        ctx.moveTo(side * inner, y);
-        ctx.lineTo(side * len, y);
-        if (!major) ctx.lineTo(side * len, y + (step > 0 ? -1 : 1) * vmin * 0.009);
-        casedStroke(ctx, INK_SOLID, 1, 2.4);
-      }
-    }
-    ctx.restore();
   }
 
   /** Compact roll scale sat above the pipper. Reads as part of the sight, not a horizon line. */
@@ -1235,8 +1185,10 @@ export class Hud {
   }
 
   /**
-   * Off-screen chase arrow — the single most important readability element (Q5). Big, amber,
-   * pulsing, with a stack of trailing chevrons so the eye lands on it without a search.
+   * Off-screen chase arrow — the single most important readability element (Q5). One head,
+   * big and amber and pulsing. It previously trailed a runway of chevrons; they were cut
+   * because the head already reads at a glance and the runway carried nothing the head did
+   * not. The range readout beside it is the second signal.
    */
   private drawChaseArrow(
     ctx: CanvasRenderingContext2D,
@@ -1270,20 +1222,6 @@ export class Hud {
 
     ctx.translate(ax, ay);
     ctx.rotate(-a);
-
-    /* trailing chevrons: a short runway pointing at the head */
-    ctx.strokeStyle = rgba(C.accent, 1);
-    ctx.lineWidth = Math.max(2, s * 0.16);
-    for (let i = 1; i <= 3; i++) {
-      const off = -s * (0.72 + i * 0.42);
-      const k = s * (0.46 - i * 0.07);
-      ctx.globalAlpha = vis * (1.05 - i * 0.22) * (0.78 + pulse * 0.22);
-      ctx.beginPath();
-      ctx.moveTo(off - k * 0.62, -k);
-      ctx.lineTo(off + k * 0.62, 0);
-      ctx.lineTo(off - k * 0.62, k);
-      ctx.stroke();
-    }
 
     /* head */
     ctx.globalAlpha = vis;

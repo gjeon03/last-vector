@@ -666,17 +666,19 @@
   flex-direction: column;
   align-items: center;
   gap: 0.32em;
-  padding: 0.7em 3.2em;
+  padding: 1.5em 3.4em;
   text-align: center;
   opacity: 0;
   pointer-events: none;
   white-space: nowrap;
   /* Its own scrim: a callout lands centre-upper, which is where a lit gate or the star ends
-     up during an approach, and thin 200-weight letterforms lose that fight on shadow alone. */
+     up during an approach, and thin 200-weight letterforms lose that fight on shadow alone.
+     The ellipse is kept inside the padding box — at 140% height it overran the box and got
+     clipped, which read as a faint rectangle on darker backgrounds. */
   background: radial-gradient(
-    ellipse 60% 140% at 50% 50%,
-    rgba(2, 6, 13, 0.72),
-    rgba(2, 6, 13, 0.3) 55%,
+    ellipse 58% 92% at 50% 50%,
+    rgba(2, 6, 13, 0.74),
+    rgba(2, 6, 13, 0.26) 58%,
     rgba(2, 6, 13, 0) 100%
   );
 }

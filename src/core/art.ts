@@ -91,7 +91,7 @@ export const SCALE: Record<
   number
 > = {
   shipLength: 18,
-  gateRadius: 140,
+  gateRadius: 105,
   /** Typical straight-line distance between consecutive gates. */
   gateSpacing: 6200,
   asteroidFieldRadius: 9000,

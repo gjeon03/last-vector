@@ -425,17 +425,13 @@ export class SfxKit {
   /**
    * Reserve dry. Dry, mechanical, unsatisfying on purpose: three failed ignition ticks and a sag.
    *
-   * The game clears `boosting` and sets `boostLocked` in the same frame, so this arrives at the
-   * same instant as `boostEnd`. Two simultaneous events read as one, so the whole thing is
-   * displaced 110 ms — long enough to be heard as a separate consequence of the cut-out, short
-   * enough to still belong to it. The ticks sit at 880-1250 Hz for the same reason as above.
+   * The game fires this instead of `boostEnd` when the drive cuts out for lack of reserve, so
+   * this synth owns the moment outright and starts on the transition with no displacement.
+   * Its audibility comes from sitting at 880-1250 Hz, the one band the drive leaves open at full
+   * throttle, rather than from level.
    */
   private boostEmpty(_intensity: number, when: number): void {
-    // Level is set so this lands alongside `finish` as the loudest thing in the game and not
-    // above it: the audibility comes from the 400-1500 Hz placement and the 110 ms displacement,
-    // not from brute level. Pushing it louder only made it the loudest event in the mix.
     const v = this.begin(when, 1.05, 0.1);
-    const gap = 0.11;
     for (let k = 0; k < 3; k++) {
       this.noise(v, {
         colour: 'spark',
@@ -445,7 +441,7 @@ export class SfxKit {
         peak: 0.46 - k * 0.09,
         attack: 0.001,
         decay: 0.055,
-        delay: gap + k * 0.062,
+        delay: k * 0.062,
       });
     }
     // Power sag: a falling tone that stays inside the band the drive leaves open.
@@ -457,7 +453,7 @@ export class SfxKit {
       peak: 0.3,
       attack: 0.008,
       decay: 0.36,
-      delay: gap + 0.02,
+      delay: 0.02,
     });
     // A small low sag underneath for weight, not for information.
     this.tone(v, {
@@ -468,7 +464,7 @@ export class SfxKit {
       peak: 0.22,
       attack: 0.01,
       decay: 0.34,
-      delay: gap + 0.02,
+      delay: 0.02,
     });
     this.finishVoice(v);
   }

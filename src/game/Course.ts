@@ -39,16 +39,30 @@ interface Leg {
   label: string;
 }
 
+/**
+ * Pacing.
+ *
+ * The first cut of this course demanded nothing. At a 288 m steady-state turn radius against
+ * 6.2 km legs, a naive proportional controller reading nothing but the on-screen gate marker
+ * flew all nine apertures dead centre on its first attempt and beat the built-in autopilot.
+ * Every leg was inside the ship's capability by more than an order of magnitude, so the
+ * authored differences between "hard right" and "the long run" were invisible in the hand.
+ *
+ * The fix is not more turn — it is less room. `length` now varies from 0.52 to 1.4, so the
+ * tight legs put a real turn inside a distance where the ship's inertia is the binding
+ * constraint, while the long ones stay long precisely so the contrast is felt. The aperture
+ * came down too: 210 m across is still forgiving at 420 m/s, but it is no longer a barn door.
+ */
 const LEGS: Leg[] = [
-  { turn: 0.1, climb: -0.04, length: 0.95, bank: 0.0, label: 'open' },
-  { turn: -0.62, climb: 0.14, length: 1.05, bank: 0.5, label: 'first bend' },
-  { turn: 0.34, climb: -0.34, length: 0.9, bank: -0.35, label: 'dive' },
-  { turn: 0.88, climb: 0.06, length: 1.0, bank: 0.85, label: 'hard right' },
-  { turn: -0.44, climb: 0.3, length: 1.12, bank: -0.6, label: 'climb out' },
-  { turn: -0.72, climb: -0.12, length: 0.86, bank: -0.9, label: 'shelf cut' },
-  { turn: 0.28, climb: -0.2, length: 1.35, bank: 0.2, label: 'the long run' },
-  { turn: 0.55, climb: 0.16, length: 0.82, bank: 0.7, label: 'tighten' },
-  { turn: -0.24, climb: -0.06, length: 1.0, bank: -0.2, label: 'terminus approach' },
+  { turn: 0.1, climb: -0.04, length: 1.0, bank: 0.0, label: 'open' },
+  { turn: -0.62, climb: 0.14, length: 0.95, bank: 0.5, label: 'first bend' },
+  { turn: 0.52, climb: -0.4, length: 0.6, bank: -0.35, label: 'the dive' },
+  { turn: 1.02, climb: 0.06, length: 0.78, bank: 0.85, label: 'hard right' },
+  { turn: -0.5, climb: 0.34, length: 1.05, bank: -0.6, label: 'climb out' },
+  { turn: -0.92, climb: -0.16, length: 0.56, bank: -0.9, label: 'the shelf cut' },
+  { turn: 0.2, climb: -0.14, length: 1.4, bank: 0.2, label: 'the long run' },
+  { turn: 0.78, climb: 0.2, length: 0.52, bank: 0.7, label: 'the pinch' },
+  { turn: -0.3, climb: -0.08, length: 1.0, bank: -0.2, label: 'terminus approach' },
 ];
 
 export class Course {
@@ -139,7 +153,7 @@ export class Course {
     for (let i = 0; i < gateAnchors.length; i++) {
       const anchor = gateAnchors[i];
       // Final gate is wider: the approach is fast and the run should not end on a technicality.
-      const radius = i === gateAnchors.length - 1 ? SCALE.gateRadius * 1.25 : SCALE.gateRadius;
+      const radius = i === gateAnchors.length - 1 ? SCALE.gateRadius * 1.3 : SCALE.gateRadius;
       const gate = new Gate({
         index: i,
         total: gateAnchors.length,
