@@ -420,7 +420,8 @@ export class ShipModel {
       this.nozzles.push({ position: new THREE.Vector3(side * 2.55, -0.14, nozzleZ), radius: 0.58 });
 
       // Nozzle throat: a bright disc that stays visible even at idle.
-      const glowGeo = new THREE.CircleGeometry(0.56, 24);
+      // Sized to sit inside the nozzle throat. Any larger and the bloom swallows the pod.
+      const glowGeo = new THREE.CircleGeometry(0.42, 24);
       const glow = this.add(glowGeo, this.glowMat);
       glow.position.set(side * 2.55, -0.14, nozzleZ + 0.02);
       glow.renderOrder = 3;
@@ -481,7 +482,7 @@ export class ShipModel {
         boost,
       );
     }
-    this.glowMat.uniforms.uPower.value = 0.35 + power * 0.75 + boost * 1.2;
+    this.glowMat.uniforms.uPower.value = 0.3 + power * 0.6 + boost * 1.0;
   }
 
   setVisible(visible: boolean): void {

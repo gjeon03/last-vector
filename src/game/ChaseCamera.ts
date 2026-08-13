@@ -19,7 +19,7 @@ export interface CameraShakeSource {
   proximity: number;
 }
 
-const BASE_OFFSET = new THREE.Vector3(0, 2.45, 15.4);
+const BASE_OFFSET = new THREE.Vector3(0, 2.3, 13.4);
 
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
