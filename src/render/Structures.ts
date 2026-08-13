@@ -198,8 +198,10 @@ const APERTURE_BAND_FRAG = /* glsl */ `
     // Two counter-running chases so the aperture reads as powered machinery.
     float a = smoothstep(0.72, 1.0, sin(vUv.x * 6.2831 * 6.0 - uTime * 1.4) * 0.5 + 0.5);
     float b = smoothstep(0.86, 1.0, sin(vUv.x * 6.2831 * 24.0 + uTime * 0.7) * 0.5 + 0.5);
-    float glow = 0.5 + a * 1.4 + b * 0.7;
-    gl_FragColor = vec4(uColor * core * glow * 2.2, core * min(glow, 1.0) * 0.9);
+    // The aperture is the thing the player is aiming at from four kilometres out, so it is
+    // deliberately the brightest object in the sector after the star itself.
+    float glow = 1.1 + a * 2.6 + b * 1.2;
+    gl_FragColor = vec4(uColor * core * glow * 4.2, core * min(glow, 1.0) * 0.95);
   }
 `;
 
