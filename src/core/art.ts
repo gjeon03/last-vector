@@ -49,7 +49,7 @@ export const PALETTE = {
   engineFlame: 0x3aa8ff,
   engineBoost: 0xd9f2ff,
 
-  rockLit: 0x6b6156,
+  rockLit: 0x8a7d6e,
   rockShadow: 0x14161f,
   rockMineral: 0x3fd6c0,
 } as const;

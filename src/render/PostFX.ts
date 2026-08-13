@@ -228,7 +228,11 @@ const COMPOSITE_FRAG = /* glsl */ `
       float total = 0.0;
       for (int i = 0; i < 16; i++) {
         if (i >= uBlurSamples) break;
-        float t = float(i) / float(uBlurSamples - 1);
+        // Jittered per pixel. Evenly spaced taps deposit a visible chain of separate copies
+        // once the streak is longer than about sixteen source-feature widths, and regular
+        // discrete repetition is read as a rendering artefact, never as motion. Dithering the
+        // tap position dissolves the beads into grain.
+        float t = (float(i) + hash12(gl_FragCoord.xy + uTime * 61.0)) / float(uBlurSamples);
         float w = 1.0 - t * 0.55;
         vec2 base = uv - dir * t;
         accum.r += texture2D(tScene, base + ca).r * w;
@@ -250,6 +254,16 @@ const COMPOSITE_FRAG = /* glsl */ `
 
     vec3 color = scene + bloom * uBloomStrength + rays * uGodrayStrength;
 
+    // Damage goes in BEFORE the tonemap, in HDR, so it rolls off like light instead of
+    // flooding. Applied after tonemapping it was an additive constant on a display-referred
+    // image, which lifts the black point uniformly — and an elevated black reads as fog, so
+    // every value relationship in the frame compressed at once.
+    if (uDamage > 0.001) {
+      float dr = length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0));
+      float dEdge = smoothstep(0.62, 1.0, dr) * min(uDamage, 0.35);
+      color = color * (1.0 + 0.6 * dEdge) + vec3(0.5, 0.03, 0.06) * dEdge;
+    }
+
     color *= uExposure;
     color = tonemap(color);
 
@@ -268,17 +282,6 @@ const COMPOSITE_FRAG = /* glsl */ `
     // rather than as a lens. It now stays open across the middle two thirds of the frame.
     float vig = smoothstep(1.15, 0.62, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
     color *= mix(1.0, vig, uVignette);
-    if (uDamage > 0.001) {
-      // A damage flash is a RIM, not a wash. Starting at 28% of the way to the corner it
-      // covered most of the frame, and at a 14:1:2 ratio it dyed the entire image rose — for
-      // several seconds after every glancing contact, and permanently at low hull. It was
-      // strong enough that I twice mistook it for a palette defect in the nebula.
-      float r = length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0));
-      float edge = smoothstep(0.68, 1.15, r);
-      // Less saturated: a warning the pilot reads at the edge of vision, not a colour cast.
-      color += vec3(0.62, 0.10, 0.11) * edge * uDamage;
-    }
-
     color = clamp(color, 0.0, 1.0);
     color = pow(color, vec3(0.4545454545));
 

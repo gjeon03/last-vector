@@ -40,7 +40,13 @@ export const GLSL_LIGHTING = /* glsl */ `
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
   }
 
-  vec3 shadeSurface(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
+  /**
+   * @param Nrim the normal used for the fresnel/rim term only. Displaced geometry with flat
+   *   per-face normals quantises a fresnel into whole facets ending on a hard crease, which
+   *   reads as a stroked outline rather than as light wrapping a form. Pass the smooth
+   *   pre-displacement normal here where one exists, and N where it does not.
+   */
+  vec3 shadeSurfaceRim(vec3 N, vec3 Nrim, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
     vec3 L = uSunDir;
     vec3 H = normalize(L + V);
     float ndl = max(dot(N, L), 0.0);
@@ -55,7 +61,11 @@ export const GLSL_LIGHTING = /* glsl */ `
     vec3 spec = (D * G * F) / max(4.0 * ndl * ndv, 1e-4);
 
     vec3 kd = (1.0 - F) * (1.0 - metalness);
-    vec3 direct = (kd * albedo / 3.14159265 + spec) * uSunColor * ndl;
+    // Wrapped diffuse. A hard ndl terminator puts the unlit side straight onto the ambient
+    // floor, which is what left every rock's shadow side sitting at the same value as the sky
+    // behind it — and an object the same value as its background is an outline, not a solid.
+    float wrapped = clamp((dot(N, L) + 0.35) / 1.35, 0.0, 1.0);
+    vec3 direct = (kd * albedo / 3.14159265 * wrapped + spec * ndl) * uSunColor;
 
     // Hemisphere ambient keyed to the sky rather than a flat grey: the shadow side of every
     // object picks up the nebula, which is what stops dark surfaces going muddy.
@@ -67,12 +77,23 @@ export const GLSL_LIGHTING = /* glsl */ `
     // shape cue there is, and without it a backlit rock is just a hole cut out of the sky.
     // The term keys off the *view* direction against the light, not the surface normal, so it
     // peaks exactly when you are looking into the star past the object's silhouette.
-    float fres = pow(1.0 - ndv, uRimPower);
+    // Directionally gated. The previous form had a constant 0.2 term and took its fresnel
+    // from the face normal, so every object in the star's half of the frame wore an even
+    // outline all the way round — the anti-star edge measured 65% as bright as the star-facing
+    // edge, where real backlight is closer to 10:1. A rim that does not care which way the
+    // light is coming from is a sticker.
+    float fres = pow(1.0 - max(dot(Nrim, V), 1e-4), uRimPower);
     float backlight = pow(max(dot(-V, L), 0.0), 2.2);
     float sideLight = smoothstep(-0.35, 0.55, dot(N, L));
-    vec3 rimLight = uRimColor * fres * (0.2 + sideLight * 0.5 + backlight * 4.2) * ao;
+    float facing = smoothstep(-0.1, 0.6, dot(Nrim, -L));
+    vec3 rimLight = uRimColor * fres * (sideLight * 0.35 + backlight * 4.2) * facing * ao;
 
     return (direct + ambient + rimLight) * uExposureBias;
+  }
+
+  /** Convenience overload for surfaces with no separate smooth normal. */
+  vec3 shadeSurface(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
+    return shadeSurfaceRim(N, N, V, albedo, roughness, metalness, ao);
   }
 
   /**
@@ -120,11 +141,12 @@ export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUni
     // Four times the old values. At 0.05/0.038 a rock's unlit side received about 0.004
     // linear — black by construction — which removed the entire midtone band from the image
     // and left every object reading as a hole cut in the sky rather than as a solid.
-    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.14) },
-    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.1) },
+    // A ~20:1 lit-to-unlit ratio put the shadow side exactly on the nebula's own value.
+    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.32) },
+    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.22) },
     // The rim takes the star's colour, because that is what is lighting it.
     uRimColor: { value: new THREE.Color(0xffcf9e).multiplyScalar(0.5) },
-    uRimPower: { value: 2.8 },
+    uRimPower: { value: 4.0 },
     uExposureBias: { value: 1 },
     uHazeColor: { value: new THREE.Color(0x121d33) },
     // Looking toward the star, the dust between you and a distant object scatters warm. A

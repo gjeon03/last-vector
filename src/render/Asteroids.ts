@@ -18,11 +18,16 @@ const ASTEROID_VERT = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vTint;
   varying float vCavity;
+  varying vec3 vSmoothNormal;
+  attribute vec3 aSmoothNormal;
 
   void main() {
     vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
     vWorldPos = world.xyz;
     vNormal = normalize(mat3(instanceMatrix) * normal);
+    // The undisplaced sphere normal. computeVertexNormals on a non-indexed icosphere gives
+    // flat per-face normals, so a fresnel taken from them quantises into whole facets.
+    vSmoothNormal = normalize(mat3(instanceMatrix) * aSmoothNormal);
     vTint = instanceColor;
     vCavity = color.r;
     gl_Position = projectionMatrix * viewMatrix * world;
@@ -35,6 +40,7 @@ const ASTEROID_FRAG = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vTint;
   varying float vCavity;
+  varying vec3 vSmoothNormal;
 
   uniform vec3 uCameraPos;
   uniform vec3 uRock;
@@ -67,10 +73,13 @@ const ASTEROID_FRAG = /* glsl */ `
     N = normalize(N - grad * 0.55);
 
     float cavity = clamp(vCavity, 0.0, 1.0);
-    vec3 albedo = uRock * vTint * (0.74 + h * 0.26) * mix(0.34, 1.0, cavity);
+    // Much wider albedo modulation. The derivative bump was there but swamped: a rock with a
+    // ±13% albedo range has nothing that resolves as you approach it, and without detail that
+    // resolves there is no cue for how large or how far away it is.
+    vec3 albedo = uRock * vTint * (0.45 + h * 0.55) * mix(0.34, 1.0, cavity);
     float roughness = clamp(0.8 + h * 0.15, 0.3, 0.98);
 
-    vec3 color = shadeSurface(N, V, albedo, roughness, 0.04, mix(0.28, 1.0, cavity));
+    vec3 color = shadeSurfaceRim(N, normalize(vSmoothNormal), V, albedo, roughness, 0.04, mix(0.28, 1.0, cavity));
 
     // Mineral veins glow faintly, and only deep inside cracks. Kept sparse: it is an accent,
     // and at field density anything brighter turns the shelf into fairy lights.
@@ -107,12 +116,17 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
   const fineAmp = rng.range(0.06, 0.14);
 
   const cavity = new Float32Array(count);
+  const smoothNormals = new Float32Array(count * 3);
   let maxR = 0;
 
   for (let i = 0; i < count; i++) {
     const nx = pos.getX(i);
     const ny = pos.getY(i);
     const nz = pos.getZ(i);
+    // Positions are still on the unit sphere at this point, so they are the smooth normal.
+    smoothNormals[i * 3] = nx;
+    smoothNormals[i * 3 + 1] = ny;
+    smoothNormals[i * 3 + 2] = nz;
 
     const big = fbm3(nx * 1.35 + ox, ny * 1.35 + oy, nz * 1.35 + oz, 4);
     const fine = fbm3(nx * 5.1 + ox, ny * 5.1 + oy, nz * 5.1 + oz, 3);
@@ -140,6 +154,7 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
     colors[i * 3 + 2] = cavity[i];
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('aSmoothNormal', new THREE.BufferAttribute(smoothNormals, 3));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 

@@ -83,7 +83,7 @@ export class ChaseCamera {
     this.offset.set(
       BASE_OFFSET.x,
       BASE_OFFSET.y + speed01 * 0.35,
-      BASE_OFFSET.z + speed01 * 3.6 + boost * 4.2,
+      BASE_OFFSET.z + speed01 * 2.2 + boost * 1.2,
     );
     this.desiredPosition.copy(this.offset).applyQuaternion(this.boomQuaternion);
 
@@ -130,7 +130,10 @@ export class ChaseCamera {
     }
 
     // --- field of view ----------------------------------------------------------------
-    const targetFov = this.baseFov + speed01 * 8 + boost * 17 + shake.impact * 4;
+    // 99 degrees at full boost shrank the ship's on-screen size by 2.6x and smeared the
+    // frame edges. The player's own ship is the only object of known size in view; removing it
+    // turns speed into a screen effect instead of a vehicle moving through a world.
+    const targetFov = this.baseFov + speed01 * 4 + boost * 9 + shake.impact * 3;
     this.fov = damp(this.fov, targetFov, boost > 0.5 ? 0.16 : 0.28, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

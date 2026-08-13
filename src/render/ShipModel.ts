@@ -247,6 +247,7 @@ export class ShipModel {
     this.glowMat = new THREE.ShaderMaterial({
       uniforms: {
         uColor: { value: new THREE.Color(PALETTE.engineCore) },
+        uFlame: { value: new THREE.Color(PALETTE.engineFlame) },
         uPower: { value: 1 },
       },
       vertexShader: /* glsl */ `
@@ -264,10 +265,18 @@ export class ShipModel {
         varying vec3 vNormal;
         varying vec3 vView;
         uniform vec3 uColor;
+        uniform vec3 uFlame;
         uniform float uPower;
         void main() {
-          float facing = pow(max(dot(normalize(vNormal), normalize(vView)), 0.0), 1.4);
-          gl_FragColor = vec4(uColor * (0.6 + facing * 2.2) * uPower, 1.0);
+          // Two lobes, and deliberately landing under 1.0 before the tonemap so the bloom
+          // chain carries the brightness instead of the disc clipping to flat white. A clipped
+          // emissive has no shape, so it reads as a hole rather than as a light source — and it
+          // throws away the cyan machine-light the whole direction is built on.
+          float facing = max(dot(normalize(vNormal), normalize(vView)), 0.0);
+          float core = pow(facing, 3.5);
+          float halo = pow(facing, 1.1);
+          vec3 col = mix(uFlame, uColor, core) * (halo * 0.55 + core * 0.85);
+          gl_FragColor = vec4(col * uPower, 1.0);
         }
       `,
       transparent: true,
@@ -482,7 +491,7 @@ export class ShipModel {
         boost,
       );
     }
-    this.glowMat.uniforms.uPower.value = 0.3 + power * 0.6 + boost * 1.0;
+    this.glowMat.uniforms.uPower.value = 0.55 + power * 0.5 + boost * 0.7;
   }
 
   setVisible(visible: boolean): void {

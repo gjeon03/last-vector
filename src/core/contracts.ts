@@ -80,6 +80,12 @@ export interface Telemetry {
   log: LogLine[];
   /** 0..1 proximity warning, drives the collision alert. */
   proximity: number;
+  /**
+   * 0..1, spikes on a hull strike and decays in about a fifth of a second. An explicit signal
+   * because the alternative — watching `hull` decrease frame to frame — misses a glancing
+   * contact that costs no hull, and misfires on any frame the value is re-clamped.
+   */
+  impactFlash: number;
   fps: number;
 }
 

@@ -415,6 +415,7 @@ export class Game {
       callout: null,
       log: this.logLines,
       proximity: 0,
+      impactFlash: 0,
       fps: 60,
     };
   }
@@ -918,6 +919,7 @@ export class Game {
       );
     } else {
       this.course.poseAt(v.t, this.tmpA, this.tmpQuat);
+      this.clearVantageOfObstacles(this.tmpA);
     }
     this.ship.position.copy(this.tmpA);
     this.ship.quaternion.copy(this.tmpQuat);
@@ -925,6 +927,9 @@ export class Game {
     this.shipRoot.quaternion.copy(this.tmpQuat);
 
     this.tmpB.copy(v.offset).applyQuaternion(this.tmpQuat).add(this.tmpA);
+    // Clearing only the ship anchor left the camera itself free to sit inside a boulder — one
+    // shipped capture was taken from within an asteroid, looking at the inside of its far wall.
+    this.clearVantageOfObstacles(this.tmpB);
     this.tmpC.set(0, 0, -1).applyQuaternion(this.tmpQuat).multiplyScalar(v.lookAhead).add(this.tmpA);
     this.chase.setPose(this.tmpB, this.tmpC, v.fov);
   }
@@ -981,6 +986,7 @@ export class Game {
     t.gLoad = num(this.ship.gForce);
     t.elapsed = num(this.elapsed);
     t.proximity = num(this.proximity);
+    t.impactFlash = num(this.damageFlash);
     t.fps = num(this.fps, 60);
     t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
 
