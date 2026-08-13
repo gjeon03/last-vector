@@ -20,6 +20,7 @@ export const GLSL_LIGHTING = /* glsl */ `
   uniform float uRimPower;
   uniform float uExposureBias;
   uniform vec3 uHazeColor;
+  uniform vec3 uHazeWarm;
   uniform float uHazeDensity;
 
   float distributionGGX(float ndh, float roughness) {
@@ -80,13 +81,16 @@ export const GLSL_LIGHTING = /* glsl */ `
    * apparent depth. This single mix is the strongest depth cue in the whole renderer: it
    * separates the rock two hundred metres away from the wreck nine kilometres out.
    */
-  vec3 applyHaze(vec3 color, float distance) {
+  vec3 applyHaze(vec3 color, float distance, vec3 viewDir) {
     float t = 1.0 - exp(-distance * uHazeDensity);
-    // Highlights punch through haze further than midtones do, which keeps distant emissives
-    // readable instead of washing the whole frame to a flat tint.
+    // Only genuinely bright emissives punch through; at 0.35 this term was strong enough to
+    // cancel the haze on ordinary rock, which is what it exists to affect.
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    t *= 1.0 - clamp(luma * 0.35, 0.0, 0.6);
-    return mix(color, uHazeColor, clamp(t, 0.0, 1.0));
+    t *= 1.0 - clamp(luma * 0.12, 0.0, 0.3);
+    // Warm toward the star, cold away from it.
+    float toSun = max(dot(-viewDir, uSunDir), 0.0);
+    vec3 haze = mix(uHazeColor, uHazeWarm, pow(toSun, 1.5));
+    return mix(color, haze, clamp(t, 0.0, 1.0));
   }
 `;
 
@@ -99,6 +103,7 @@ export interface LightingUniforms {
   uRimPower: THREE.IUniform<number>;
   uExposureBias: THREE.IUniform<number>;
   uHazeColor: THREE.IUniform<THREE.Color>;
+  uHazeWarm: THREE.IUniform<THREE.Color>;
   uHazeDensity: THREE.IUniform<number>;
 }
 
@@ -112,14 +117,22 @@ export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUni
     // A hot star reads as near-white with a warm bias, not as orange paint. Saturating the
     // key light is what turned every rock in the field into terracotta.
     uSunColor: { value: new THREE.Color(0xffe2bd).multiplyScalar(2.7) },
-    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.05) },
-    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.038) },
+    // Four times the old values. At 0.05/0.038 a rock's unlit side received about 0.004
+    // linear — black by construction — which removed the entire midtone band from the image
+    // and left every object reading as a hole cut in the sky rather than as a solid.
+    uSkyColor: { value: new THREE.Color(PALETTE.nebulaTeal).multiplyScalar(0.14) },
+    uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.1) },
     // The rim takes the star's colour, because that is what is lighting it.
     uRimColor: { value: new THREE.Color(0xffcf9e).multiplyScalar(0.5) },
     uRimPower: { value: 2.8 },
     uExposureBias: { value: 1 },
-    uHazeColor: { value: new THREE.Color(0x0b1526).multiplyScalar(1.0) },
-    uHazeDensity: { value: 1 / 5200 },
+    uHazeColor: { value: new THREE.Color(0x121d33) },
+    // Looking toward the star, the dust between you and a distant object scatters warm. A
+    // single constant haze colour made far objects converge on near-black, so against a lit
+    // nebula a six-kilometre rock had MORE contrast than a three-hundred-metre one and the
+    // depth cue was not weak but inverted.
+    uHazeWarm: { value: new THREE.Color(0x4a3526) },
+    uHazeDensity: { value: 1 / 5600 },
   };
 }
 

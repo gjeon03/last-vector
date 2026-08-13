@@ -81,7 +81,7 @@ const ASTEROID_FRAG = /* glsl */ `
       color += uMineral * vein * 0.3;
     }
 
-    gl_FragColor = vec4(applyHaze(color, dist), 1.0);
+    gl_FragColor = vec4(applyHaze(color, dist, V), 1.0);
   }
 `;
 

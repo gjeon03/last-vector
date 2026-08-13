@@ -220,7 +220,13 @@ export class Course {
       return;
     }
 
-    if (this.previousSigned < 0 && signed >= 0) {
+    // A crossing in EITHER direction counts. Watching only negative-to-positive meant that
+    // after an overshoot the natural recovery — turn round, fly back through it — crossed the
+    // plane the wrong way and registered nothing at all: no pass, no miss, no callout. Combined
+    // with a director that could not point you back, a single missed cairn ended the run.
+    const crossedForward = this.previousSigned < 0 && signed >= 0;
+    const crossedBackward = this.previousSigned > 0 && signed <= 0;
+    if (crossedForward || crossedBackward) {
       const denominator = signed - this.previousSigned;
       const t = denominator === 0 ? 0 : -this.previousSigned / denominator;
       this.crossing.lerpVectors(this.previousPosition, position, clamp01(t));

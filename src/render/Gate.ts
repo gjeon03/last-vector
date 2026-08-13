@@ -61,7 +61,7 @@ const MONOLITH_FRAG = /* glsl */ `
 
     vec3 albedo = uStone * (0.7 + grain * 0.34);
     float roughness = clamp(0.62 + grain * 0.2, 0.2, 0.95);
-    vec3 color = shadeSurface(N, V, albedo, roughness, 0.22, 0.85);
+    vec3 color = shadeSurface(N, V, albedo, roughness, 0.05, 0.85);
 
     // Cut glyph channels down the inward face. They light up as the gate arms — the stone
     // is inert, the marking is what the builders energised.
@@ -75,7 +75,7 @@ const MONOLITH_FRAG = /* glsl */ `
     color += uGlyph * channel * uCharge * pulse * 3.4;
     color -= albedo * channel * 0.25 * (1.0 - uCharge);
 
-    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos), V), 1.0);
   }
 `;
 
@@ -216,7 +216,7 @@ export class Gate {
     this.monolithMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uStone: { value: new THREE.Color(0x3d3a3a) },
+        uStone: { value: new THREE.Color(0x6e6a63) },
         uGlyph: { value: new THREE.Color(PALETTE.gateArmed) },
         uCharge: { value: 0 },
         uTime: { value: 0 },
@@ -226,11 +226,16 @@ export class Gate {
     });
 
     // --- monoliths ------------------------------------------------------------------
-    const SEGMENTS = 5;
+    // Count, spacing and archetype all vary, and some positions are deliberately empty. Five
+    // identical slabs at a uniform 72 degrees reads as generated in well under a second — the
+    // eye matches on rotational symmetry faster than on almost anything else — and it also
+    // makes better fiction: these markers have been out here a very long time.
+    const SEGMENTS = 3 + rng.int(0, 4);
     for (let i = 0; i < SEGMENTS; i++) {
-      const angle = (i / SEGMENTS) * Math.PI * 2 + rng.range(-0.06, 0.06);
+      if (SEGMENTS > 4 && rng.bool(0.16)) continue;
+      const angle = (i / SEGMENTS) * Math.PI * 2 + rng.signed(0.34);
       const mesh = new THREE.Mesh(this.buildMonolith(options.radius, rng), this.monolithMat);
-      const r = options.radius * rng.range(1.02, 1.11);
+      const r = options.radius * rng.range(0.98, 1.16);
       mesh.position.set(Math.cos(angle) * r, Math.sin(angle) * r, rng.range(-options.radius * 0.09, options.radius * 0.09));
       // Local +X points outward, so the shader's "inward face" test is well defined.
       mesh.rotation.z = angle;
@@ -287,8 +292,8 @@ export class Gate {
           float core = pow(across, 3.0);
           // A light pulse chases around the ring when armed: unmistakable directionality.
           float chase = smoothstep(0.55, 1.0, sin(vUv.x * 6.2831 * 2.0 - uTime * 1.9) * 0.5 + 0.5);
-          float a = core * (0.22 + uCharge * 0.55 + chase * uCharge * 0.8 + uFlash * 1.4);
-          gl_FragColor = vec4(uColor * (0.6 + uCharge * 2.2 + uFlash * 5.0), a);
+          float a = core * (0.18 + uCharge * 0.45 + chase * uCharge * 0.7 + uFlash * 1.2);
+          gl_FragColor = vec4(uColor * (0.4 + uCharge * 1.3 + uFlash * 3.2), a);
         }
       `,
       transparent: true,
@@ -372,9 +377,15 @@ export class Gate {
 
   /** A tapered slab, wider at the base, with a chamfered inward edge. */
   private buildMonolith(gateRadius: number, rng: Rng): THREE.BufferGeometry {
-    const height = gateRadius * rng.range(0.72, 1.05);
-    const width = gateRadius * rng.range(0.1, 0.16);
-    const depth = gateRadius * rng.range(0.13, 0.2);
+    // Three archetypes rather than one slab at three sizes: a tall spar, a broad plinth, and a
+    // broken stub. Varying only the scale of one shape is still one shape.
+    const archetype = rng.int(0, 3);
+    const height =
+      gateRadius * (archetype === 0 ? rng.range(1.0, 1.35) : archetype === 1 ? rng.range(0.6, 0.8) : rng.range(0.3, 0.46));
+    const width =
+      gateRadius * (archetype === 0 ? rng.range(0.06, 0.09) : archetype === 1 ? rng.range(0.17, 0.24) : rng.range(0.12, 0.18));
+    const depth =
+      gateRadius * (archetype === 0 ? rng.range(0.08, 0.12) : archetype === 1 ? rng.range(0.16, 0.23) : rng.range(0.14, 0.2));
 
     const shape = new THREE.Shape();
     const w = width;
@@ -401,26 +412,34 @@ export class Gate {
     return geometry;
   }
 
+  /**
+   * Colour follows state in BOTH directions. Setting cleared/missed used to overwrite the
+   * palette permanently, so a gate that was cleared and later re-armed — which happens on a
+   * restart, on a seek, and every time the player misses and comes back — stayed gold or red
+   * while the game insisted it was the live target.
+   */
   setState(state: GateState): void {
     if (this.state === state) return;
     this.state = state;
+
+    const tint =
+      state === 'cleared' ? PALETTE.gateCleared : state === 'missed' ? PALETTE.gateFail : PALETTE.gateArmed;
+    this.tintScratch.set(tint);
+    this.fieldMat.uniforms.uHot.value.copy(this.tintScratch);
+    this.ringMat.uniforms.uColor.value.copy(this.tintScratch);
+    this.beaconMat.uniforms.uColor.value.copy(this.tintScratch);
+    this.monolithMat.uniforms.uGlyph.value.copy(this.tintScratch);
+
     if (state === 'cleared') {
       this.flash = 1;
       this.shock = 0;
       this.shockMesh.visible = true;
-      const gold = new THREE.Color(PALETTE.gateCleared);
-      this.fieldMat.uniforms.uHot.value.copy(gold);
-      this.ringMat.uniforms.uColor.value.copy(gold);
-      this.beaconMat.uniforms.uColor.value.copy(gold);
-      this.monolithMat.uniforms.uGlyph.value.copy(gold);
     } else if (state === 'missed') {
       this.flash = 1;
-      const red = new THREE.Color(PALETTE.gateFail);
-      this.fieldMat.uniforms.uHot.value.copy(red);
-      this.ringMat.uniforms.uColor.value.copy(red);
-      this.beaconMat.uniforms.uColor.value.copy(red);
     }
   }
+
+  private readonly tintScratch = new THREE.Color();
 
   update(dt: number, time: number, cameraPosition: THREE.Vector3, pixelScale: number): void {
     const targetCharge = this.state === 'armed' ? 1 : this.state === 'cleared' ? 0.16 : 0.05;

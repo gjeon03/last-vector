@@ -27,6 +27,20 @@ const LATERAL_TAU: Record<AssistLevel, number> = {
   raw: 5.5,
 };
 
+/**
+ * How long the FORWARD component takes to bleed off when the throttle is released.
+ *
+ * This used to be a single hard-coded 1.1 s for every assist level, so hands off the throttle
+ * the ship lost 98.8% of its speed in five seconds identically on arcade, standard and raw —
+ * Newtonian sideways and a handbrake forwards. The assist setting has to reach the axis the
+ * player actually notices, or "raw" means nothing.
+ */
+const COAST_TAU: Record<AssistLevel, number> = {
+  arcade: 1.1,
+  standard: 3.2,
+  raw: 16,
+};
+
 const MAX_RATE = {
   pitch: 1.55,
   yaw: 1.25,
@@ -215,9 +229,10 @@ export class Ship {
     let along = this.velocity.dot(this.forward);
     this.lateral.copy(this.velocity).addScaledVector(this.forward, -along);
 
-    // Spooling up takes longer than spooling down; brakes are stronger than the drive.
-    const accelTau = this.boosting ? 0.85 : FLIGHT.spoolTime / 3;
-    const tau = command.brake ? 0.55 : along < targetSpeed ? accelTau : 1.1;
+    // Overdrive spools hard: a burst only lasts a couple of seconds, so at the old 0.85 s the
+    // ship spent the whole burst accelerating and never reached the speed it advertises.
+    const accelTau = this.boosting ? 0.42 : FLIGHT.spoolTime / 3;
+    const tau = command.brake ? 0.55 : along < targetSpeed ? accelTau : COAST_TAU[this.assist];
     along = damp(along, targetSpeed, tau, dt);
 
     const lateralTau = command.brake ? 0.4 : LATERAL_TAU[this.assist];

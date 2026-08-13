@@ -98,7 +98,7 @@ const STRUCTURE_FRAG = /* glsl */ `
     float upward = max(dot(N, normalize(vec3(0.0, 0.0, 1.0))), 0.0);
     color += albedo * uWindow * 0.09 * (0.35 + upward * 0.65);
 
-    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos), V), 1.0);
   }
 `;
 

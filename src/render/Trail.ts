@@ -31,12 +31,16 @@ const TRAIL_FRAG = /* glsl */ `
 
   void main() {
     // vAge runs 0 at the nozzle to 1 at the tail.
+    // Soft across the ribbon and falling away fast along it. Hard edges and a near-constant
+    // width made these read as two searchlight beams laid over the scene rather than as
+    // exhaust: brighter than the engines they came from, and unaffected by the motion blur
+    // that was correctly smearing everything around them.
     float across = 1.0 - abs(vSide);
-    float body = pow(across, 1.6);
-    float fade = pow(1.0 - vAge, 2.1);
-    vec3 col = mix(uNear, uFar, vAge);
+    float body = pow(across, 2.6);
+    float fade = pow(1.0 - vAge, 3.2);
+    vec3 col = mix(uNear, uFar, pow(vAge, 0.7));
     float a = body * fade * uIntensity;
-    gl_FragColor = vec4(col * a * 1.15, a * 0.8);
+    gl_FragColor = vec4(col * a * 0.5, a * 0.55);
   }
 `;
 
@@ -149,7 +153,11 @@ export class Trail {
 
       const age = i / (this.count - 1);
       // Taper: widest just behind the nozzle, pinching to nothing at the tail.
-      const w = this.width * widthScale * (0.35 + 0.65 * Math.sin(Math.min(1, age * 3.2) * Math.PI * 0.5)) * (1 - age * 0.85);
+      // Widens just behind the nozzle, then narrows the whole way out.
+      const w =
+        this.width * widthScale
+        * (0.3 + 0.7 * Math.sin(Math.min(1, age * 4.5) * Math.PI * 0.5))
+        * Math.pow(1 - age, 0.85);
 
       const base = i * 6;
       this.positions[base] = point.x - this.side.x * w;

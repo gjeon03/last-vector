@@ -149,6 +149,8 @@ const COMPOSITE_FRAG = /* glsl */ `
   uniform vec3 uGodrayTint;
   uniform float uExposure;
   uniform float uContrast;
+  uniform float uGamma;
+  uniform float uPivot;
   uniform float uSaturation;
   uniform vec3 uLift;
   uniform vec3 uGain;
@@ -165,15 +167,29 @@ const COMPOSITE_FRAG = /* glsl */ `
   uniform float uWarp;
   varying vec2 vUv;
 
-  // Narkowicz-style ACES fit. Cheap, and it rolls highlights off instead of clipping them,
-  // which is what stops the star and the engine plumes turning into flat white blobs.
-  vec3 acesFilm(vec3 x) {
+  // Narkowicz-style ACES fit, applied to a scalar.
+  float acesFilm(float x) {
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+  }
+
+  /**
+   * Hue-preserving tonemap. Applying ACES per channel drives anything bright to (1,1,1), so a
+   * dying AMBER star tonemapped to a neutral white core and read as a lens-flare brush rather
+   * than as a body. Mapping the peak channel and rescaling the ratio keeps the hue all the way
+   * into the highlight; a controlled desaturation at the very top still lets it reach white.
+   */
+  vec3 tonemap(vec3 c) {
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak < 1e-5) return vec3(0.0);
+    vec3 ratio = c / peak;
+    float mapped = acesFilm(peak);
+    ratio = mix(ratio, vec3(1.0), pow(mapped, 5.0) * 0.6);
+    return ratio * mapped;
   }
 
   float hash12(vec2 p) {
@@ -235,16 +251,22 @@ const COMPOSITE_FRAG = /* glsl */ `
     vec3 color = scene + bloom * uBloomStrength + rays * uGodrayStrength;
 
     color *= uExposure;
-    color = acesFilm(color);
+    color = tonemap(color);
 
     // Grade in display space: lift/gain for the cold-shadow, warm-highlight separation.
     color = uLift + color * uGain;
-    color = (color - 0.5) * uContrast + 0.5;
+    // Midtone lift, then contrast about a LOW pivot. A symmetric contrast pivoted at 0.5 was
+    // subtracting from everything below mid, which cancelled the lift exactly and left the
+    // whole image crushed into the bottom of the range with no midtone shelf at all.
+    color = pow(max(color, 0.0), vec3(uGamma));
+    color = (color - uPivot) * uContrast + uPivot;
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(vec3(luma), color, uSaturation);
 
     // Vignette, plus a hot red edge when the hull is taking damage.
-    float vig = smoothstep(0.95, 0.28, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
+    // Starting to darken 28% of the way to the corner read as a spotlight on a black stage
+    // rather than as a lens. It now stays open across the middle two thirds of the frame.
+    float vig = smoothstep(1.15, 0.62, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
     color *= mix(1.0, vig, uVignette);
     if (uDamage > 0.001) {
       float edge = smoothstep(0.28, 0.85, length((vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0)));
@@ -392,7 +414,9 @@ export class PostFX {
       uGodrayStrength: { value: 1 },
       uGodrayTint: { value: new THREE.Color(1.0, 0.72, 0.42) },
       uExposure: { value: 1 },
-      uContrast: { value: 1.06 },
+      uContrast: { value: 1.14 },
+      uGamma: { value: 0.86 },
+      uPivot: { value: 0.22 },
       uSaturation: { value: 1.08 },
       uLift: { value: new THREE.Vector3(0.008, 0.012, 0.028) },
       uGain: { value: new THREE.Vector3(1.02, 0.995, 0.96) },

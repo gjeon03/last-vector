@@ -157,6 +157,8 @@ export class Game {
   private adaptAccumulator = 0;
   private adaptFrames = 0;
   private adaptCooldown = 0;
+  private adaptLongFrames = 0;
+  private lastRenderScaleCeiling = 1;
 
   private readonly telemetry: Telemetry;
   private calloutId = 0;
@@ -175,6 +177,7 @@ export class Game {
   private readonly vantages: Vantage[] = [];
   private disposed = false;
   private contextLost = false;
+  private frameFailures = 0;
   private firstFrameResolve: (() => void) | null = null;
   private readonly firstFrame: Promise<void>;
 
@@ -549,24 +552,33 @@ export class Game {
   private adaptResolution(rawDt: number): void {
     this.adaptAccumulator += rawDt;
     this.adaptFrames++;
+    if (rawDt > 0.0205) this.adaptLongFrames++;
     this.adaptCooldown -= rawDt;
     if (this.adaptFrames < 20 || this.adaptCooldown > 0) return;
 
     const meanMs = (this.adaptAccumulator / this.adaptFrames) * 1000;
+    const missed = this.adaptLongFrames;
     this.adaptAccumulator = 0;
     this.adaptFrames = 0;
+    this.adaptLongFrames = 0;
 
     const ceiling = this.settings.value.renderScale;
     const floor = 0.58;
     const before = this.dynamicScale;
 
-    // 16.7 ms budget with a little headroom either side of the deadband.
+    // Climbing cannot key off mean frame time. On a vsynced display the mean is pinned at the
+    // refresh interval no matter how much headroom there is, so a "< 13.8 ms" condition is
+    // unreachable and the scaler became a one-way ratchet: any hitch, including boot, was
+    // permanent and the game never rendered at native resolution again.
+    //
+    // The signal that actually distinguishes "comfortable" from "just barely making it" is
+    // whether any frame in the window *missed*. None missed means there is room to climb.
     if (meanMs > 18.5) {
       this.dynamicScale = Math.max(floor, this.dynamicScale - (meanMs > 26 ? 0.12 : 0.06));
       this.adaptCooldown = 0.35;
-    } else if (meanMs < 13.8 && this.dynamicScale < ceiling) {
-      this.dynamicScale = Math.min(ceiling, this.dynamicScale + 0.04);
-      this.adaptCooldown = 0.9;
+    } else if (missed === 0 && meanMs < 17.6 && this.dynamicScale < ceiling) {
+      this.dynamicScale = Math.min(ceiling, this.dynamicScale + 0.03);
+      this.adaptCooldown = 0.8;
     }
 
     if (Math.abs(this.dynamicScale - before) > 0.001) this.handleResize();
@@ -888,9 +900,11 @@ export class Game {
 
     const target = this.grade;
     target.blurStrength = damp(target.blurStrength, speed01 * 0.012 + boost * 0.03, 0.18, dt);
-    target.aberration = damp(target.aberration, 0.0002 + speed01 * speed01 * 0.0035 + boost * 0.011, 0.2, dt);
+    // No constant term: aberration is a speed effect, and a base value meant the title
+    // screen was fringing every star while standing still.
+    target.aberration = damp(target.aberration, speed01 * speed01 * 0.0035 + boost * 0.011, 0.2, dt);
     target.warp = damp(target.warp, boost * 0.075, 0.2, dt);
-    target.vignette = damp(target.vignette, 0.62 + boost * 0.16 + this.proximity * 0.12, 0.3, dt);
+    target.vignette = damp(target.vignette, 0.42 + boost * 0.2 + this.proximity * 0.14, 0.3, dt);
     target.damage = clamp01(this.damageFlash * 0.9 + (1 - this.ship.hull) * 0.12);
     target.exposure = damp(target.exposure, 1.3 - boost * 0.08, 0.5, dt);
     target.saturation = damp(target.saturation, 1.07 + boost * 0.06, 0.4, dt);
@@ -939,11 +953,14 @@ export class Game {
     t.gate.anchor.onScreen = onScreen;
     t.gate.anchor.distance = t.gate.distance;
 
-    // Behind the camera the projection mirrors, so the arrow angle is computed from the
-    // camera-space vector instead of the projected point.
+    // Behind the camera the *projection* mirrors, so the bearing is taken from the raw
+    // camera-space vector instead of the projected point. Camera space already has +x right
+    // and +y up, so atan2(y, x) is the bearing directly — the sign flip that used to guard
+    // against the projection mirror negated both components, which is a rotation by pi. The
+    // arrow pointed the long way round for every target behind the camera, and flipped between
+    // opposite screen edges frame to frame near z = 0.
     this.tmpB.copy(targetPosition).applyMatrix4(this.chase.camera.matrixWorldInverse);
-    const sign = this.tmpB.z > 0 ? -1 : 1;
-    t.gate.anchor.angle = num(Math.atan2(this.tmpB.y * sign, this.tmpB.x * sign));
+    t.gate.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
 
     this.ship.getForward(this.tmpC);
     t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
@@ -1090,6 +1107,11 @@ export class Game {
   }
 
   private onSettingsChanged(s: Settings): void {
+    // Raising the render-scale ceiling must immediately give the scaler room again, and
+    // lowering it must take effect at once. Clamping downward only made the slider one-way.
+    this.dynamicScale = Math.min(this.dynamicScale, s.renderScale);
+    if (s.renderScale > this.lastRenderScaleCeiling) this.dynamicScale = s.renderScale;
+    this.lastRenderScaleCeiling = s.renderScale;
     this.input.sensitivity = s.mouseSensitivity;
     this.input.invertY = s.invertY;
     this.chase.shakeScale = s.cameraShake;
@@ -1120,7 +1142,6 @@ export class Game {
     const width = window.innerWidth;
     const height = window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.dynamicScale = Math.min(this.dynamicScale, this.settings.value.renderScale);
     const scale = this.dynamicScale;
     const bufferWidth = Math.max(320, Math.round(width * dpr * scale));
     const bufferHeight = Math.max(240, Math.round(height * dpr * scale));
@@ -1178,10 +1199,24 @@ export class Game {
       if (this.disposed) return;
       const dt = (now - last) / 1000;
       last = now;
+      // Re-arm FIRST. If frame() throws — a HUD edge case, a shader failure, a lost context —
+      // re-arming afterwards would never run and the game would be bricked until reload, with
+      // the error swallowed by the window handler. A frame that fails must not stop the clock.
+      requestAnimationFrame(loop);
       // When the harness is stepping the simulation by hand the rAF loop must not also
       // advance it, or a "deterministic" playthrough silently runs at double rate.
-      if (!this.driven) this.frame(dt);
-      requestAnimationFrame(loop);
+      if (this.driven) return;
+      try {
+        this.frame(dt);
+      } catch (error) {
+        this.errors.push(`frame: ${error instanceof Error ? error.message : String(error)}`);
+        this.frameFailures++;
+        // A defect that repeats every frame would otherwise spam until the tab dies.
+        if (this.frameFailures > 60) {
+          this.contextLost = true;
+          this.onContextLost?.();
+        }
+      }
     };
     requestAnimationFrame(loop);
   }

@@ -147,7 +147,10 @@ export class Input {
     this.mouseDx = 0;
     this.mouseDy = 0;
 
-    const keyPitch = (this.held('down') ? 1 : 0) - (this.held('up') ? 1 : 0);
+    // Positive pitch is nose-up, and the mouse produces that from `expo(-stickY)`. The
+    // arrow keys had the sign the other way round, so the two pitch inputs disagreed and
+    // invertY flipped both together, making it impossible to reconcile in settings.
+    const keyPitch = (this.held('up') ? 1 : 0) - (this.held('down') ? 1 : 0);
     const keyYaw = (this.held('right') ? 1 : 0) - (this.held('left') ? 1 : 0);
 
     let pitch = expo(-this.stickY, 0.45) + keyPitch * 0.85;

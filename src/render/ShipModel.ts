@@ -113,7 +113,7 @@ const HULL_FRAG = /* glsl */ `
       color += vec3(1.0, 0.35, 0.08) * scorch * uDamage * 0.6 * (0.5 + 0.5 * sin(uTime * 11.0));
     }
 
-    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos)), 1.0);
+    gl_FragColor = vec4(applyHaze(color, length(uCameraPos - vWorldPos), V), 1.0);
   }
 `;
 

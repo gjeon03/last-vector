@@ -82,9 +82,7 @@ export const FONT = {
 export const SCALE: Record<
   | 'shipLength'
   | 'gateRadius'
-  | 'gateTriggerRadius'
   | 'gateSpacing'
-  | 'courseGates'
   | 'asteroidFieldRadius'
   | 'planetRadius'
   | 'planetDistance'
@@ -94,10 +92,8 @@ export const SCALE: Record<
 > = {
   shipLength: 18,
   gateRadius: 140,
-  gateTriggerRadius: 132,
   /** Typical straight-line distance between consecutive gates. */
   gateSpacing: 6200,
-  courseGates: 9,
   asteroidFieldRadius: 9000,
   planetRadius: 640_000,
   planetDistance: 2_900_000,
