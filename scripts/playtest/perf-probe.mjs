@@ -12,6 +12,7 @@ const REQUIRED_METHODS = [
   'phase',
   'setAutopilot',
   'step',
+  'setDriven',
   'profile',
   'settings',
   'setSettings',
@@ -63,7 +64,7 @@ async function runPerfProbe({ report, session, options }) {
     id: 'PERF.sample-shape',
     name: 'Profile sample is internally consistent',
     criteria: [],
-    assertion: 'Profile returns positive frames/seconds, finite non-negative timings and renderer counts, ordered p50 <= p95 <= p99 <= max, and FPS consistent with frames/seconds.',
+    assertion: 'Profile returns positive frames/seconds, finite non-negative timings and renderer counts, ordered p50 <= p95 <= p99 <= max, FPS consistent with frames/seconds, and a valid effective render scale/buffer.',
   }, async () => {
     const evidence = unwrap(profileOutcome);
     const sample = evidence.sample;
@@ -73,6 +74,9 @@ async function runPerfProbe({ report, session, options }) {
     verify(finiteNumber(sample?.fps) && sample.fps > 0, 'Profile FPS is not positive and finite.', evidence);
     verify(timingKeys.every((key) => finiteNumber(sample?.[key]) && sample[key] >= 0), 'Profile has an invalid frame-time value.', evidence);
     verify(countKeys.every((key) => Number.isInteger(sample?.[key]) && sample[key] >= 0), 'Profile has an invalid count.', evidence);
+    verify(finiteNumber(sample?.renderScale) && sample.renderScale > 0 && sample.renderScale <= 1, 'Profile has an invalid effective render scale.', evidence);
+    verify(Number.isInteger(sample?.drawingBufferWidth) && sample.drawingBufferWidth > 0 && Number.isInteger(sample?.drawingBufferHeight) && sample.drawingBufferHeight > 0, 'Profile has an invalid drawing-buffer size.', evidence);
+    verify(Math.abs(sample.drawingBufferWidth - Math.round(evidence.viewport.width * sample.renderScale)) <= 1 && Math.abs(sample.drawingBufferHeight - Math.round(evidence.viewport.height * sample.renderScale)) <= 1, 'Drawing-buffer size is inconsistent with viewport and effective render scale.', evidence);
     verify(sample.p50FrameMs <= sample.p95FrameMs && sample.p95FrameMs <= sample.p99FrameMs && sample.p99FrameMs <= sample.maxFrameMs, 'Profile percentiles are not ordered.', evidence);
     const calculatedFps = sample.frames / sample.seconds;
     verify(Math.abs(calculatedFps - sample.fps) <= Math.max(1, sample.fps * 0.05), 'FPS is inconsistent with frames / seconds.', {
@@ -100,7 +104,7 @@ async function collectProfile(page, options) {
   verify(page, 'Browser page is unavailable.');
   await callHarness(page, 'ready', [], options.timeoutMs);
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
-  await callHarness(page, 'startRun', [{ seed: options.seed, skipIntro: true }]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
 
   try {
@@ -120,7 +124,7 @@ async function collectProfile(page, options) {
     };
   } finally {
     await bestEffort(page, 'setAutopilot', [false]);
-    await bestEffort(page, 'setFixedTimestep', [null]);
+    await bestEffort(page, 'setDriven', [false]);
   }
 }
 

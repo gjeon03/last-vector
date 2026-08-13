@@ -14,8 +14,12 @@ const REQUIRED_METHODS = [
   'phase',
   'result',
   'setInput',
+  'activeInput',
+  'pose',
   'setAutopilot',
+  'gateHistory',
   'step',
+  'setDriven',
   'setFixedTimestep',
   'errors',
 ];
@@ -43,14 +47,14 @@ async function runPlaytest({ report, session, options }) {
   const inputOutcome = await report.check({
     id: 'M2.automation-input',
     name: 'Automation drives the declared flight input surface',
-    criteria: [criterion('M2', 'partial', 'Exercises all declared axes and observes throttle, speed, pitch, and roll; yaw/strafe effects are not exposed by telemetry.')],
-    assertion: 'A fixed-timestep run accepts pitch, yaw, roll, throttle, strafeX, strafeY, boost, and brake together; after 60 frames telemetry is flying, finite, moving, and reflects commanded throttle plus pitch/roll response.',
+    criteria: [criterion('M2', 'full', 'Exercises every declared control, confirms the applied command, and observes finite six-axis pose motion.')],
+    assertion: 'A fixed-timestep run applies pitch, yaw, roll, throttle, strafeX, strafeY, boost, and brake exactly; after 60 frames telemetry is flying and moving, position changes, and all three body angular rates respond.',
   }, async () => collectInputEvidence(page, options));
 
   await report.check({
     id: 'M7.automation-input-surface',
     name: 'Scripted input covers the keyboard/mouse command vocabulary',
-    criteria: [criterion('M7', 'partial', 'Proves API-level pitch/yaw/roll/throttle/strafe/boost/brake injection only; physical bindings and pointer lock remain a manual check.')],
+    criteria: [criterion('M7', 'partial', 'Proves resolved API-level pitch/yaw/roll/throttle/strafe/boost/brake input only; physical bindings and pointer lock remain a manual check.')],
     assertion: 'The same automation command containing every keyboard/mouse flight action is accepted and can be released with setInput(null).',
   }, async () => {
     verify(inputOutcome.ok, 'The full input command was not accepted; see M2.automation-input.', inputOutcome.error);
@@ -67,7 +71,7 @@ async function runPlaytest({ report, session, options }) {
     id: 'M3.sequential-gates',
     name: 'Autopilot clears every gate in order',
     criteria: [criterion('M3', 'full', 'Uses a fixed-timestep scripted playthrough and validates monotonic gate progression plus the final result counts.')],
-    assertion: 'At fixed 1/60 s timestep, skill-1 autopilot reaches a result with gatesTotal > 0, gatesCleared === gatesTotal, one split per gate, and no decreasing gate index.',
+    assertion: 'At fixed 1/60 s timestep, skill-1 autopilot reaches a result with gatesTotal > 0, clears every gate exactly once in index order, records finite pass evidence, and emits one split per gate.',
   }, async () => {
     const evidence = unwrap(playthroughOutcome);
     const result = evidence.result;
@@ -75,6 +79,16 @@ async function runPlaytest({ report, session, options }) {
     verify(result.gatesCleared === result.gatesTotal, 'Not every gate was cleared.', evidence);
     verify(Array.isArray(result.splits) && result.splits.length === result.gatesTotal, 'Split count does not match gate total.', evidence);
     verify(evidence.gateIndices.every((value, index, values) => index === 0 || value >= values[index - 1]), 'Gate indices moved backwards.', evidence);
+    verify(Array.isArray(evidence.gateHistory) && evidence.gateHistory.length === result.gatesTotal, 'Gate history count does not match gate total.', evidence);
+    verify(evidence.gateHistory.every((pass, index) => pass?.index === index && pass.cleared === true), 'Gate history is not an exact cleared sequence.', evidence);
+    verify(evidence.gateHistory.every((pass, index, passes) =>
+      finiteNumber(pass?.time)
+      && pass.time > 0
+      && (index === 0 || pass.time >= passes[index - 1].time)
+      && finiteNumber(pass.radialDistance)
+      && pass.radialDistance >= 0
+      && finiteNumber(pass.speed)
+      && pass.speed > 0), 'Gate history contains invalid or non-monotonic pass evidence.', evidence);
     return evidence;
   });
 
@@ -97,7 +111,7 @@ async function collectInputEvidence(page, options) {
   verify(page, 'Browser page is unavailable.');
   await callHarness(page, 'ready', [], options.timeoutMs);
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
-  await callHarness(page, 'startRun', [{ seed: options.seed, skipIntro: true }]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [false]);
 
   const command = {
@@ -114,9 +128,12 @@ async function collectInputEvidence(page, options) {
   try {
     await stepUntilFlying(page, options.timeoutMs);
     const before = await callHarness(page, 'telemetry');
+    const beforePose = await callHarness(page, 'pose');
     await callHarness(page, 'setInput', [command]);
     await callHarness(page, 'step', [60]);
     const after = await callHarness(page, 'telemetry');
+    const activeInput = await callHarness(page, 'activeInput');
+    const afterPose = await callHarness(page, 'pose');
     await callHarness(page, 'setInput', [null]);
 
     const evidence = {
@@ -126,8 +143,17 @@ async function collectInputEvidence(page, options) {
       commandFields: Object.keys(command),
       before: compactTelemetry(before),
       after: compactTelemetry(after),
+      activeInput,
+      beforePose,
+      afterPose,
       releasedToHumanControl: true,
     };
+    const numericFields = ['pitch', 'yaw', 'roll', 'throttle', 'strafeX', 'strafeY'];
+    verify(numericFields.every((field) => finiteNumber(activeInput?.[field]) && Math.abs(activeInput[field] - command[field]) <= 1e-6), 'Applied numeric input does not match the command.', evidence);
+    verify(activeInput?.boost === command.boost && activeInput?.brake === command.brake, 'Applied button input does not match the command.', evidence);
+    verify(validPose(beforePose) && validPose(afterPose), 'Harness pose contains a non-finite or malformed vector.', evidence);
+    verify(vectorDistance(beforePose.position, afterPose.position) > 0.01, 'Ship position did not change under commanded input.', evidence);
+    verify(afterPose.angularVelocity.every((value) => Math.abs(value) > 0.001), 'Pitch, yaw, and roll did not all produce body angular velocity.', evidence);
     verify(after?.phase === 'flying', 'Input probe left the flying phase.', evidence);
     verify(finiteNumber(after?.throttle) && Math.abs(after.throttle - command.throttle) <= 0.05, 'Telemetry throttle does not reflect the command.', evidence);
     verify(finiteNumber(after?.speed) && after.speed > 0, 'Input probe did not produce positive speed.', evidence);
@@ -136,7 +162,7 @@ async function collectInputEvidence(page, options) {
     return evidence;
   } finally {
     await bestEffort(page, 'setInput', [null]);
-    await bestEffort(page, 'setFixedTimestep', [null]);
+    await bestEffort(page, 'setDriven', [false]);
   }
 }
 
@@ -144,7 +170,7 @@ async function collectPlaythrough(page, options) {
   verify(page, 'Browser page is unavailable.');
   await reloadHarness(page, options.timeoutMs);
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
-  await callHarness(page, 'startRun', [{ seed: options.seed, skipIntro: true }]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
 
   const maxFrames = Math.ceil(options.maxSimSeconds * 60);
@@ -171,6 +197,7 @@ async function collectPlaythrough(page, options) {
     }
 
     const result = await callHarness(page, 'result');
+    const gateHistory = await callHarness(page, 'gateHistory');
     const evidence = {
       seed: options.seed,
       fixedTimestep: 1 / 60,
@@ -182,13 +209,14 @@ async function collectPlaythrough(page, options) {
       gateIndices,
       finalPhase,
       finalTelemetry: compactTelemetry(telemetry),
+      gateHistory,
       result,
     };
     verify(finalPhase === 'finished', `Playthrough exceeded ${options.maxSimSeconds} simulated seconds before finishing.`, evidence);
     return evidence;
   } finally {
     await bestEffort(page, 'setAutopilot', [false]);
-    await bestEffort(page, 'setFixedTimestep', [null]);
+    await bestEffort(page, 'setDriven', [false]);
   }
 }
 
@@ -219,6 +247,21 @@ function compactTelemetry(telemetry) {
     elapsed: telemetry.elapsed,
     splits: telemetry.splits,
   };
+}
+
+function validPose(pose) {
+  if (!pose || typeof pose !== 'object') return false;
+  return [
+    [pose.position, 3],
+    [pose.quaternion, 4],
+    [pose.velocity, 3],
+    [pose.angularVelocity, 3],
+    [pose.forward, 3],
+  ].every(([vector, length]) => Array.isArray(vector) && vector.length === length && vector.every(finiteNumber));
+}
+
+function vectorDistance(a, b) {
+  return Math.hypot(...a.map((value, index) => value - b[index]));
 }
 
 async function bestEffort(page, method, args) {

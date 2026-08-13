@@ -16,6 +16,8 @@ const REQUIRED_METHODS = [
   'vantage',
   'vantages',
   'step',
+  'present',
+  'setDriven',
   'settings',
   'setSettings',
   'setPaused',
@@ -94,7 +96,7 @@ async function runScreenshotMatrix({ report, session, options }) {
 
   await bestEffort(page, 'setPaused', [false]);
   await bestEffort(page, 'setAutopilot', [false]);
-  await bestEffort(page, 'setFixedTimestep', [null]);
+  await bestEffort(page, 'setDriven', [false]);
 }
 
 async function prepareMatrix(page, options) {
@@ -119,7 +121,7 @@ async function prepareMatrix(page, options) {
   });
 
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
-  await callHarness(page, 'startRun', [{ seed: options.seed, skipIntro: true }]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
   await stepUntilFlying(page, options.timeoutMs);
   await callHarness(page, 'setAutopilot', [false]);
@@ -142,6 +144,7 @@ async function captureCell(page, options, cell) {
   await callHarness(page, 'seekCourse', [cell.position]);
   await callHarness(page, 'vantage', [cell.vantage]);
   await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  await callHarness(page, 'present', [], options.timeoutMs);
   await callHarness(page, 'setPaused', [true]);
   const telemetry = await callHarness(page, 'telemetry');
   const bytes = await page.screenshot({
