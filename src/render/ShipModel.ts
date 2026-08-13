@@ -76,15 +76,15 @@ const HULL_FRAG = /* glsl */ `
 
     // Ivory panels over a dark structural base. The split favours upper surfaces but wraps
     // onto the flanks, so the ship still reads as painted when seen from directly astern.
-    float upper = smoothstep(-0.45, 0.35, normalize(vLocalNormal).y);
-    float paint = upper * smoothstep(0.2, 0.75, fbm(vLocal * 0.55, 3) * 0.5 + 0.9);
+    float upper = smoothstep(-0.25, 0.45, normalize(vLocalNormal).y);
+    float paint = upper * smoothstep(0.28, 0.7, fbm(vLocal * 0.55, 3) * 0.5 + 0.78);
     vec3 albedo = mix(uBase, uPanel, paint * 0.85);
 
     // Warning stripe along the spine and the wing leading edges.
     float stripe = smoothstep(0.06, 0.0, abs(abs(vLocal.x) - 1.72)) * smoothstep(-1.0, 3.0, vLocal.z);
     albedo = mix(albedo, uTrim, stripe * 0.8);
 
-    albedo = mix(albedo, albedo * 0.35, seam * 0.7);
+    albedo = mix(albedo, albedo * 0.28, seam * 0.78);
 
     float wear = smoothstep(0.55, 0.95, fbm(vLocal * 2.2 + 7.0, 4) * 0.5 + 0.5);
     albedo = mix(albedo, uBase * 0.55, wear * 0.35);
@@ -220,9 +220,9 @@ export class ShipModel {
     this.hullMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uBase: { value: new THREE.Color(0x39414d) },
+        uBase: { value: new THREE.Color(0x2b323c) },
         uFill: { value: new THREE.Color(0x8fa6c4).multiplyScalar(0.34) },
-        uPanel: { value: new THREE.Color(PALETTE.hullPanel) },
+        uPanel: { value: new THREE.Color(0xbfb9ab) },
         uTrim: { value: new THREE.Color(PALETTE.starRim).multiplyScalar(0.55) },
         uEmissive: { value: new THREE.Color(PALETTE.engineCore) },
         uEmissiveStrength: { value: 1.5 },
