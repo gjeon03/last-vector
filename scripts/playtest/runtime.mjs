@@ -16,7 +16,7 @@ const DEFAULTS = {
   profileSeconds: 10,
   quality: 'high',
   seed: 1337,
-  timeoutMs: 15_000,
+  timeoutMs: 45_000,
   url: null,
   vantages: null,
   viewport: { width: 1920, height: 1080 },
@@ -340,6 +340,7 @@ export async function inspectHarness(page, requiredMethods) {
     return {
       present: false,
       version: null,
+      seed: null,
       methods: Object.fromEntries(requiredMethods.map((method) => [method, false])),
       missing: [...requiredMethods],
     };
@@ -353,10 +354,26 @@ export async function inspectHarness(page, requiredMethods) {
     return {
       present: Boolean(api),
       version: typeof api?.version === 'string' ? api.version : null,
+      seed: Number.isInteger(api?.seed) ? api.seed : null,
       methods: capabilities,
       missing: methods.filter((method) => !capabilities[method]),
     };
   }, requiredMethods);
+}
+
+export async function waitForHarness(page, timeoutMs = 45_000) {
+  if (!page) return false;
+  try {
+    await page.waitForFunction(
+      () => Boolean(window.__LV),
+      undefined,
+      { timeout: timeoutMs },
+    );
+    return true;
+  } catch (error) {
+    if (error?.name === 'TimeoutError') return false;
+    throw error;
+  }
 }
 
 export async function reloadHarness(page, timeoutMs) {
@@ -365,6 +382,7 @@ export async function reloadHarness(page, timeoutMs) {
   verify(response && response.ok(), 'Reload did not return a successful document response.', {
     status: response?.status() ?? null,
   });
+  await waitForHarness(page, timeoutMs);
   await callHarness(page, 'ready', [], timeoutMs);
 }
 
@@ -471,7 +489,12 @@ async function openSession(report, options, requiredMethods) {
     }
 
     try {
-      session.browser = await playwright.chromium.launch({ headless: !options.headed });
+      session.browser = await playwright.chromium.launch({
+        headless: !options.headed,
+        args: process.platform === 'darwin'
+          ? ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+          : [],
+      });
     } catch (error) {
       const wrapped = new Error('Could not launch Chromium. Run pnpm exec playwright install chromium once.');
       wrapped.cause = error;
@@ -501,7 +524,9 @@ async function openSession(report, options, requiredMethods) {
     await installNetworkBoundary(session.context, session.observations);
     session.page = await session.context.newPage();
     installPageObservers(session.page, session.observations);
-    const response = await session.page.goto(session.target.url, {
+    const gameUrl = new URL(session.target.url);
+    gameUrl.searchParams.set('seed', String(options.seed));
+    const response = await session.page.goto(gameUrl.href, {
       waitUntil: 'load',
       timeout: options.timeoutMs,
     });
@@ -518,11 +543,13 @@ async function openSession(report, options, requiredMethods) {
     id: 'API.contract',
     name: 'Required window.__LV capabilities are installed',
     criteria: [],
-    assertion: `window.__LV exists, has a string version, and implements: ${requiredMethods.join(', ')}.`,
+    assertion: `window.__LV exists, has a string version, reports seed ${options.seed}, and implements: ${requiredMethods.join(', ')}.`,
   }, async () => {
+    await waitForHarness(session.page, options.timeoutMs);
     const inspection = await inspectHarness(session.page, requiredMethods);
     verify(inspection.present, 'window.__LV is missing.', inspection);
     verify(Boolean(inspection.version), 'window.__LV.version is missing or is not a string.', inspection);
+    verify(inspection.seed === options.seed, `window.__LV.seed does not match requested seed ${options.seed}.`, inspection);
     verify(inspection.missing.length === 0, `Missing automation capabilities: ${inspection.missing.join(', ')}`, inspection);
     return inspection;
   });
@@ -747,7 +774,11 @@ function normaliseError(error) {
     name: typeof error.name === 'string' ? error.name : 'Error',
     message: typeof error.message === 'string' ? error.message : String(error),
     ...(error.evidence !== undefined ? { evidence: error.evidence } : {}),
-    ...(error.cause instanceof Error ? { cause: error.cause.message } : {}),
+    ...(error.cause instanceof Error
+      ? { cause: error.cause.message }
+      : typeof error.cause === 'string'
+        ? { cause: error.cause }
+        : {}),
   };
 }
 
