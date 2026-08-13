@@ -145,13 +145,18 @@ export class Ship {
     const authority = 1 - speed01 * 0.42;
 
     // --- boost ------------------------------------------------------------------------
+    // The overdrive is a single latch with hysteresis. Without the floor it re-lit for one
+    // frame every time regeneration crossed a hair above empty, so a held key produced a
+    // buzzing stutter instead of either thrust or a clear "you are out".
+    const engageFloor = FLIGHT.boostCapacity * 0.08;
+    const rearmLevel = FLIGHT.boostCapacity * 0.45;
     const wantsBoost = command.boost && command.throttle > 0.05;
-    if (wantsBoost && this.energy > 0.5 && !this.boostLocked) {
+    if (wantsBoost && !this.boostLocked && this.energy > engageFloor) {
       this.boosting = true;
       this.energy -= FLIGHT.boostDrain * dt;
       this.boostCooldown = FLIGHT.boostRegenDelay;
-      if (this.energy <= 0) {
-        this.energy = 0;
+      if (this.energy <= engageFloor) {
+        this.energy = Math.max(0, this.energy);
         this.boosting = false;
         this.boostLocked = true;
       }
@@ -161,8 +166,9 @@ export class Ship {
       if (this.boostCooldown === 0) {
         this.energy = Math.min(FLIGHT.boostCapacity, this.energy + FLIGHT.boostRegen * dt);
       }
-      // Latch out of the empty state only once there is a usable reserve again.
-      if (this.boostLocked && this.energy > FLIGHT.boostCapacity * 0.2) this.boostLocked = false;
+      // Re-arm only once there is a *usable* reserve. Just under half a tank buys well over a
+      // second of thrust, so a re-engage always feels like a decision rather than a twitch.
+      if (this.boostLocked && this.energy >= rearmLevel) this.boostLocked = false;
     }
 
     // --- angular ----------------------------------------------------------------------

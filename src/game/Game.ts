@@ -128,6 +128,9 @@ export class Game {
   private damageFlash = 0;
   private proximity = 0;
   private cinematicTime = 0;
+  private wasBoosting = false;
+  private wasBoostLocked = false;
+  private gateTickTimer = 0;
 
   private autopilot = false;
   private autopilotSkill = 1;
@@ -928,7 +931,43 @@ export class Game {
     this.overlay.update(t, dt);
   }
 
+  /**
+   * Boost is the loudest thing the player does and it had no voice at all: no ignition, no
+   * cut-out, no warning when the reserve ran dry. These are the three transitions that matter.
+   */
+  private updateBoostFeedback(): void {
+    const boosting = this.ship.boosting;
+    if (boosting !== this.wasBoosting) {
+      this.wasBoosting = boosting;
+      this.audio.play(boosting ? 'boostStart' : 'boostEnd');
+    }
+    const locked = this.ship.boostLocked;
+    if (locked && !this.wasBoostLocked) {
+      this.audio.play('boostEmpty');
+      this.pushCallout('DRIVE DRY', 'RESERVE RECHARGING', 'warn', 1.2);
+      this.pushLog('overdrive reserve depleted', 'warn');
+    }
+    this.wasBoostLocked = locked;
+
+    // A rising tick as the aperture closes: the player should hear the gate arrive.
+    const gate = this.course.nextGate;
+    if (gate && this.phase === 'flying') {
+      const distance = this.ship.position.distanceTo(gate.position);
+      const band = distance < 900 ? Math.max(0.12, distance / 2600) : 0;
+      if (band > 0) {
+        this.gateTickTimer -= 1 / 60;
+        if (this.gateTickTimer <= 0) {
+          this.gateTickTimer = band;
+          this.audio.play('gateNear', clamp01(1 - distance / 900));
+        }
+      } else {
+        this.gateTickTimer = 0;
+      }
+    }
+  }
+
   private updateAudio(dt: number): void {
+    this.updateBoostFeedback();
     this.audio.update(dt, {
       throttle: this.ship.throttleSmoothed,
       speed01: this.ship.speed01,
