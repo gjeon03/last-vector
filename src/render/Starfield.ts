@@ -26,7 +26,10 @@ const STAR_VERT = /* glsl */ `
     // starfield looks like RGB confetti. Clamp the size and pay the energy back in intensity
     // so faint stars stay faint instead of becoming bright single pixels.
     float size = aSize * uPixelScale * tw;
-    float clamped = max(size, 1.6);
+    // A star narrower than the chromatic-aberration offset loses its red and blue samples to
+    // neighbouring texels and survives as a pure green dot. Two and a half pixels is the
+    // smallest footprint that stays achromatic through the whole post chain.
+    float clamped = max(size, 2.5);
     vBright = tw * min(1.0, (size * size) / (clamped * clamped));
     vColor = aColor;
     gl_PointSize = clamped;
@@ -42,11 +45,13 @@ const STAR_FRAG = /* glsl */ `
     vec2 d = gl_PointCoord - 0.5;
     float r = length(d) * 2.0;
     if (r > 1.0) discard;
-    // Tight core with a soft halo; the halo is what the bloom chain latches onto.
-    float core = exp(-r * r * 9.0);
-    float halo = exp(-r * r * 2.1) * 0.35;
+    // Tight core with a soft halo; the halo is what the bloom chain latches onto. The core is
+    // deliberately soft enough to span more than one pixel — a hard one-pixel core aliases and
+    // shatters under any lens effect.
+    float core = exp(-r * r * 4.2);
+    float halo = exp(-r * r * 1.5) * 0.4;
     float a = core + halo;
-    gl_FragColor = vec4(vColor * a * vBright * 2.2, a);
+    gl_FragColor = vec4(vColor * a * vBright * 1.7, a);
   }
 `;
 

@@ -182,10 +182,6 @@ const COMPOSITE_FRAG = /* glsl */ `
     return fract((p3.x + p3.y) * p3.z);
   }
 
-  vec3 sampleScene(vec2 uv) {
-    return texture2D(tScene, uv).rgb;
-  }
-
   void main() {
     vec2 uv = vUv;
 
@@ -194,8 +190,21 @@ const COMPOSITE_FRAG = /* glsl */ `
     float r2 = dot(toCentre, toCentre);
     uv += toCentre * r2 * uWarp;
 
+    // Motion blur and chromatic aberration share ONE sampling loop.
+    //
+    // They must: doing the blur first and then re-sampling the raw buffer for red and blue
+    // gives a blurred green channel against sharp red and blue, which fringes every small
+    // bright feature with a pure green halo. That defect is invisible in a still of a static
+    // scene and screams the moment the camera moves.
+    //
+    // Lateral aberration is an edge-of-frame effect, so it ramps in with radius and stays out
+    // of the centre where the ship and the reticle live.
+    vec2 fromAxis = uv - 0.5;
+    vec2 ca = fromAxis * dot(fromAxis, fromAxis) * uAberration
+      * smoothstep(0.3, 0.75, length(fromAxis));
+
     vec3 scene;
-    if (uBlurStrength > 0.0005 && uBlurSamples > 0) {
+    if (uBlurStrength > 0.0005 && uBlurSamples > 1) {
       // Radial smear along the direction of travel. The centre of the smear is the projected
       // velocity vector, so turning skews the streaks the way a real camera would.
       vec2 dir = (uv - uBlurCentre) * uBlurStrength;
@@ -205,21 +214,19 @@ const COMPOSITE_FRAG = /* glsl */ `
         if (i >= uBlurSamples) break;
         float t = float(i) / float(uBlurSamples - 1);
         float w = 1.0 - t * 0.55;
-        accum += sampleScene(uv - dir * t) * w;
+        vec2 base = uv - dir * t;
+        accum.r += texture2D(tScene, base + ca).r * w;
+        accum.g += texture2D(tScene, base).g * w;
+        accum.b += texture2D(tScene, base - ca).b * w;
         total += w;
       }
       scene = accum / total;
     } else {
-      scene = sampleScene(uv);
-    }
-
-    // Lateral chromatic aberration. Centred on the optical axis and zero in the middle of
-    // the frame, so it fringes the edges of a wide shot without smearing every highlight.
-    if (uAberration > 0.0001) {
-      vec2 fromAxis = uv - 0.5;
-      vec2 ca = fromAxis * dot(fromAxis, fromAxis) * uAberration;
-      scene.r = sampleScene(uv + ca).r;
-      scene.b = sampleScene(uv - ca).b;
+      scene = vec3(
+        texture2D(tScene, uv + ca).r,
+        texture2D(tScene, uv).g,
+        texture2D(tScene, uv - ca).b
+      );
     }
 
     vec3 bloom = texture2D(tBloom, uv).rgb;
