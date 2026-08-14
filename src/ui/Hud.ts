@@ -900,8 +900,10 @@ export class Hud {
       const node = this.logNodes.get(line.id);
       if (!node) continue;
       const recency = lines.length - 1 - i;
-      const byAge = clamp(1 - (line.age - 3.4) / 2.2, 0.12, 1);
-      const byDepth = clamp(1 - recency * 0.17, 0.2, 1);
+      /* Floors raised for the graded plate: at 0.12 an aged line was invisible over lit
+         nebula, which made the feed look broken rather than fading. */
+      const byAge = clamp(1 - (line.age - 3.4) / 2.2, 0.34, 1);
+      const byDepth = clamp(1 - recency * 0.14, 0.48, 1);
       const a = Math.round(byAge * byDepth * 20);
       if (a !== this.logAlpha.get(line.id)) {
         this.logAlpha.set(line.id, a);
