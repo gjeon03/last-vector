@@ -13,7 +13,9 @@ const suites = [
   // and a gate that is not run does not gate. It fails the build when a gameplay-critical cue
   // has no band with positive SNR against the boost engine bed, which is the exact property that
   // went unnoticed until an outside review re-measured it.
-  { name: 'audio-probe', script: 'audio-probe.mjs' },
+  // --require-clean: everything this suite produces is quoted as evidence, and a green run
+  // against an uncommitted tree describes no commit at all.
+  { name: 'audio-probe', script: 'audio-probe.mjs', args: ['--require-clean'] },
 ];
 const results = [];
 
@@ -21,7 +23,7 @@ await mkdir(outputRoot, { recursive: true });
 for (const suite of suites) {
   const suiteOutput = resolve(outputRoot, suite.name);
   const script = resolve(REPO_ROOT, 'scripts/playtest', suite.script);
-  const execution = await runChild(script, [...forwardedArgs, '--out', suiteOutput]);
+  const execution = await runChild(script, [...forwardedArgs, ...(suite.args ?? []), '--out', suiteOutput]);
   let report = null;
   let reportError = null;
   try {

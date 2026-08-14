@@ -67,6 +67,59 @@ two authors were exchanging claims about a mutable tree with a round-trip longer
 at which either of them changed it. A stamped report is visibly stale rather than silently wrong,
 and it is checkable with one `git show`.
 
+### Measurement discipline
+
+An apparatus with one silently wrong parameter does not return garbage. It returns a plausible
+number, in range, that nobody interrogates. Four from this project:
+
+| measurement | free parameter that was silently wrong |
+|---|---|
+| UI hover produced no sound | audio context did not exist yet — unlock state |
+| `vantage('terminus')` moved the ship 0 m | vantage applies during frame update — no frame stepped |
+| terminus rim ratio 2.28 (true 1.49) | brightness sampled from an assumed, not fitted, centre |
+| terminus silhouette varied 2.1% | luminance threshold caught nebula as the outline |
+
+Note which way each one pointed. `hover: 0` looked like a bug and was correct behaviour. The rim
+ratio looked *better* than the truth, which is exactly why it went unexamined. Neither looked
+broken, and "does the result look right" would have passed all four.
+
+Three checks, in order of cost:
+
+1. **Read the result against the apparatus's own bounds first.** The silhouette measured 515 px
+   against a 520 px scan limit. A value sitting on the edge of its own search range is the
+   apparatus reporting its bound, not the subject. This one is mechanical and free.
+2. **Treat a flattering error as evidence that a parameter was free.** An unconstrained parameter
+   drifts toward whatever makes the number look like what you expected, because nothing is pushing
+   back. The rim ratio had a guessed centre and the audio SNR had an unstated bed; both were
+   arithmetically fine, both moved substantially when the parameter was fitted or pinned, and both
+   unpinned versions happened to flatter. That is not coincidence, and the direction of an error is
+   the cheapest signal available that something underneath it was never constrained.
+3. **Then ask what the apparatus assumed** — not whether the answer looks right. A metric has to be
+   tested for sensitivity to its own free parameters, not only for correctness. Every parameter the
+   measurement did not fit, it assumed. List them before publishing the number.
+
+Holding the concept is not a detector. It was applied correctly to two other people's
+measurements within the hour of being violated on the author's own, on a number that flattered
+the result. The question has to be asked mechanically, because when it fires on a flattering
+number nothing feels wrong.
+
+**The check has to run per measurement, not per subject — and the cost ordering is what makes
+that affordable.** The four instances are not evenly distributed: three are mine, and two of them
+are the same object within the same hour. First a luminance threshold caught the nebula as the
+terminus outline; then, measuring the same object again, an assumed centre inflated its rim ratio
+by more than half — and I published that one. Per-subject vigilance failed under the best possible
+conditions: recent, specific, and still stinging. So memory is not the defence. Nobody
+interrogates an apparatus on every number, which is exactly why being burned on the threshold did
+not make me interrogate the centre. But reading a result against its own bounds costs nothing, so
+it can run on every measurement without requiring either discipline or memory. The free checks are
+what make per-measurement possible at all.
+
+**Where it can be enforced, enforce it rather than remember it.** `scripts/playtest/audio-probe.mjs`
+reads `git rev-parse HEAD` and `git status --porcelain` and stamps its own summary line — `PASS
+16/16 checks at 9b8296e`, or `(DIRTY TREE)` with the offending paths and a note that the numbers
+describe no commit. `--require-clean` refuses outright and exits 2, which is the flag for any run
+whose output will be quoted as evidence.
+
 ## Verification limits — what this build's evidence does NOT cover
 
 Recorded honestly, because an unstated gap reads as coverage.
