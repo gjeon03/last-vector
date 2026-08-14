@@ -59,6 +59,18 @@ export interface HarnessPose {
   /** Body-frame rates: pitch, yaw, roll. */
   angularVelocity: [number, number, number];
   forward: [number, number, number];
+  /**
+   * Where the camera actually is and what it is pointed at, in world space.
+   *
+   * Exposed because a screenshot suite that cannot see the camera cannot tell a badly aimed
+   * vantage from a missing object: the terminus vantage produced ten committed stills of empty
+   * sky while the same object rendered correctly in flight, and nothing in the harness could
+   * distinguish those two cases.
+   */
+  camera: {
+    position: [number, number, number];
+    forward: [number, number, number];
+  };
 }
 
 export interface GatePassRecord {
@@ -101,6 +113,14 @@ export interface HarnessApi {
   vantage(name: string): void;
   /** Names accepted by `vantage`. */
   vantages(): string[];
+  /**
+   * What each vantage is a picture OF, so a screenshot suite can assert the right subject.
+   *
+   * A gate- or terminus-anchored vantage must have `telemetry.gate.anchor.onScreen`; a
+   * ship-anchored one frames the ship by construction and the gate may legitimately be behind
+   * the camera. Without this the suite either misses empty frames or fails good ones.
+   */
+  vantageSubjects(): { name: string; subject: 'ship' | 'gate' | 'terminus' }[];
   /**
    * Takes frame pacing away from requestAnimationFrame so the caller drives the simulation.
    * While driven, the rAF loop renders nothing and advances nothing.

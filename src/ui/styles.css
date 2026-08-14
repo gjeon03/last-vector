@@ -2331,7 +2331,7 @@ kbd {
   display: grid;
   /* Sized against the header labels, not the values: "MARKER" and "SEGMENT" are wider than
      the two-digit index and the seconds figure they sit above. */
-  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em;
+  grid-template-columns: 6.9em 5.4em minmax(0, 1fr) 6.2em;
   align-items: center;
   gap: 0.9em;
   padding: 0.54em 0;
@@ -2399,6 +2399,23 @@ kbd {
   color: var(--c-key);
 }
 
+/* The run-in to the destination is not a cairn pass, so it is not dressed as a tenth one.
+   Its ELAPSED is the run total, which is the whole point of the row existing. */
+.lv-res-row[data-term='1'] {
+  margin-top: 0.35em;
+  border-top: 1px solid var(--c-hairline);
+}
+
+.lv-res-row[data-term='1'] .lv-res-idx {
+  color: var(--c-accent);
+  letter-spacing: 0.02em;
+}
+
+.lv-res-row[data-term='1'] .lv-res-cum {
+  color: var(--c-ink);
+  font-weight: 600;
+}
+
 .lv-res-cum {
   color: var(--c-ink);
 }
@@ -2411,7 +2428,7 @@ kbd {
    its track only then — an always-present empty column would reserve space for a comparison
    the run cannot make. */
 .lv-res-splits[data-delta='1'] .lv-res-row {
-  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em 5.2em;
+  grid-template-columns: 6.9em 5.4em minmax(0, 1fr) 6.2em 5.2em;
 }
 
 .lv-res-dlt[data-tone='good'] { color: var(--c-good); }
@@ -2478,4 +2495,19 @@ kbd {
 
 .lv-inputmode[data-on='0'] {
   display: none;
+}
+
+/*
+ * Capture mode. Set by the screenshot suite via html[data-lv-capture], never in normal play.
+ *
+ * Callouts, the log feed and the comms line are transient game state, and in a headless driver
+ * one of them is guaranteed: pointer lock is always refused there, so every authored still
+ * carried a MOUSE CAPTURE UNAVAILABLE banner across its middle. A still is a picture of the game,
+ * not of the harness's environment.
+ */
+html[data-lv-capture] .lv-callout,
+html[data-lv-capture] .lv-feed,
+html[data-lv-capture] .lv-comms {
+  opacity: 0 !important;
+  visibility: hidden !important;
 }

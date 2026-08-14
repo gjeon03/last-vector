@@ -40,10 +40,56 @@ import { REPO_ROOT } from './runtime.mjs';
  */
 const BEDS = {
   idle: { throttle: 0, speed01: 0.02, boosting: false, slip: 0 },
+  /**
+   * Behind the title and briefing screens. NOT silence: `Game.ts` flies the attract loop through
+   * the same `ship.update` branch as live play, at a measured mean throttle of ~0.95. An earlier
+   * version of this file asserted the engine layer was silent on menus and excluded the UI cues
+   * from the gate on that basis, which was simply false.
+   */
+  menu: { throttle: 0.95, speed01: 0.7, boosting: false, slip: 0.05 },
+  /** `Game.ts` holds throttle 0.22 through the count so the frame is never static. */
+  countdown: { throttle: 0.22, speed01: 0.2, boosting: false, slip: 0 },
   cruise: { throttle: 0.55, speed01: 0.45, boosting: false, slip: 0.05 },
   full: { throttle: 1, speed01: 0.85, boosting: false, slip: 0.05 },
   boost: { throttle: 1, speed01: 1, boosting: true, slip: 0.05 },
 };
+
+/**
+ * The bed each cue must clear — the one the game actually plays it over, not the loudest one.
+ * Holding a menu click to the boost bed would be as wrong as holding a gate tick to silence.
+ * `finish`, `newBest` and `radio` are measured but ungated: they are resolution and flavour, and
+ * they fire at low throttle where nothing is competing with them.
+ */
+const CUE_BED = {
+  gateNear: 'boost', gatePass: 'boost', gateMiss: 'boost', warnProximity: 'boost',
+  impact: 'boost', scrape: 'boost', boostStart: 'boost', boostEnd: 'boost', boostEmpty: 'boost',
+  countdownTick: 'countdown', countdownGo: 'countdown',
+  // The two confirmations duck the drive (UI_DUCK_DEPTH), so they are held to the ducked bed —
+  // the one that is actually under them when they sound.
+  uiClick: 'menuDucked', uiBack: 'menuDucked',
+  // uiHover is measured against the unducked menu bed and reported, but NOT gated. It does not
+  // duck, because it fires continuously as the pointer crosses a list and ducking there would
+  // pump the mix; and it carries no information — it shadows a visual highlight the player is
+  // already looking at. Clearing a 0.95-throttle attract drive would need roughly +40 dB, which
+  // would turn pointer movement into a rattle. It is deliberately subordinate, and that is a
+  // design choice rather than the "menus are silent" claim that used to sit here, which was false.
+  uiHover: 'menu',
+};
+
+/** Gated cues. uiHover is excluded for the documented reason above, not by oversight. */
+const UNGATED_BUT_MEASURED = ['uiHover', 'finish', 'newBest', 'radio'];
+
+/**
+ * Cues whose `intensity` encodes rising urgency. For these the margin must not FALL as intensity
+ * rises: a proximity cue that fades as the hazard closes is a defect even when every individual
+ * reading clears the bed, and testing each reading against a floor cannot see it. This is exactly
+ * the shape of the original gateNear defect, which passed every absolute check after being moved
+ * and was still declining across the sweep.
+ *
+ * `gatePass` is deliberately absent: its intensity is quality-of-pass, not urgency, so there is no
+ * reason a perfectly centred pass should be louder than a scraped one.
+ */
+const ESCALATING_CUES = ['gateNear', 'warnProximity'];
 
 const METHOD = {
   sampleRate: 48000,
@@ -71,12 +117,7 @@ const METHOD = {
   truePeakMethod: 'Peak of a 192 kHz render of the same graph (4x oversampled inter-sample peak).',
 };
 
-/**
- * Cues the player must be able to hear while the drive is at full power. UI cues are excluded
- * because they only ever fire on menus, where the engine layer is silent; `countdownTick` and
- * `countdownGo` are excluded because the countdown runs at zero throttle; `radio` and `newBest`
- * are excluded because they are flavour rather than information.
- */
+/** Cues that carry information the player acts on, each gated against its own bed via CUE_BED. */
 const GAMEPLAY_CRITICAL = [
   'gateNear',
   'gatePass',
@@ -87,6 +128,10 @@ const GAMEPLAY_CRITICAL = [
   'boostStart',
   'boostEnd',
   'boostEmpty',
+  'countdownTick',
+  'countdownGo',
+  'uiClick',
+  'uiBack',
 ];
 
 /** Representative intensity per event. Two entries for cues whose intensity changes the sound. */
@@ -105,7 +150,8 @@ const EVENTS = [
   { name: 'newBest', intensity: 1.0, seconds: 9 },
   { name: 'impact', intensity: 0.9, seconds: 6 },
   { name: 'scrape', intensity: 0.7, seconds: 6 },
-  { name: 'warnProximity', intensity: 0.8, seconds: 5 },
+  { name: 'warnProximity', intensity: 0.3, seconds: 5 },
+  { name: 'warnProximity', intensity: 1.0, seconds: 5 },
   { name: 'uiHover', intensity: 0.5, seconds: 4 },
   { name: 'uiClick', intensity: 0.5, seconds: 4 },
   { name: 'uiBack', intensity: 0.5, seconds: 4 },
@@ -118,7 +164,7 @@ const EVENTS = [
 
 /* eslint-disable */
 async function measureInPage(config) {
-  const { bundleUrl, beds, events, method, thirdOctaveCentres } = config;
+  const { bundleUrl, beds, events, method, thirdOctaveCentres, cueBed } = config;
   const mod = await import(bundleUrl);
   const SR = method.sampleRate;
 
@@ -304,21 +350,27 @@ async function measureInPage(config) {
   }
 
   /** Steady-state bed at a pinned EngineAudioState. `withMusic` false isolates the drive. */
-  async function renderBed(state, withMusic) {
+  async function renderBed(state, withMusic, engineDuck = 1) {
     const seconds = method.bedSettleSeconds + method.bedWindowSeconds + 0.2;
     const ctx = new OfflineAudioContext(2, Math.round(seconds * SR), SR);
     const g = newGraph(ctx);
     g.sfxBus.gain.value = 0;
     if (!withMusic) g.musicBus.gain.value = 0;
+    g.engineDuck.gain.value = engineDuck;
     g.engine.start(0);
-    g.music.start(0);
-    g.music.setIntensity(method.musicIntensity);
+    // MusicBed's reverb sends tap each layer gate BEFORE musicBus, so zeroing that gain mutes only
+    // the dry path and leaves a pad tail in a row labelled "engine only". The idle bed was
+    // published 16 dB hot for that reason. The music is therefore not started at all here.
+    if (withMusic) {
+      g.music.start(0);
+      g.music.setIntensity(method.musicIntensity);
+    }
     const dt = 1 / 30;
     for (let k = 1; k * dt < seconds - 0.1; k++) {
       const t = k * dt;
       ctx.suspend(t).then(() => {
         g.engine.update(dt, state);
-        g.music.tick(ctx.currentTime);
+        if (withMusic) g.music.tick(ctx.currentTime);
         g.ledger.sweep(ctx.currentTime);
         ctx.resume();
       });
@@ -377,6 +429,15 @@ async function measureInPage(config) {
       withMusic: await renderBed(state, true),
     };
   }
+  // The bed a UI confirmation actually lands on: the menu state with the drive ducked by exactly
+  // the constant the mix uses, read from the module so the two cannot drift apart.
+  bedResults.menuDucked = {
+    state: beds.menu,
+    derivedFrom: 'menu',
+    engineDuckDepth: mod.UI_DUCK_DEPTH,
+    engineOnly: await renderBed(beds.menu, false, mod.UI_DUCK_DEPTH),
+    withMusic: await renderBed(beds.menu, true, mod.UI_DUCK_DEPTH),
+  };
 
   const eventResults = [];
   for (const ev of events) {
@@ -398,6 +459,8 @@ async function measureInPage(config) {
       snrVsCruise: snrAgainst('cruise', r.thirdOctaveHot),
       snrVsBoost: snrAgainst('boost', r.thirdOctaveHot),
       snrVsBoostFull: snrAgainst('boost', r.thirdOctaveFull),
+      ownBed: cueBed[ev.name] ?? null,
+      snrVsOwnBed: cueBed[ev.name] ? snrAgainst(cueBed[ev.name], r.thirdOctaveHot) : null,
     });
   }
 
@@ -639,15 +702,37 @@ function evaluateGate(measurement) {
   const checks = [];
   for (const ev of measurement.events) {
     if (!GAMEPLAY_CRITICAL.includes(ev.name)) continue;
-    const best = ev.snrVsBoost?.bestSnrDb ?? null;
+    const best = ev.snrVsOwnBed?.bestSnrDb ?? null;
     checks.push({
       id: `AUDIBLE.${ev.name}@${ev.intensity}`,
       passed: best !== null && best > 0,
       detail:
         best === null
           ? 'No SNR computed.'
-          : `best third-octave SNR vs boost bed = ${best} dB at ${ev.snrVsBoost.bestHz} Hz ` +
-            `(needs > 0 dB; the drive is louder than the cue in every band otherwise)`,
+          : `best third-octave SNR vs ${ev.ownBed} bed = ${best} dB at ${ev.snrVsOwnBed.bestHz} Hz ` +
+            `(needs > 0 dB; the bed is louder than the cue in every band otherwise)`,
+    });
+  }
+
+  // A cue signalling rising urgency must not lose margin as the urgency rises. Absolute checks
+  // cannot see this: every reading can clear the bed while the trend runs the wrong way.
+  for (const name of ESCALATING_CUES) {
+    const sweep = measurement.events
+      .filter((e) => e.name === name && e.snrVsOwnBed)
+      .sort((a, b) => a.intensity - b.intensity);
+    if (sweep.length < 2) {
+      checks.push({ id: `ESCALATES.${name}`, passed: false, detail: 'fewer than two intensities measured; the trend cannot be tested' });
+      continue;
+    }
+    const lo = sweep[0], hi = sweep[sweep.length - 1];
+    const delta = Number((hi.snrVsOwnBed.bestSnrDb - lo.snrVsOwnBed.bestSnrDb).toFixed(1));
+    checks.push({
+      id: `ESCALATES.${name}`,
+      passed: delta >= -0.5,
+      detail:
+        `SNR vs ${hi.ownBed} bed goes ${lo.snrVsOwnBed.bestSnrDb} dB at intensity ${lo.intensity} ` +
+        `-> ${hi.snrVsOwnBed.bestSnrDb} dB at intensity ${hi.intensity} (${delta >= 0 ? '+' : ''}${delta} dB; ` +
+        `must not fall as the cue becomes more urgent)`,
     });
   }
   const h = measurement.hygiene;
@@ -716,7 +801,7 @@ function formatTable(measurement) {
   }
   lines.push('');
   lines.push('CUES  (SNR = cue power over bed power, best third-octave band; > 0 dB = cue wins)');
-  lines.push('  event            int   dur   dBTP   MomLUFS   vs cruise        vs boost         crit');
+  lines.push('  event            int   dur   dBTP   MomLUFS   vs cruise        vs boost         own bed');
   for (const e of measurement.events) {
     const c = e.snrVsCruise, b = e.snrVsBoost;
     lines.push(
@@ -724,7 +809,7 @@ function formatTable(measurement) {
       `${String(e.truePeakDbTP).padStart(6)} ${String(e.momentaryLufs).padStart(8)}   ` +
       `${String(c ? `${c.bestSnrDb} dB @${c.bestHz}` : '-').padEnd(16)} ` +
       `${String(b ? `${b.bestSnrDb} dB @${b.bestHz}` : '-').padEnd(16)} ` +
-      `${GAMEPLAY_CRITICAL.includes(e.name) ? 'yes' : ''}`,
+      `${e.snrVsOwnBed ? `${e.snrVsOwnBed.bestSnrDb} dB vs ${e.ownBed}` : ''}`,
     );
   }
   return lines.join('\n');
@@ -771,6 +856,7 @@ async function main() {
       events: EVENTS,
       method: METHOD,
       thirdOctaveCentres,
+      cueBed: CUE_BED,
     });
 
     const checks = evaluateGate(measurement);
@@ -781,6 +867,8 @@ async function main() {
       provenance,
       method: { ...METHOD, thirdOctaveCentres },
       gameplayCritical: GAMEPLAY_CRITICAL,
+      ungatedButMeasured: UNGATED_BUT_MEASURED,
+      cueBed: CUE_BED,
       checks,
       pageErrors,
       ...measurement,

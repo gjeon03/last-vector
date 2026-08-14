@@ -105,11 +105,20 @@ export function imageStats(image, options = {}) {
   let maxX = -1;
   let maxY = -1;
   let subjectPixels = 0;
+  // Chroma, because every statistic above this line reduces the pixel to Rec.709 luminance first.
+  // A build that regressed to full greyscale, or swapped two channels, or rotated hue, produces
+  // an identical luminance histogram and passes the entire battery unchanged.
+  let chromaSum = 0;
 
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
       const o = (y * width + x) * channels;
-      const l = REC709(pixels[o], pixels[o + 1], pixels[o + 2]);
+      const r = pixels[o];
+      const g = pixels[o + 1];
+      const b = pixels[o + 2];
+      const l = REC709(r, g, b);
+      const mx = Math.max(r, g, b);
+      chromaSum += mx === 0 ? 0 : (mx - Math.min(r, g, b)) / mx;
       count += 1;
       sum += l;
       sumSq += l * l;
@@ -141,6 +150,8 @@ export function imageStats(image, options = {}) {
     whiteFraction: round(white / count),
     shadowFraction: round(shadow / count),
     midtoneFraction: round(midtone / count),
+    /** Mean HSV saturation. Zero for any greyscale frame, however well-exposed. */
+    chromaMean: round(chromaSum / count),
     distinctLevels: levels.size,
     subject: maxX < 0
       ? null

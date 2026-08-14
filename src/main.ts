@@ -132,6 +132,7 @@ function installHarness(game: Game): void {
     seekCourse: (t) => game.seekCourse(t),
     vantage: (name) => game.setVantage(name),
     vantages: () => game.vantageNames(),
+    vantageSubjects: () => game.vantageSubjects(),
     setDriven: (driven: boolean) => {
       game.setDriven(driven);
       if (!driven) game.setFixedTimestep(null);

@@ -82,6 +82,10 @@ interface Vantage {
    * hot accent. Eight of ten of these had the anchor and the accent and nothing between — one
    * put 89.2% of the frame below 0.18, and the committed screenshot suite now fails on exactly
    * that. Per-vantage, because how dark a vantage is depends entirely on where it points.
+   *
+   * Re-fitted after the vantage-camera aliasing bug was found: the first set of values was tuned
+   * against frames whose camera had been thrown 4.5 Mm off, so they were compensating for empty
+   * sky rather than grading a composition. Five of the ten were substantially wrong.
    */
   exposureBias?: number;
   /** When set, frames the terminus instead. */
@@ -496,16 +500,16 @@ export class Game {
 
   private buildVantages(): void {
     this.vantages.push(
-      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 2.1 },
-      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-11, 2.6, 15), lookAhead: 10, fov: 42, exposureBias: 2.0 },
-      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.35 },
+      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 3.0 },
+      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-11, 2.6, 15), lookAhead: 10, fov: 42, exposureBias: 2.4 },
+      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.5 },
       { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
       { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },
-      { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900 },
+      { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900, exposureBias: 1.3 },
       { name: 'planet-rise', t: 0, offset: new THREE.Vector3(90, -26, 180), lookAhead: 1500, fov: 74, gateIndex: 5, gateStandoff: 2600, exposureBias: 2.4 },
-      { name: 'long-run', t: 0.7, offset: new THREE.Vector3(-26, 8, 62), lookAhead: 2200, fov: 82 },
-      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100, exposureBias: 2.2 },
-      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200, exposureBias: 2.2 },
+      { name: 'long-run', t: 0.7, offset: new THREE.Vector3(-26, 8, 62), lookAhead: 2200, fov: 82, exposureBias: 1.25 },
+      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100, exposureBias: 1.35 },
+      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200, exposureBias: 1.25 },
     );
   }
 
@@ -984,7 +988,19 @@ export class Game {
   }
 
   /** Pushes a camera anchor out of any asteroid it happens to be sitting inside. */
+  /** Scratch owned by `clearVantageOfObstacles` alone. See the aliasing note below. */
+  private readonly clearScratch = new THREE.Vector3();
+
   private clearVantageOfObstacles(point: THREE.Vector3): void {
+    // The scratch here MUST NOT be one of the shared tmp vectors. `applyVantage` calls this with
+    // `this.tmpB` as `point`, so using `this.tmpB` as the working vector aliased the argument to
+    // the scratch: the normalise wrote into `point` itself, and the next line then evaluated to
+    // `rock.position * (1 + clearance)`. Measured effect — the field-dive camera was placed at
+    // (214707, -209426, -4479816), four and a half million metres out and 120 degrees off aim,
+    // which is why authored stills came back as pictures of empty sky.
+    //
+    // Latent until the hazard rocks landed: this only fires when a vantage anchor falls within
+    // clearance of a rock, and before the racing line had rock in it, it never did.
     for (let pass = 0; pass < 4; pass++) {
       let moved = false;
       for (const rock of this.asteroids.activeInstances) {
@@ -992,8 +1008,8 @@ export class Game {
         const dSq = rock.position.distanceToSquared(point);
         if (dSq >= clearance * clearance) continue;
         const d = Math.sqrt(dSq) || 1;
-        this.tmpB.copy(point).sub(rock.position).divideScalar(d);
-        point.copy(rock.position).addScaledVector(this.tmpB, clearance);
+        this.clearScratch.copy(point).sub(rock.position).divideScalar(d);
+        point.copy(rock.position).addScaledVector(this.clearScratch, clearance);
         moved = true;
       }
       if (!moved) break;
@@ -1502,6 +1518,13 @@ export class Game {
     this.activeVantage = null;
   }
 
+  vantageSubjects(): { name: string; subject: 'ship' | 'gate' | 'terminus' }[] {
+    return this.vantages.map((v) => ({
+      name: v.name,
+      subject: v.gateIndex !== undefined ? 'gate' : v.terminusStandoff !== undefined ? 'terminus' : 'ship',
+    }));
+  }
+
   vantageNames(): string[] {
     return this.vantages.map((v) => v.name);
   }
@@ -1531,6 +1554,15 @@ export class Game {
         this.ship.angularVelocity.z,
       ],
       forward: [this.tmpA.x, this.tmpA.y, this.tmpA.z],
+      camera: (() => {
+        const cam = this.chase.camera;
+        cam.updateMatrixWorld();
+        const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+        return {
+          position: [cam.position.x, cam.position.y, cam.position.z] as [number, number, number],
+          forward: [f.x, f.y, f.z] as [number, number, number],
+        };
+      })(),
     };
   }
 
