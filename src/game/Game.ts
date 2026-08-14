@@ -155,10 +155,13 @@ export class Game {
    * you cannot see. The player's renderScale setting is the *ceiling*, not the value.
    */
   private dynamicScale = 1;
+  private allocWidth = 1;
+  private allocHeight = 1;
   private adaptAccumulator = 0;
   private adaptFrames = 0;
   private adaptCooldown = 0;
   private adaptLongFrames = 0;
+  private adaptSettle = 0;
   private lastRenderScaleCeiling = 1;
 
   private readonly telemetry: Telemetry;
@@ -348,7 +351,12 @@ export class Game {
 
     this.audio = new AudioEngine();
     this.overlay = new Overlay(options.root, {
-      start: () => this.beginRun(),
+      // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
+      // its control primer were fully built and mapped but nothing ever routed to them, so the
+      // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
+      // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
+      start: () => this.toBriefing(),
+      engage: () => this.beginRun(),
       restart: () => this.restart(),
       pause: () => this.pause(),
       resume: () => this.resume(),
@@ -517,6 +525,12 @@ export class Game {
     this.input.requestLock();
   }
 
+  toBriefing(): void {
+    this.autopilot = true;
+    this.cinematic = true;
+    this.setPhase('briefing');
+  }
+
   restart(): void {
     this.beginRun();
   }
@@ -595,6 +609,10 @@ export class Game {
    * so a single hitch never causes a visible resolution oscillation.
    */
   private adaptResolution(rawDt: number): void {
+    if (this.adaptSettle > 0) {
+      this.adaptSettle--;
+      return;
+    }
     this.adaptAccumulator += rawDt;
     this.adaptFrames++;
     if (rawDt > 0.0205) this.adaptLongFrames++;
@@ -626,7 +644,13 @@ export class Game {
       this.adaptCooldown = 0.8;
     }
 
-    if (Math.abs(this.dynamicScale - before) > 0.001) this.handleResize();
+    if (Math.abs(this.dynamicScale - before) > 0.001) {
+      this.applyRenderScale();
+      // Discard the next two frames from the controller's evidence. A scale change still costs
+      // one pipeline flush; counting that flush as a long frame is what let the scaler drive
+      // itself to the floor and stay there.
+      this.adaptSettle = 2;
+    }
   }
 
   private simulate(dt: number): void {
@@ -1153,6 +1177,7 @@ export class Game {
     // only the final fullscreen composite. Reset once here and read the aggregate instead.
     renderer.info.autoReset = false;
     renderer.info.reset();
+    this.post.setCamera(this.chase.camera);
     renderer.setRenderTarget(this.post.sceneTarget);
     renderer.clear(true, true, true);
     renderer.render(this.farScene, this.farCamera);
@@ -1244,7 +1269,8 @@ export class Game {
       chromaticAberration: s.chromaticAberration,
     });
     this.applyQualityPopulations();
-    this.handleResize();
+    // Allocation depends on the window alone now, so a settings change only moves the viewport.
+    this.applyRenderScale();
   }
 
   /** Trims drawn populations to the current quality level. Cheap and immediate. */
@@ -1256,23 +1282,35 @@ export class Game {
     this.asteroids.setVisibleFraction(profile.asteroidCount / max.asteroidCount);
   }
 
+  /**
+   * Reallocates for a genuine window change. The dynamic-resolution controller must NOT call
+   * this — it calls applyRenderScale, which moves a viewport and allocates nothing.
+   */
   private readonly handleResize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = this.dynamicScale;
-    const bufferWidth = Math.max(320, Math.round(width * dpr * scale));
-    const bufferHeight = Math.max(240, Math.round(height * dpr * scale));
+    this.allocWidth = Math.max(320, Math.round(width * dpr));
+    this.allocHeight = Math.max(240, Math.round(height * dpr));
 
     this.renderer.setPixelRatio(1);
-    this.renderer.setSize(bufferWidth, bufferHeight, false);
+    this.renderer.setSize(this.allocWidth, this.allocHeight, false);
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
-    this.post.setSize(bufferWidth, bufferHeight);
+    this.post.setSize(this.allocWidth, this.allocHeight);
+    this.applyRenderScale();
     this.chase.setAspect(width / height);
     this.farCamera.aspect = width / height;
     this.farCamera.updateProjectionMatrix();
   };
+
+  /** Cheap: moves each target's viewport rectangle. No allocation, no canvas resize. */
+  private applyRenderScale(): void {
+    this.post.setRenderSize(
+      Math.max(320, Math.round(this.allocWidth * this.dynamicScale)),
+      Math.max(240, Math.round(this.allocHeight * this.dynamicScale)),
+    );
+  }
 
   /** Fired when the browser or driver drops the GPU context. */
   onContextLost: (() => void) | null = null;
@@ -1488,8 +1526,8 @@ export class Game {
       geometries: info.memory.geometries,
       textures: info.memory.textures,
       renderScale: this.dynamicScale,
-      drawingBufferWidth: this.renderer.domElement.width,
-      drawingBufferHeight: this.renderer.domElement.height,
+      drawingBufferWidth: this.post.renderWidth,
+      drawingBufferHeight: this.post.renderHeight,
     };
   }
 

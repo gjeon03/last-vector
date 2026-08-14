@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Rng, fbm3 } from '../core/rng.ts';
 import { GLSL_NOISE } from './glslNoise.ts';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.ts';
 import { PALETTE } from '../core/art.ts';
 
@@ -110,7 +111,12 @@ interface AsteroidGeometry {
 }
 
 function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
-  const geometry = new THREE.IcosahedronGeometry(1, detail);
+  // Welded BEFORE displacement. IcosahedronGeometry is non-indexed, so computeVertexNormals can
+  // only ever produce per-face normals — measured at 320 of 320 faces with all three vertex
+  // normals identical. That gives hard creases and a polygonal silhouette that no amount of
+  // derivative bump can recover, and the keep-clear radius guarantees the nearest rocks are
+  // always large on screen. Merging first costs no triangles at all.
+  const geometry = mergeVertices(new THREE.IcosahedronGeometry(1, detail));
   const pos = geometry.attributes.position as THREE.BufferAttribute;
   const count = pos.count;
 

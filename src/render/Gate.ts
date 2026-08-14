@@ -113,15 +113,21 @@ const FIELD_FRAG = /* glsl */ `
     if (r > 1.0) discard;
     float a = atan(p.y, p.x);
 
-    // Standing wave across the aperture: concentric ripples plus slow angular spokes.
+    // Standing wave across the aperture: concentric ripples plus a slow angular drift.
     float ripple = sin(r * 26.0 - uTime * 2.6) * 0.5 + 0.5;
-    float spokes = sin(a * 9.0 + uTime * 0.55) * 0.5 + 0.5;
+    // The angular term is a pure function of polar angle, so it is undefined at r=0 and exactly
+    // periodic everywhere else — as a 50% mix it rendered a nine-petal mandala with a hard
+    // singularity pinched at the centre of the hole the player flies through nine times a run.
+    // Fade it out toward the axis, break its periodicity with the turbulence field, and let the
+    // ripple carry the aperture.
     float turb = fbm(vec3(p * 3.4, uTime * 0.16), 4) * 0.5 + 0.5;
+    float spokes = sin(a * 9.0 + uTime * 0.55 + turb * 2.6) * 0.5 + 0.5;
+    spokes *= smoothstep(0.0, 0.35, r);
 
     // Density is concentrated at the rim; the middle stays open so you can see through it.
     float rim = smoothstep(0.62, 1.0, r) * (1.0 - smoothstep(0.985, 1.0, r));
     float body = smoothstep(1.0, 0.2, r) * 0.16;
-    float density = rim * (0.55 + ripple * 0.45) * (0.6 + turb * 0.7) + body * (0.5 + spokes * 0.5);
+    float density = rim * (0.55 + ripple * 0.45) * (0.6 + turb * 0.7) + body * (0.85 + spokes * 0.15);
 
     // Viewed edge-on the field almost vanishes, which is what makes it read as a plane of
     // light in space rather than a flat disc sprite.

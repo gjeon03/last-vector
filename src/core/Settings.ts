@@ -19,6 +19,7 @@ export interface QualityProfile {
   nebulaSteps: number;
   shadowMap: boolean;
   anisotropy: number;
+  ssao: 'low' | 'medium' | 'high' | 'ultra';
 }
 
 const PROFILES: Record<QualityLevel, QualityProfile> = {
@@ -36,6 +37,7 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     nebulaSteps: 0,
     shadowMap: false,
     anisotropy: 2,
+    ssao: 'low',
   },
   medium: {
     renderScale: 0.86,
@@ -51,6 +53,7 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     nebulaSteps: 12,
     shadowMap: false,
     anisotropy: 4,
+    ssao: 'medium',
   },
   high: {
     renderScale: 1,
@@ -66,6 +69,7 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     nebulaSteps: 20,
     shadowMap: true,
     anisotropy: 8,
+    ssao: 'high',
   },
   ultra: {
     renderScale: 1,
@@ -81,6 +85,7 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     nebulaSteps: 28,
     shadowMap: true,
     anisotropy: 16,
+    ssao: 'ultra',
   },
 };
 

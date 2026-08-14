@@ -147,7 +147,13 @@ export class Starfield {
       fragmentShader: STAR_FRAG,
       transparent: true,
       depthWrite: false,
-      depthTest: false,
+      // Depth testing ON. `transparent: true` puts these points in three's transparent list,
+      // which draws after all opaque geometry, so renderOrder could never pull them forward —
+      // and with the test disabled the planet's depth could not reject them either. The result
+      // was 5,693 star pixels measured inside a 170x170 patch of the gas giant's own disc: the
+      // sky's largest solid object was see-through. The radii already order correctly (stars 90,
+      // star 60, planet 40); the test simply was not allowed to run.
+      depthTest: true,
       blending: THREE.AdditiveBlending,
     });
 

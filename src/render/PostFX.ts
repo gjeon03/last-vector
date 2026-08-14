@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { FullScreenQuad, makePassMaterial } from './fullscreen.ts';
 import type { QualityProfile } from '../core/Settings.ts';
 import { clamp01 } from '../core/mathx.ts';
+import { SSAO_BLUR_FRAG, SSAO_FRAG, SSAO_PROFILES, createSsaoUniforms } from './ssao.ts';
 
 /**
  * The look of the game lives here.
@@ -18,8 +19,38 @@ import { clamp01 } from '../core/mathx.ts';
 
 const BLOOM_MIPS = 5;
 
+/**
+ * Blits the rendered sub-rectangle up to the full canvas. Only used when the dynamic scale is
+ * below 1: at native the composite writes to the drawing buffer directly and this pass costs
+ * nothing because it never runs.
+ */
+const UPSCALE_FRAG = /* glsl */ `
+  precision highp float;
+  uniform sampler2D tDiffuse;
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  varying vec2 vUv;
+  void main() {
+    gl_FragColor = vec4(texture2D(tDiffuse, min(vUv * uSrcScale, uSrcMax)).rgb, 1.0);
+  }
+`;
+
 const PREFILTER_FRAG = /* glsl */ `
   precision highp float;
+  // ---------------------------------------------------------------- dynamic resolution
+  // Dynamic resolution is a VIEWPORT change, never a texture reallocation. Every target is
+  // allocated once at the largest size the window can require, and only a sub-rectangle of it
+  // is rendered. Reallocating nine targets per scale step cost more than it saved: measured at
+  // 21 ms/sec of CPU against 1.11 ms/frame for all game logic combined, and each realloc stall
+  // registered as a long frame, which drove the controller down another step — a closed
+  // positive-feedback loop that made the scaler net-negative (52.2 fps free vs 59.5 fps pinned).
+  //
+  // So a viewport uv must be scaled into texture space before every fetch, and clamped, because
+  // a wide tap that walked past the rendered region would read the stale margin beyond it.
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+
   uniform sampler2D tDiffuse;
   uniform vec2 uTexel;
   uniform float uThreshold;
@@ -28,10 +59,10 @@ const PREFILTER_FRAG = /* glsl */ `
   varying vec2 vUv;
 
   vec3 sampleBox(vec2 uv) {
-    vec3 a = texture2D(tDiffuse, uv + uTexel * vec2(-1.0, -1.0)).rgb;
-    vec3 b = texture2D(tDiffuse, uv + uTexel * vec2( 1.0, -1.0)).rgb;
-    vec3 c = texture2D(tDiffuse, uv + uTexel * vec2(-1.0,  1.0)).rgb;
-    vec3 d = texture2D(tDiffuse, uv + uTexel * vec2( 1.0,  1.0)).rgb;
+    vec3 a = texture2D(tDiffuse, srcUv(uv + uTexel * vec2(-1.0, -1.0))).rgb;
+    vec3 b = texture2D(tDiffuse, srcUv(uv + uTexel * vec2( 1.0, -1.0))).rgb;
+    vec3 c = texture2D(tDiffuse, srcUv(uv + uTexel * vec2(-1.0,  1.0))).rgb;
+    vec3 d = texture2D(tDiffuse, srcUv(uv + uTexel * vec2( 1.0,  1.0))).rgb;
     return (a + b + c + d) * 0.25;
   }
 
@@ -48,25 +79,39 @@ const PREFILTER_FRAG = /* glsl */ `
 
 const DOWNSAMPLE_FRAG = /* glsl */ `
   precision highp float;
+  // ---------------------------------------------------------------- dynamic resolution
+  // Dynamic resolution is a VIEWPORT change, never a texture reallocation. Every target is
+  // allocated once at the largest size the window can require, and only a sub-rectangle of it
+  // is rendered. Reallocating nine targets per scale step cost more than it saved: measured at
+  // 21 ms/sec of CPU against 1.11 ms/frame for all game logic combined, and each realloc stall
+  // registered as a long frame, which drove the controller down another step — a closed
+  // positive-feedback loop that made the scaler net-negative (52.2 fps free vs 59.5 fps pinned).
+  //
+  // So a viewport uv must be scaled into texture space before every fetch, and clamped, because
+  // a wide tap that walked past the rendered region would read the stale margin beyond it.
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+
   uniform sampler2D tDiffuse;
   uniform vec2 uTexel;
   varying vec2 vUv;
 
   // 13-tap partial Karis filter: stable under motion, no fireflies crawling between frames.
   void main() {
-    vec3 a = texture2D(tDiffuse, vUv + uTexel * vec2(-2.0,  2.0)).rgb;
-    vec3 b = texture2D(tDiffuse, vUv + uTexel * vec2( 0.0,  2.0)).rgb;
-    vec3 c = texture2D(tDiffuse, vUv + uTexel * vec2( 2.0,  2.0)).rgb;
-    vec3 d = texture2D(tDiffuse, vUv + uTexel * vec2(-2.0,  0.0)).rgb;
-    vec3 e = texture2D(tDiffuse, vUv).rgb;
-    vec3 f = texture2D(tDiffuse, vUv + uTexel * vec2( 2.0,  0.0)).rgb;
-    vec3 g = texture2D(tDiffuse, vUv + uTexel * vec2(-2.0, -2.0)).rgb;
-    vec3 h = texture2D(tDiffuse, vUv + uTexel * vec2( 0.0, -2.0)).rgb;
-    vec3 i = texture2D(tDiffuse, vUv + uTexel * vec2( 2.0, -2.0)).rgb;
-    vec3 j = texture2D(tDiffuse, vUv + uTexel * vec2(-1.0,  1.0)).rgb;
-    vec3 k = texture2D(tDiffuse, vUv + uTexel * vec2( 1.0,  1.0)).rgb;
-    vec3 l = texture2D(tDiffuse, vUv + uTexel * vec2(-1.0, -1.0)).rgb;
-    vec3 m = texture2D(tDiffuse, vUv + uTexel * vec2( 1.0, -1.0)).rgb;
+    vec3 a = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2(-2.0,  2.0))).rgb;
+    vec3 b = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 0.0,  2.0))).rgb;
+    vec3 c = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 2.0,  2.0))).rgb;
+    vec3 d = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2(-2.0,  0.0))).rgb;
+    vec3 e = texture2D(tDiffuse, srcUv(vUv)).rgb;
+    vec3 f = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 2.0,  0.0))).rgb;
+    vec3 g = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2(-2.0, -2.0))).rgb;
+    vec3 h = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 0.0, -2.0))).rgb;
+    vec3 i = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 2.0, -2.0))).rgb;
+    vec3 j = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2(-1.0,  1.0))).rgb;
+    vec3 k = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 1.0,  1.0))).rgb;
+    vec3 l = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2(-1.0, -1.0))).rgb;
+    vec3 m = texture2D(tDiffuse, srcUv(vUv + uTexel * vec2( 1.0, -1.0))).rgb;
 
     vec3 result = e * 0.125;
     result += (a + c + g + i) * 0.03125;
@@ -78,6 +123,20 @@ const DOWNSAMPLE_FRAG = /* glsl */ `
 
 const UPSAMPLE_FRAG = /* glsl */ `
   precision highp float;
+  // ---------------------------------------------------------------- dynamic resolution
+  // Dynamic resolution is a VIEWPORT change, never a texture reallocation. Every target is
+  // allocated once at the largest size the window can require, and only a sub-rectangle of it
+  // is rendered. Reallocating nine targets per scale step cost more than it saved: measured at
+  // 21 ms/sec of CPU against 1.11 ms/frame for all game logic combined, and each realloc stall
+  // registered as a long frame, which drove the controller down another step — a closed
+  // positive-feedback loop that made the scaler net-negative (52.2 fps free vs 59.5 fps pinned).
+  //
+  // So a viewport uv must be scaled into texture space before every fetch, and clamped, because
+  // a wide tap that walked past the rendered region would read the stale margin beyond it.
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+
   uniform sampler2D tDiffuse;
   uniform vec2 uTexel;
   uniform float uRadius;
@@ -86,21 +145,35 @@ const UPSAMPLE_FRAG = /* glsl */ `
   // 3x3 tent filter. Widening the radius per level is what produces the long, soft skirt.
   void main() {
     vec2 o = uTexel * uRadius;
-    vec3 result = texture2D(tDiffuse, vUv + vec2(-o.x,  o.y)).rgb * 1.0;
-    result += texture2D(tDiffuse, vUv + vec2( 0.0,  o.y)).rgb * 2.0;
-    result += texture2D(tDiffuse, vUv + vec2( o.x,  o.y)).rgb * 1.0;
-    result += texture2D(tDiffuse, vUv + vec2(-o.x,  0.0)).rgb * 2.0;
-    result += texture2D(tDiffuse, vUv).rgb * 4.0;
-    result += texture2D(tDiffuse, vUv + vec2( o.x,  0.0)).rgb * 2.0;
-    result += texture2D(tDiffuse, vUv + vec2(-o.x, -o.y)).rgb * 1.0;
-    result += texture2D(tDiffuse, vUv + vec2( 0.0, -o.y)).rgb * 2.0;
-    result += texture2D(tDiffuse, vUv + vec2( o.x, -o.y)).rgb * 1.0;
+    vec3 result = texture2D(tDiffuse, srcUv(vUv + vec2(-o.x,  o.y))).rgb * 1.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2( 0.0,  o.y))).rgb * 2.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2( o.x,  o.y))).rgb * 1.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2(-o.x,  0.0))).rgb * 2.0;
+    result += texture2D(tDiffuse, srcUv(vUv)).rgb * 4.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2( o.x,  0.0))).rgb * 2.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2(-o.x, -o.y))).rgb * 1.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2( 0.0, -o.y))).rgb * 2.0;
+    result += texture2D(tDiffuse, srcUv(vUv + vec2( o.x, -o.y))).rgb * 1.0;
     gl_FragColor = vec4(result / 16.0, 1.0);
   }
 `;
 
 const GODRAY_FRAG = /* glsl */ `
   precision highp float;
+  // ---------------------------------------------------------------- dynamic resolution
+  // Dynamic resolution is a VIEWPORT change, never a texture reallocation. Every target is
+  // allocated once at the largest size the window can require, and only a sub-rectangle of it
+  // is rendered. Reallocating nine targets per scale step cost more than it saved: measured at
+  // 21 ms/sec of CPU against 1.11 ms/frame for all game logic combined, and each realloc stall
+  // registered as a long frame, which drove the controller down another step — a closed
+  // positive-feedback loop that made the scaler net-negative (52.2 fps free vs 59.5 fps pinned).
+  //
+  // So a viewport uv must be scaled into texture space before every fetch, and clamped, because
+  // a wide tap that walked past the rendered region would read the stale margin beyond it.
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+
   uniform sampler2D tScene;
   uniform sampler2D tDepth;
   uniform vec2 uSun;
@@ -123,12 +196,12 @@ const GODRAY_FRAG = /* glsl */ `
       if (i >= uSamples) break;
       uv -= delta;
       vec2 c = clamp(uv, 0.0, 1.0);
-      float depth = texture2D(tDepth, c).r;
+      float depth = texture2D(tDepth, srcUv(c)).r;
       float sky = step(0.9999, depth);
       // Only light close to the star seeds a shaft; anything else is a bright object that
       // merely happens to have nothing solid behind it.
       float nearSun = smoothstep(0.55, 0.06, length((c - uSun) * vec2(1.0, 0.5625)));
-      vec3 s = texture2D(tScene, c).rgb * sky * nearSun;
+      vec3 s = texture2D(tScene, srcUv(c)).rgb * sky * nearSun;
       accum += s * illumination * uWeight;
       illumination *= uDecay;
     }
@@ -138,9 +211,34 @@ const GODRAY_FRAG = /* glsl */ `
 
 const COMPOSITE_FRAG = /* glsl */ `
   precision highp float;
+  // ---------------------------------------------------------------- dynamic resolution
+  // Dynamic resolution is a VIEWPORT change, never a texture reallocation. Every target is
+  // allocated once at the largest size the window can require, and only a sub-rectangle of it
+  // is rendered. Reallocating nine targets per scale step cost more than it saved: measured at
+  // 21 ms/sec of CPU against 1.11 ms/frame for all game logic combined, and each realloc stall
+  // registered as a long frame, which drove the controller down another step — a closed
+  // positive-feedback loop that made the scaler net-negative (52.2 fps free vs 59.5 fps pinned).
+  //
+  // So a viewport uv must be scaled into texture space before every fetch, and clamped, because
+  // a wide tap that walked past the rendered region would read the stale margin beyond it.
+  uniform vec2 uSrcScale;
+  uniform vec2 uSrcMax;
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+  uniform vec2 uBloomScale;
+  uniform vec2 uBloomMax;
+  uniform vec2 uRayScale;
+  uniform vec2 uRayMax;
+  uniform vec2 uAOScale;
+  uniform vec2 uAOMax;
+  vec2 bloomUv(vec2 uv) { return min(uv * uBloomScale, uBloomMax); }
+  vec2 rayUv(vec2 uv)   { return min(uv * uRayScale, uRayMax); }
+  vec2 aoUv(vec2 uv)    { return min(uv * uAOScale, uAOMax); }
+
   uniform sampler2D tScene;
   uniform sampler2D tBloom;
   uniform sampler2D tGodrays;
+  uniform sampler2D tAO;
+  uniform float uAOStrength;
   uniform vec2 uResolution;
   uniform float uTime;
 
@@ -235,22 +333,35 @@ const COMPOSITE_FRAG = /* glsl */ `
         float t = (float(i) + hash12(gl_FragCoord.xy + uTime * 61.0)) / float(uBlurSamples);
         float w = 1.0 - t * 0.55;
         vec2 base = uv - dir * t;
-        accum.r += texture2D(tScene, base + ca).r * w;
-        accum.g += texture2D(tScene, base).g * w;
-        accum.b += texture2D(tScene, base - ca).b * w;
+        accum.r += texture2D(tScene, srcUv(base + ca)).r * w;
+        accum.g += texture2D(tScene, srcUv(base)).g * w;
+        accum.b += texture2D(tScene, srcUv(base - ca)).b * w;
         total += w;
       }
       scene = accum / total;
     } else {
       scene = vec3(
-        texture2D(tScene, uv + ca).r,
-        texture2D(tScene, uv).g,
-        texture2D(tScene, uv - ca).b
+        texture2D(tScene, srcUv(uv + ca)).r,
+        texture2D(tScene, srcUv(uv)).g,
+        texture2D(tScene, srcUv(uv - ca)).b
       );
     }
 
-    vec3 bloom = texture2D(tBloom, uv).rgb;
-    vec3 rays = texture2D(tGodrays, uv).rgb * uGodrayTint;
+    // Ambient occlusion. It should darken the AMBIENT term only — occlusion does not dim a
+    // surface the key light is hitting directly — but this is a forward pipeline with no
+    // separate ambient buffer to multiply into. The weight below is the standing approximation:
+    // apply it in full where the pixel is dim (and therefore ambient-dominated) and taper it
+    // away where the pixel is bright (and therefore key-lit). It is a heuristic, not physics,
+    // and it is here because the alternative is an MRT that touches every material in the game.
+    if (uAOStrength > 0.001) {
+      float ao = texture2D(tAO, aoUv(uv)).r;
+      float sceneLuma = dot(scene, vec3(0.2126, 0.7152, 0.0722));
+      float ambientWeight = 1.0 - smoothstep(0.12, 0.55, sceneLuma);
+      scene *= mix(1.0, ao, ambientWeight * uAOStrength);
+    }
+
+    vec3 bloom = texture2D(tBloom, bloomUv(uv)).rgb;
+    vec3 rays = texture2D(tGodrays, rayUv(uv)).rgb * uGodrayTint;
 
     vec3 color = scene + bloom * uBloomStrength + rays * uGodrayStrength;
 
@@ -300,6 +411,31 @@ const COMPOSITE_FRAG = /* glsl */ `
   }
 `;
 
+interface SizedTarget {
+  target: THREE.WebGLRenderTarget;
+  /** Allocation divisor against the scene target. */
+  div: number;
+  allocW: number;
+  allocH: number;
+  renderW: number;
+  renderH: number;
+}
+
+/** Half a texel of clamp, so a wide tap can never walk off the rendered region. */
+function setScalePair(mat: THREE.ShaderMaterial, scaleKey: string, maxKey: string, src: SizedTarget): void {
+  const sx = src.renderW / src.allocW;
+  const sy = src.renderH / src.allocH;
+  (mat.uniforms[scaleKey].value as THREE.Vector2).set(sx, sy);
+  (mat.uniforms[maxKey].value as THREE.Vector2).set(
+    sx - 0.5 / src.allocW,
+    sy - 0.5 / src.allocH,
+  );
+}
+
+function applyScale(mat: THREE.ShaderMaterial, src: SizedTarget): void {
+  setScalePair(mat, 'uSrcScale', 'uSrcMax', src);
+}
+
 export interface GradeParams {
   exposure: number;
   contrast: number;
@@ -329,16 +465,28 @@ export class PostFX {
   readonly sceneTarget: THREE.WebGLRenderTarget;
   private readonly bloomTargets: THREE.WebGLRenderTarget[] = [];
   private readonly godrayTarget: THREE.WebGLRenderTarget;
+  private readonly aoTarget: THREE.WebGLRenderTarget;
+  private readonly aoBlurTarget: THREE.WebGLRenderTarget;
 
   private readonly prefilterMat: THREE.ShaderMaterial;
   private readonly downsampleMat: THREE.ShaderMaterial;
   private readonly upsampleMat: THREE.ShaderMaterial;
   private readonly godrayMat: THREE.ShaderMaterial;
+  private readonly ssaoMat: THREE.ShaderMaterial;
+  private readonly ssaoBlurMat: THREE.ShaderMaterial;
+  private ssaoSamples = 12;
   private readonly compositeMat: THREE.ShaderMaterial;
+  private readonly upscaleMat: THREE.ShaderMaterial;
+  private readonly presentTarget: THREE.WebGLRenderTarget;
 
   private profile: QualityProfile;
+  /** Allocation size — the largest sub-rectangle any target can be asked to render. */
+  private allocWidth = 1;
+  private allocHeight = 1;
+  /** Currently rendered sub-rectangle. Always <= the allocation. */
   private width = 1;
   private height = 1;
+  private readonly sized: SizedTarget[] = [];
 
   constructor(renderer: THREE.WebGLRenderer, profile: QualityProfile) {
     this.renderer = renderer;
@@ -373,6 +521,30 @@ export class PostFX {
       this.bloomTargets.push(t);
     }
 
+    // Half resolution: AO is low-frequency shading and the blur would throw away the extra
+    // detail anyway. Single channel would be nicer still but RGBA is the portable choice.
+    const aoOptions: THREE.RenderTargetOptions = {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+      colorSpace: THREE.LinearSRGBColorSpace,
+    };
+    // Display-referred, so 8 bits is exactly right and costs a quarter of the bandwidth.
+    this.presentTarget = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.UnsignedByteType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+      colorSpace: THREE.LinearSRGBColorSpace,
+    });
+    this.aoTarget = new THREE.WebGLRenderTarget(1, 1, aoOptions);
+    this.aoBlurTarget = new THREE.WebGLRenderTarget(1, 1, aoOptions);
+
     this.godrayTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
@@ -383,8 +555,28 @@ export class PostFX {
       colorSpace: THREE.LinearSRGBColorSpace,
     });
 
+    // Order matters: setRenderSize indexes this list as [scene, ...bloom mips, godray, ao, aoBlur].
+    const register = (target: THREE.WebGLRenderTarget, div: number): void => {
+      this.sized.push({ target, div, allocW: 1, allocH: 1, renderW: 1, renderH: 1 });
+    };
+    register(this.sceneTarget, 1);
+    for (let i = 0; i < BLOOM_MIPS; i++) register(this.bloomTargets[i], 2 << i);
+    register(this.godrayTarget, 4);
+    register(this.aoTarget, 2);
+    register(this.aoBlurTarget, 2);
+    register(this.presentTarget, 1);
+
+    this.upscaleMat = makePassMaterial(UPSCALE_FRAG, {
+      tDiffuse: { value: this.presentTarget.texture },
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+    });
+
     this.prefilterMat = makePassMaterial(PREFILTER_FRAG, {
       tDiffuse: { value: null },
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+
       uTexel: { value: new THREE.Vector2() },
       uThreshold: { value: 1.05 },
       uKnee: { value: 0.62 },
@@ -393,17 +585,26 @@ export class PostFX {
 
     this.downsampleMat = makePassMaterial(DOWNSAMPLE_FRAG, {
       tDiffuse: { value: null },
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+
       uTexel: { value: new THREE.Vector2() },
     });
 
     this.upsampleMat = makePassMaterial(UPSAMPLE_FRAG, {
       tDiffuse: { value: null },
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+
       uTexel: { value: new THREE.Vector2() },
       uRadius: { value: 1.0 },
     }, { blending: THREE.AdditiveBlending, transparent: true });
 
     this.godrayMat = makePassMaterial(GODRAY_FRAG, {
       tScene: { value: null },
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+
       tDepth: { value: null },
       uSun: { value: new THREE.Vector2(0.5, 0.5) },
       uDensity: { value: 0.72 },
@@ -413,10 +614,34 @@ export class PostFX {
       uSamples: { value: profile.godraySamples },
     });
 
+    this.ssaoMat = makePassMaterial(SSAO_FRAG, {
+      ...createSsaoUniforms(),
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+    });
+    this.ssaoBlurMat = makePassMaterial(SSAO_BLUR_FRAG, {
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+
+      tAO: { value: null },
+      uTexel: { value: new THREE.Vector2() },
+    });
+
     this.compositeMat = makePassMaterial(COMPOSITE_FRAG, {
+      uSrcScale: { value: new THREE.Vector2(1, 1) },
+      uSrcMax: { value: new THREE.Vector2(1, 1) },
+      uBloomScale: { value: new THREE.Vector2(1, 1) },
+      uBloomMax: { value: new THREE.Vector2(1, 1) },
+      uRayScale: { value: new THREE.Vector2(1, 1) },
+      uRayMax: { value: new THREE.Vector2(1, 1) },
+      uAOScale: { value: new THREE.Vector2(1, 1) },
+      uAOMax: { value: new THREE.Vector2(1, 1) },
+
       tScene: { value: null },
       tBloom: { value: null },
       tGodrays: { value: null },
+      tAO: { value: null },
+      uAOStrength: { value: 1 },
       uResolution: { value: new THREE.Vector2(1, 1) },
       uTime: { value: 0 },
       uBloomStrength: { value: profile.bloomStrength },
@@ -443,27 +668,80 @@ export class PostFX {
 
   setProfile(profile: QualityProfile): void {
     this.profile = profile;
+    const ssao = SSAO_PROFILES[profile.ssao];
+    this.ssaoSamples = ssao.samples;
+    this.ssaoMat.uniforms.uSamples.value = ssao.samples;
+    this.ssaoMat.uniforms.uRadius.value = ssao.radius;
+    this.ssaoMat.uniforms.uIntensity.value = ssao.intensity;
+    this.compositeMat.uniforms.uAOStrength.value = ssao.samples > 0 ? 1 : 0;
     this.godrayMat.uniforms.uSamples.value = profile.godraySamples;
     this.compositeMat.uniforms.uBlurSamples.value = profile.motionBlurSamples;
     this.compositeMat.uniforms.uBloomStrength.value = profile.bloomStrength;
   }
 
-  setSize(width: number, height: number): void {
-    this.width = Math.max(1, Math.floor(width));
-    this.height = Math.max(1, Math.floor(height));
-    this.sceneTarget.setSize(this.width, this.height);
-    this.sceneTarget.depthTexture?.image && (this.sceneTarget.depthTexture.image.width = this.width);
-    if (this.sceneTarget.depthTexture?.image) this.sceneTarget.depthTexture.image.height = this.height;
+  /** The sub-rectangle actually being rendered, for telemetry. */
+  get renderWidth(): number { return this.width; }
+  get renderHeight(): number { return this.height; }
 
-    let w = this.width;
-    let h = this.height;
-    for (let i = 0; i < this.bloomTargets.length; i++) {
-      w = Math.max(1, Math.floor(w / 2));
-      h = Math.max(1, Math.floor(h / 2));
-      this.bloomTargets[i].setSize(w, h);
+  /**
+   * Reallocates every target. Called ONLY when the window itself changes size — never by the
+   * dynamic-resolution controller, which uses `setRenderSize` instead.
+   */
+  setSize(width: number, height: number): void {
+    this.allocWidth = Math.max(1, Math.floor(width));
+    this.allocHeight = Math.max(1, Math.floor(height));
+
+    for (const s of this.sized) {
+      const w = Math.max(1, Math.floor(this.allocWidth / s.div));
+      const h = Math.max(1, Math.floor(this.allocHeight / s.div));
+      s.allocW = w;
+      s.allocH = h;
+      s.target.setSize(w, h);
+    }
+    const depth = this.sceneTarget.depthTexture;
+    if (depth?.image) {
+      depth.image.width = this.allocWidth;
+      depth.image.height = this.allocHeight;
+    }
+    this.setRenderSize(this.allocWidth, this.allocHeight);
+  }
+
+  /**
+   * Moves the rendered sub-rectangle without touching a single allocation. This is the whole
+   * dynamic-resolution mechanism: each target keeps its own `viewport`/`scissor`, which three
+   * applies on bind, so there is no per-frame renderer state change either.
+   */
+  setRenderSize(width: number, height: number): void {
+    this.width = Math.min(this.allocWidth, Math.max(1, Math.floor(width)));
+    this.height = Math.min(this.allocHeight, Math.max(1, Math.floor(height)));
+
+    for (const s of this.sized) {
+      s.renderW = Math.min(s.allocW, Math.max(1, Math.round(this.width / s.div)));
+      s.renderH = Math.min(s.allocH, Math.max(1, Math.round(this.height / s.div)));
+      s.target.viewport.set(0, 0, s.renderW, s.renderH);
+      s.target.scissor.set(0, 0, s.renderW, s.renderH);
+      // Scissoring the clear as well means the dead margin is never even touched.
+      s.target.scissorTest = true;
     }
 
-    this.godrayTarget.setSize(Math.max(1, this.width >> 2), Math.max(1, this.height >> 2));
+    const scene = this.sized[0];
+    const bloom0 = this.sized[1];
+    const rays = this.sized[1 + BLOOM_MIPS];
+    const ao = this.sized[2 + BLOOM_MIPS];
+    applyScale(this.upscaleMat, this.sized[4 + BLOOM_MIPS]);
+
+    applyScale(this.prefilterMat, scene);
+    applyScale(this.godrayMat, scene);
+    applyScale(this.ssaoMat, scene);
+    applyScale(this.ssaoBlurMat, ao);
+    applyScale(this.compositeMat, scene);
+    setScalePair(this.compositeMat, 'uBloomScale', 'uBloomMax', bloom0);
+    setScalePair(this.compositeMat, 'uRayScale', 'uRayMax', rays);
+    setScalePair(this.compositeMat, 'uAOScale', 'uAOMax', ao);
+
+    this.prefilterMat.uniforms.uTexel.value.set(1 / this.width, 1 / this.height);
+    this.ssaoMat.uniforms.uResolution.value.set(ao.renderW, ao.renderH);
+    this.ssaoBlurMat.uniforms.uTexel.value.set(1 / ao.renderW, 1 / ao.renderH);
     this.compositeMat.uniforms.uResolution.value.set(this.width, this.height);
   }
 
@@ -474,10 +752,23 @@ export class PostFX {
     this.compositeMat.userData.allowAberration = flags.chromaticAberration;
   }
 
+  /** The AO pass needs the camera's projection to reconstruct view-space position from depth. */
+  setCamera(camera: THREE.PerspectiveCamera): void {
+    this.ssaoMat.uniforms.uProjection.value.copy(camera.projectionMatrix);
+    this.ssaoMat.uniforms.uInverseProjection.value.copy(camera.projectionMatrixInverse);
+  }
+
   render(grade: GradeParams): void {
     const renderer = this.renderer;
     const prevAutoClear = renderer.autoClear;
     renderer.autoClear = true;
+
+    if (this.ssaoSamples > 0) {
+      this.ssaoMat.uniforms.tDepth.value = this.sceneTarget.depthTexture;
+      this.quad.render(renderer, this.ssaoMat, this.aoTarget);
+      this.ssaoBlurMat.uniforms.tAO.value = this.aoTarget.texture;
+      this.quad.render(renderer, this.ssaoBlurMat, this.aoBlurTarget);
+    }
 
     if (this.profile.bloom) this.renderBloom();
     else this.clearTarget(this.bloomTargets[0]);
@@ -496,6 +787,7 @@ export class PostFX {
     u.tScene.value = this.sceneTarget.texture;
     u.tBloom.value = this.bloomTargets[0].texture;
     u.tGodrays.value = this.godrayTarget.texture;
+    u.tAO.value = this.aoBlurTarget.texture;
     u.uTime.value = grade.time;
     u.uExposure.value = grade.exposure;
     u.uContrast.value = grade.contrast;
@@ -510,7 +802,16 @@ export class PostFX {
     u.uDamage.value = clamp01(grade.damage);
     u.uFade.value = clamp01(grade.fade);
 
-    this.quad.render(renderer, this.compositeMat, null);
+    // At native the composite writes straight to the drawing buffer. Below native it writes to
+    // the sub-rectangle of an 8-bit target and one bilinear blit scales it up, so the expensive
+    // pass in the chain — an 8-tap blur with a per-channel offset — runs at the reduced size
+    // too. Rendering it at native would have given back most of what the scaler saves.
+    if (this.width >= this.allocWidth) {
+      this.quad.render(renderer, this.compositeMat, null);
+    } else {
+      this.quad.render(renderer, this.compositeMat, this.presentTarget);
+      this.quad.render(renderer, this.upscaleMat, null);
+    }
     renderer.autoClear = prevAutoClear;
   }
 
@@ -518,23 +819,26 @@ export class PostFX {
     const renderer = this.renderer;
     const targets = this.bloomTargets;
 
+    const mips = this.sized.slice(1, 1 + BLOOM_MIPS);
+
     this.prefilterMat.uniforms.tDiffuse.value = this.sceneTarget.texture;
-    this.prefilterMat.uniforms.uTexel.value.set(1 / this.width, 1 / this.height);
     this.quad.render(renderer, this.prefilterMat, targets[0]);
 
     for (let i = 1; i < targets.length; i++) {
-      const src = targets[i - 1];
-      this.downsampleMat.uniforms.tDiffuse.value = src.texture;
-      this.downsampleMat.uniforms.uTexel.value.set(1 / src.width, 1 / src.height);
+      const src = mips[i - 1];
+      this.downsampleMat.uniforms.tDiffuse.value = src.target.texture;
+      this.downsampleMat.uniforms.uTexel.value.set(1 / src.renderW, 1 / src.renderH);
+      applyScale(this.downsampleMat, src);
       this.quad.render(renderer, this.downsampleMat, targets[i]);
     }
 
     // Additive tent upsample back down the chain; each level widens the skirt.
     for (let i = targets.length - 1; i > 0; i--) {
-      const src = targets[i];
+      const src = mips[i];
       const dst = targets[i - 1];
-      this.upsampleMat.uniforms.tDiffuse.value = src.texture;
-      this.upsampleMat.uniforms.uTexel.value.set(1 / src.width, 1 / src.height);
+      this.upsampleMat.uniforms.tDiffuse.value = src.target.texture;
+      this.upsampleMat.uniforms.uTexel.value.set(1 / src.renderW, 1 / src.renderH);
+      applyScale(this.upsampleMat, src);
       this.upsampleMat.uniforms.uRadius.value = 1.0 + i * 0.35;
       renderer.autoClear = false;
       this.quad.render(renderer, this.upsampleMat, dst);
@@ -553,14 +857,20 @@ export class PostFX {
   }
 
   dispose(): void {
+    this.presentTarget.dispose();
+    this.upscaleMat.dispose();
     this.sceneTarget.dispose();
     this.sceneTarget.depthTexture?.dispose();
     for (const t of this.bloomTargets) t.dispose();
     this.godrayTarget.dispose();
+    this.aoTarget.dispose();
+    this.aoBlurTarget.dispose();
     this.prefilterMat.dispose();
     this.downsampleMat.dispose();
     this.upsampleMat.dispose();
     this.godrayMat.dispose();
+    this.ssaoMat.dispose();
+    this.ssaoBlurMat.dispose();
     this.compositeMat.dispose();
     this.quad.dispose();
   }

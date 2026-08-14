@@ -122,7 +122,10 @@ export interface RunResult {
 
 /** Everything the HUD layer is allowed to ask the game to do. */
 export interface HudHost {
+  /** Opens the briefing. The run itself begins from `engage`. */
   start(): void;
+  /** Leaves the briefing and starts the countdown. */
+  engage(): void;
   restart(): void;
   /**
    * The interface layer is the single owner of "a menu is showing", because only it knows
