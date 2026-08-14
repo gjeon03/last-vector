@@ -81,7 +81,13 @@ const RETRIGGER_FLOOR: Partial<Record<SfxEvent, number>> = {
   scrape: 0.09,
   /** Two strikes 35 ms apart are one strike to the ear, and stacking them only clips. */
   impact: 0.035,
-  gateNear: 0.05,
+  /**
+   * The designed maximum is 8.3 Hz (a 0.12 s interval), so a 0.1 s floor never touches correct
+   * behaviour — but it caps a runaway caller at 10 Hz. That matters: the game's tick interval was
+   * decremented per frame rather than per second, so on a 120 Hz display the rate reached 15 Hz.
+   * The call site is being fixed, and this bounds the damage if that class of bug recurs.
+   */
+  gateNear: 0.1,
   warnProximity: 0.12,
   uiHover: 0.03,
 };
@@ -350,20 +356,22 @@ export class SfxKit {
     // walking the cue into the loudest part of the drive exactly as it became urgent (measured
     // SNR fell from -10 dB to -27 dB), and the version before that never cleared the bed at all.
     const freq = 570 + intensity * 110;
-    // Energy is held roughly flat across intensity rather than level: the decay shortens to keep
-    // the tick tightening, and the peak rises just enough to pay for the energy that costs. The
-    // urgency is carried by the game's 3 -> 8.3 Hz repeat rate, the pitch and the shortening —
-    // never by loudness, which at 8 Hz is how a proximity cue becomes a smoke alarm.
-    // Longer and lower rather than shorter and spikier: the same energy — and so the same
-    // audibility — at ~1.5 dB less peak, which matters for the sound the player hears more often
-    // than any other. Even at the closest range the decay stays well inside the 120 ms floor of
-    // the game's repeat interval, so the ticks remain discrete rather than fusing into a tone.
+    // The margin must RISE with intensity, not merely stay positive. An earlier version held the
+    // peak almost flat and shortened the decay to convey tightening, which quietly cost more
+    // energy than the peak added: the cue still lost 2.1 dB of margin between intensity 0.2 and
+    // 1.0, so it was faintly reproducing the original defect — growing less audible as the gate
+    // closed — while passing every absolute check. Level now climbs about 2.5 dB across the
+    // sweep, which is gentle enough not to become an alarm and is on top of the game's 2.9 ->
+    // 8.3 Hz repeat rate, three semitones of pitch and a shortening decay.
+    //
+    // Even at the closest range the decay stays inside the repeat interval, so the ticks stay
+    // discrete rather than fusing into a tone.
     this.tone(v, {
       type: 'sine',
       freq,
-      peak: 0.44 + intensity * 0.05,
+      peak: 0.34 + intensity * 0.22,
       attack: 0.001,
-      decay: 0.1 - intensity * 0.025,
+      decay: 0.1 - intensity * 0.02,
     });
     // Character only. These give it a tick's edge rather than a woodblock's thud; neither
     // carries the audibility, so both stay quiet and neither grows with intensity.
@@ -745,18 +753,23 @@ export class SfxKit {
     this.finishVoice(v);
   }
 
-  /** Confirmation: same glass, plus a contact tick and a fifth below to give it a floor. */
+  /**
+   * Confirmation. The fundamental sits in the 630-800 Hz window the attract drive leaves open,
+   * not up at 1.5 kHz where it used to be and where the drive's turbine buried it by 5 dB even
+   * with the duck applied. The octave and the contact tick are character, and are deliberately
+   * too quiet to be carrying the cue.
+   */
   private uiClick(when: number): void {
-    const v = this.begin(when, 0.33, 0.14);
-    this.tone(v, { type: 'sine', freq: 1560, peak: 0.36, attack: 0.001, decay: 0.055 });
-    this.tone(v, { type: 'sine', freq: 1040, peak: 0.18, attack: 0.001, decay: 0.09 });
-    this.noise(v, { colour: 'spark', filter: 'bandpass', freq: 4200, q: 6, peak: 0.14, attack: 0.0008, decay: 0.022 });
+    const v = this.begin(when, 0.72, 0.14);
+    this.tone(v, { type: 'sine', freq: 740, peak: 0.44, attack: 0.001, decay: 0.075 });
+    this.tone(v, { type: 'sine', freq: 1480, peak: 0.13, attack: 0.001, decay: 0.04 });
+    this.noise(v, { colour: 'spark', filter: 'bandpass', freq: 3600, q: 6, peak: 0.09, attack: 0.0008, decay: 0.02 });
     this.finishVoice(v);
   }
 
   /** Cancel reads as a descent: the same glass falling a fourth. */
   private uiBack(when: number): void {
-    const v = this.begin(when, 0.3, 0.14);
+    const v = this.begin(when, 0.48, 0.14);
     this.tone(v, { type: 'sine', freq: 1180, glideTo: 790, glideTime: 0.07, peak: 0.32, attack: 0.001, decay: 0.09 });
     this.tone(v, { type: 'sine', freq: 590, glideTo: 395, glideTime: 0.07, peak: 0.14, attack: 0.002, decay: 0.11 });
     this.finishVoice(v);

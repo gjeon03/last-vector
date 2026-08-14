@@ -43,12 +43,31 @@ export interface AudioGraph {
   musicBus: GainNode;
   sfxBus: GainNode;
   engineBus: GainNode;
+  /** Post-`engineBus` trim used to step the drive back under UI confirmations. */
+  engineDuck: GainNode;
   reverbSend: GainNode;
   reverbReturn: GainNode;
   engine: EngineLayer;
   sfx: SfxKit;
   music: MusicBed;
 }
+
+/**
+ * How far the drive steps back under a UI confirmation, as a linear gain.
+ *
+ * The title and briefing screens are not quiet: the attract loop flies behind them at ~0.95
+ * throttle, and a menu click measured 10.7 dB *under* that bed. Making the click loud enough to
+ * win outright would make it absurd anywhere else, so the drive gives way instead — which is what
+ * a mixer would do and what the player expects when a menu is in front of them.
+ *
+ * Set from measurement rather than taste: at -8 dB the confirmations still sat 2-5 dB under the
+ * attract bed, and raising the cues instead would have made a menu click as loud as a gate chime.
+ * -11 dB clears both with margin while staying a step-back rather than a mute, over 160 ms.
+ *
+ * Exported so the measurement harness models the same duck rather than hardcoding a second copy
+ * of this number and silently drifting from it.
+ */
+export const UI_DUCK_DEPTH = 0.28;
 
 /** Events loud enough that the pad should step out of their way for a moment. */
 const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
@@ -59,6 +78,12 @@ const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
   'newBest',
   'impact',
 ]);
+
+/**
+ * UI cues that duck the drive. `uiHover` is deliberately absent: it fires continuously as the
+ * pointer crosses a list, and ducking the engine on every one would pump the whole mix.
+ */
+const ENGINE_DUCK_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>(['uiClick', 'uiBack']);
 
 /**
  * Builds the whole procedural graph on any `BaseAudioContext`.
@@ -134,7 +159,10 @@ export const createAudioGraph = (ctx: BaseAudioContext, seed = 0x5eed1e): AudioG
 
   const engineBus = keep(ctx.createGain());
   engineBus.gain.value = 0.75;
-  engineBus.connect(preMaster);
+  const engineDuck = keep(ctx.createGain());
+  engineDuck.gain.value = 1;
+  engineBus.connect(engineDuck);
+  engineDuck.connect(preMaster);
 
   // --- generated source material ---------------------------------------------------------
   const air = createNoiseBuffer(ctx, 4, 'pink', seed ^ 0x1234);
@@ -170,6 +198,7 @@ export const createAudioGraph = (ctx: BaseAudioContext, seed = 0x5eed1e): AudioG
     musicBus,
     sfxBus,
     engineBus,
+    engineDuck,
     reverbSend,
     engine,
     sfx,
@@ -246,6 +275,7 @@ export class AudioEngine implements AudioBus {
       return;
     }
     if (DUCKING_EVENTS.has(event)) this.duck(when, event === 'gatePass' ? 0.62 : 0.7);
+    if (ENGINE_DUCK_EVENTS.has(event)) this.duckEngine(when);
   }
 
   setIntensity(value: number): void {
@@ -371,6 +401,19 @@ export class AudioEngine implements AudioBus {
     if (this.ticker === null) return;
     clearInterval(this.ticker);
     this.ticker = null;
+  }
+
+  /**
+   * Momentary dip of the drive so a UI confirmation is audible over the attract flight without
+   * having to be mixed loud enough to survive it. Only the dry path dips — the engine's reverb
+   * send taps ahead of the bus — but at a send of 0.075 that residue is negligible.
+   */
+  private duckEngine(when: number): void {
+    const g = this.graph;
+    if (!g) return;
+    const param = g.engineDuck.gain;
+    param.setTargetAtTime(UI_DUCK_DEPTH, when, 0.012);
+    param.setTargetAtTime(1, when + 0.16, 0.1);
   }
 
   /** Momentary dip of the music bus so a transient reads as loud without being mixed louder. */
