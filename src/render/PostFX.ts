@@ -47,6 +47,30 @@ const PRESENT_FRAG = /* glsl */ `
   vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
   float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
+  /**
+   * One fetch, with the lateral chromatic offset already applied per channel.
+   *
+   * Aberration used to run AFTER the edge blend, overwriting color.r and color.b with re-fetches
+   * of the raw pre-FXAA source — so two of three channels lost their anti-aliasing entirely, and
+   * every silhouette in the game carried a green/magenta fringe. Isolated by restricting to the
+   * frame region where the radial ramp is exactly zero, so no channel displacement is possible:
+   * red +187%, blue +143%, green +0.09%. The blend was being discarded, not merely tinted.
+   *
+   * Folding the offset into the sampler instead means FXAA runs ON the aberrated image and every
+   * channel keeps its blend.
+   */
+  vec3 tap(vec2 uv) {
+    if (uAberration <= 0.0001) return texture2D(tDiffuse, srcUv(uv)).rgb;
+    vec2 fromAxis = uv - 0.5;
+    float ramp = dot(fromAxis, fromAxis) * smoothstep(0.3, 0.75, length(fromAxis));
+    vec2 ca = normalize(fromAxis + 1e-6) * min(uAberration * ramp * 260.0, 1.4) * uTexel;
+    return vec3(
+      texture2D(tDiffuse, srcUv(uv + ca)).r,
+      texture2D(tDiffuse, srcUv(uv)).g,
+      texture2D(tDiffuse, srcUv(uv - ca)).b
+    );
+  }
+
   float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -54,15 +78,15 @@ const PRESENT_FRAG = /* glsl */ `
   }
 
   void main() {
-    vec3 rgbM = texture2D(tDiffuse, srcUv(vUv)).rgb;
+    vec3 rgbM = tap(vUv);
     float lM = luma(rgbM);
 
     // Cross-neighbourhood contrast. Below the threshold the pixel is left exactly alone, so
     // flat regions — most of a starfield — pay four taps and are never touched.
-    float lN = luma(texture2D(tDiffuse, srcUv(vUv + vec2(0.0, -uTexel.y))).rgb);
-    float lS = luma(texture2D(tDiffuse, srcUv(vUv + vec2(0.0,  uTexel.y))).rgb);
-    float lW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x, 0.0))).rgb);
-    float lE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x, 0.0))).rgb);
+    float lN = luma(tap(vUv + vec2(0.0, -uTexel.y)));
+    float lS = luma(tap(vUv + vec2(0.0,  uTexel.y)));
+    float lW = luma(tap(vUv + vec2(-uTexel.x, 0.0)));
+    float lE = luma(tap(vUv + vec2( uTexel.x, 0.0)));
 
     float lMin = min(lM, min(min(lN, lS), min(lW, lE)));
     float lMax = max(lM, max(max(lN, lS), max(lW, lE)));
@@ -70,10 +94,10 @@ const PRESENT_FRAG = /* glsl */ `
 
     vec3 color = rgbM;
     if (range >= max(0.028, lMax * uEdgeThreshold)) {
-      float lNW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x, -uTexel.y))).rgb);
-      float lNE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x, -uTexel.y))).rgb);
-      float lSW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x,  uTexel.y))).rgb);
-      float lSE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x,  uTexel.y))).rgb);
+      float lNW = luma(tap(vUv + vec2(-uTexel.x, -uTexel.y)));
+      float lNE = luma(tap(vUv + vec2( uTexel.x, -uTexel.y)));
+      float lSW = luma(tap(vUv + vec2(-uTexel.x,  uTexel.y)));
+      float lSE = luma(tap(vUv + vec2( uTexel.x,  uTexel.y)));
 
       // Edge direction from the luma gradient, normalised so the step never exceeds 8 px.
       vec2 dir = vec2(
@@ -84,31 +108,13 @@ const PRESENT_FRAG = /* glsl */ `
       float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
       dir = clamp(dir * rcpMin, -8.0, 8.0) * uTexel;
 
-      vec3 rgbA = 0.5 * (
-        texture2D(tDiffuse, srcUv(vUv + dir * (1.0 / 3.0 - 0.5))).rgb +
-        texture2D(tDiffuse, srcUv(vUv + dir * (2.0 / 3.0 - 0.5))).rgb
-      );
-      vec3 rgbB = rgbA * 0.5 + 0.25 * (
-        texture2D(tDiffuse, srcUv(vUv + dir * -0.5)).rgb +
-        texture2D(tDiffuse, srcUv(vUv + dir *  0.5)).rgb
-      );
+      vec3 rgbA = 0.5 * (tap(vUv + dir * (1.0 / 3.0 - 0.5)) + tap(vUv + dir * (2.0 / 3.0 - 0.5)));
+      vec3 rgbB = rgbA * 0.5 + 0.25 * (tap(vUv + dir * -0.5) + tap(vUv + dir * 0.5));
 
       // The wide blend is only trusted while it stays inside the local luma range; outside it
       // the narrow blend is used, which is what keeps FXAA from bleeding across a silhouette.
       float lB = luma(rgbB);
       color = (lB < lMin || lB > lMax) ? rgbA : rgbB;
-    }
-
-    // Lateral chromatic aberration. Runs here, after both the motion blur and the edge blend,
-    // and its offset is clamped to 1.4 px — below the smallest resolvable feature — so it can
-    // only ever tint a gradient the blur has already spread. Inside the blur loop it was
-    // separating individual discrete taps into near-pure channels.
-    if (uAberration > 0.0001) {
-      vec2 fromAxis = vUv - 0.5;
-      float ramp = dot(fromAxis, fromAxis) * smoothstep(0.3, 0.75, length(fromAxis));
-      vec2 ca = normalize(fromAxis + 1e-6) * min(uAberration * ramp * 40.0, 1.4) * uTexel;
-      color.r = texture2D(tDiffuse, srcUv(vUv + ca)).r;
-      color.b = texture2D(tDiffuse, srcUv(vUv - ca)).b;
     }
 
     if (uGrain > 0.0001) {

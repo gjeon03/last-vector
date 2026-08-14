@@ -1187,7 +1187,7 @@ export class Game {
    * Boost is the loudest thing the player does and it had no voice at all: no ignition, no
    * cut-out, no warning when the reserve ran dry. These are the three transitions that matter.
    */
-  private updateBoostFeedback(): void {
+  private updateBoostFeedback(dt: number): void {
     const boosting = this.ship.boosting;
     const locked = this.ship.boostLocked;
     const ranDry = locked && !this.wasBoostLocked;
@@ -1214,7 +1214,14 @@ export class Game {
       const distance = this.ship.position.distanceTo(gate.position);
       const band = distance < 900 ? Math.max(0.12, distance / 2600) : 0;
       if (band > 0) {
-        this.gateTickTimer -= 1 / 60;
+        // Seconds, not frames. `band` is in seconds, and this ran once per RENDERED frame, so the
+    // repeat interval was band * 60/fps: at 120 Hz the first tick at 900 m already fires at
+    // 5.8 Hz and the whole escalation range sits above the designed 2.9-8.3 Hz, so the
+    // calm-tick-that-tightens dynamic did not exist on a ProMotion display; at 30 fps the player
+    // got four ticks for the entire approach and no arrival cue. Rate is the sole carrier of
+    // that cue — pitch moves three semitones and peak moves 0.05 — so nothing picked up the
+    // slack. It was the only 1/60 literal in the whole sim/audio/UI path.
+    this.gateTickTimer -= dt;
         if (this.gateTickTimer <= 0) {
           this.gateTickTimer = band;
           this.audio.play('gateNear', clamp01(1 - distance / 900));
@@ -1226,7 +1233,7 @@ export class Game {
   }
 
   private updateAudio(dt: number): void {
-    this.updateBoostFeedback();
+    this.updateBoostFeedback(dt);
     this.audio.update(dt, {
       throttle: this.ship.throttleSmoothed,
       speed01: this.ship.speed01,

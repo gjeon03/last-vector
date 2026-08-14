@@ -113,7 +113,16 @@ export const GLSL_LIGHTING = /* glsl */ `
     // Warm toward the star, cold away from it.
     float toSun = max(dot(-viewDir, uSunDir), 0.0);
     vec3 haze = mix(uHazeColor, uHazeWarm, pow(toSun, 1.5));
-    return mix(color, haze, clamp(t, 0.0, 1.0));
+    // Clamped at 0.55. The term t = 1 - exp(-distance/5600) mixes toward a constant colour, and the
+    // derelict field places 420-1900 m hull sections at 2600-7400 m — 37-73% of the pixel
+    // replaced by a constant. On smooth lofted hulls whose form is carried by one broad diffuse
+    // gradient, scaling that gradient by 0.28 leaves nothing: measured interior sd 2.29 shipped,
+    // 5.42 clamped, 10.07 with the term off, so it was removing 77% of the object's internal
+    // contrast. Visible on the boot screen before the player has touched anything.
+    //
+    // Clamped rather than removed: with no haze at all the derelicts read as holes punched in
+    // the sky (30.6 against a 27.4 background) rather than as objects in it.
+    return mix(color, haze, min(clamp(t, 0.0, 1.0), 0.55));
   }
 `;
 

@@ -64,12 +64,6 @@ const HULL_FRAG = /* glsl */ `
     return lx * w.x + ly * w.y + lz * w.z;
   }
 
-  /** One pseudo-random value per structural plate, keyed off the same grid the seams use. */
-  float panelId(vec3 p, float scale) {
-    vec3 cell = floor(p * scale);
-    return fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-  }
-
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(uCameraPos - vWorldPos);
@@ -95,25 +89,25 @@ const HULL_FRAG = /* glsl */ `
     // adjacent plates at the same value or the same finish, and that difference is most of what
     // reads as "machine" rather than "maquette". The material measured at 0.13 saturation and a
     // single tone: it had seams and paint but every plate inside them was identical.
-    // Frequency matters more than amplitude here. Keyed to the 0.34 structural grid the whole
-    // airframe fell inside one or two cells — the variation applied as a near-constant and
-    // measured as a 1% change. The wing spans about +/-1.72 local units, so a plate has to be
-    // around half a unit across to read as a plate at all.
-    float plate = panelId(vLocal, 1.6);
-    float plateFine = panelId(vLocal + 13.0, 4.2);
-    albedo *= 0.84 + plate * 0.28 + (plateFine - 0.5) * 0.10;
-    // A minority of plates are bare metal rather than painted — the read is a repaired airframe.
-    // A minority of plates read as bare metal rather than painted — a repaired airframe. Held
-    // to a small minority: at a third of the plates it stopped reading as replacement panels and
-    // started reading as camouflage.
-    float bare = step(0.88, plate) * (1.0 - paint * 0.5);
-    albedo = mix(albedo, uBase * 1.5, bare * 0.5);
-
+    // The per-plate value hash lived here and is gone.
+    //
+    // It was an unfiltered nearest-neighbour hash on an axis-aligned cube lattice at scales 1.6
+    // and 4.2, against seam scales of 0.34 and 1.15 — ratios of 4.70 and 3.65, so its value steps
+    // landed mid-panel rather than on seam lines, and with no fwidth guard on the floor() it read
+    // as a hard-edged rectangular tile mosaic at 1:1 in the chase camera, which is on screen for
+    // 100% of gameplay. Two reviewers filed it independently as a corrupt-texture artefact.
+    //
+    // It also delivered none of what it was added for: measured by patching the served shader in
+    // flight, the plate term contributes 0.006-0.009 saturation and 0.001-0.007 sd. The R10 gain
+    // came entirely from removing the view-aligned hero fill. My own note at the time — that the
+    // frequency change was "NOT distinguishable in the aggregate" — was the tell, and I wrote it
+    // down and shipped the term anyway: an aggregate statistic cannot see a hard-edged local
+    // mosaic, and nobody looked at a magnified crop with grain off.
     float wear = smoothstep(0.55, 0.95, fbm(vLocal * 2.2 + 7.0, 4) * 0.5 + 0.5);
     albedo = mix(albedo, uBase * 0.55, wear * 0.35);
 
-    float roughness = clamp(0.34 + seam * 0.32 + wear * 0.24 + (plateFine - 0.5) * 0.34, 0.10, 0.95);
-    float metalness = clamp(mix(0.52, 0.22, paint) + bare * 0.4, 0.0, 1.0);
+    float roughness = clamp(0.34 + seam * 0.32 + wear * 0.24, 0.12, 0.95);
+    float metalness = mix(0.52, 0.22, paint);
     float ao = 1.0 - seam * 0.45;
 
     vec3 color = shadeSurface(N, V, albedo, roughness, metalness, ao);
