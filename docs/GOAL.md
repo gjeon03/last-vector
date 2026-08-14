@@ -64,13 +64,25 @@ Recorded honestly, because an unstated gap reads as coverage.
   worth more than every measurement in the report.
 
   An earlier version of this document claimed every cue "clears the detection threshold". **That
-  was false.** Independent re-measurement found `gateNear` at −15.6 dB against the cruise bed and
-  −23.2 dB against the boost bed, and the committed harness then found the mechanism: the cue's
-  own escalation raised its pitch from 1180 to 2430 Hz as the gate approached, walking it into the
-  band the turbine owns, so it grew *less* audible as it grew more urgent. Now measured at +7.5 dB
-  (intensity 0.2) and +5.4 dB (intensity 1.0) against the boost bed. `scrape` was also failing at
-  −0.6 dB and is now +2.5 dB. The claim is replaced by a stated margin under a stated metric
-  (200 ms integration window; the full-span figures are 8–12 dB lower and are also reported).
+  was false.** An independent review flagged `gateNear` as inaudible (−15.6 dB against cruise,
+  −23.2 dB against boost, on that reviewer's own metric), and the committed harness confirmed the
+  defect and found its mechanism: the cue's own escalation raised its pitch from 1180 to 2430 Hz as
+  the gate approached, walking it into the band the turbine owns, so it grew *less* audible as it
+  grew more urgent. Re-levelling could not have fixed that; the cue had to move.
+
+  Measured before and after **on the same metric**, against the pinned boost bed:
+  `gateNear` −10.4 → +7.5 dB at intensity 0.2, and −26.8 → +5.4 dB at intensity 1.0; `scrape`
+  −0.6 → +2.5 dB. The reviewer's figures above are not comparable to these — they use a different
+  integration window, which is most of why the two reports disagreed — and a before/after pair
+  drawn from two different metrics would overstate the improvement.
+
+  `scrape` carries one further caveat: the game re-triggers it for the length of a contact, so it
+  is heard as a sustained texture and the single-grain figure understates it. Measured as used, a
+  continuous graze lifts the boost bed by 7.7 dB (implied cue-over-bed +6.9 dB). The harness
+  asserts both, because the single-grain check alone is not sufficient for that cue.
+
+  The blanket claim is replaced by a stated margin under a stated metric (200 ms integration
+  window; the full-span figures are 8–12 dB lower and are also reported).
 - **Peak levels in the audio tables carry roughly ±3 dB of harness noise** for click-heavy
   events. The limiter's 4× oversampling resamples a 1 ms transient differently depending on its
   phase within the render quantum, so a pure time shift moved a reported peak by 2.95 dB. RMS,

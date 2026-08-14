@@ -463,6 +463,54 @@ async function measureInPage(config) {
   }
   const stress = await renderStress();
 
+  /**
+   * `scrape` is the one cue the game uses as a sustained texture rather than as a moment: the
+   * collision loop re-triggers it for as long as contact lasts, and the grains overlap into one
+   * continuous sound. Measuring a single grain therefore under-states it, so it is also measured
+   * the way it is actually used — as the increment a continuous graze adds to the boost bed.
+   */
+  async function renderSustainedGraze() {
+    const seconds = 9;
+    const render = async (withGraze) => {
+      const ctx = new OfflineAudioContext(2, Math.round(seconds * SR), SR);
+      const g = newGraph(ctx);
+      g.engine.start(0);
+      g.music.start(0);
+      g.music.setIntensity(method.musicIntensity);
+      const dt = 1 / 30;
+      for (let k = 1; k * dt < seconds - 0.1; k++) {
+        const t = k * dt;
+        ctx.suspend(t).then(() => {
+          const now = ctx.currentTime;
+          g.engine.update(dt, beds.boost);
+          g.music.tick(now);
+          if (withGraze && t >= 2 && t < 8.5) {
+            g.sfx.play('scrape', 0.55, now + 0.012);
+            g.sfx.play('scrape', 0.55, now + 0.012 + 1 / 60);
+          }
+          g.ledger.sweep(now);
+          ctx.resume();
+        });
+      }
+      return await ctx.startRendering();
+    };
+    const bare = thirdOctave(powerSpectrum(monoOf(await render(false), 4, 8)));
+    const grazed = thirdOctave(powerSpectrum(monoOf(await render(true), 4, 8)));
+    if (!bare || !grazed) return null;
+    const perBand = grazed.map((p, i) => round(dbOf(p) - dbOf(bare[i]), 1));
+    let bestIdx = 0;
+    for (let i = 1; i < perBand.length; i++) if (perBand[i] > perBand[bestIdx]) bestIdx = i;
+    const inc = perBand[bestIdx];
+    return {
+      perBandIncrementDb: perBand,
+      bestHz: thirdOctaveCentres[bestIdx],
+      bestIncrementDb: inc,
+      /** Increment converted back to the cue-over-bed ratio the single-grain figures report. */
+      impliedSnrDb: inc > 0.05 ? round(10 * Math.log10(Math.pow(10, inc / 10) - 1), 1) : null,
+    };
+  }
+  const sustainedGraze = await renderSustainedGraze();
+
   // Node hygiene, re-checked here so the gate covers it too.
   const hygieneSeconds = 30;
   const hctx = new OfflineAudioContext(1, Math.round(hygieneSeconds * SR), SR);
@@ -487,6 +535,7 @@ async function measureInPage(config) {
     beds: bedResults,
     events: eventResults,
     stress,
+    sustainedGraze,
     hygiene: { permanent, peak: peakNodes, after: hg.ledger.count(), pendingVoices: hg.ledger.pendingVoices() },
   };
 }
@@ -586,6 +635,17 @@ function evaluateGate(measurement) {
     passed: st.samplePeakDbfs < -0.5,
     detail: `worst-moment sample peak ${st.samplePeakDbfs} dBFS, loudness ${st.lufsShortTerm} LUFS-S (+${st.loudnessOverBedDb} dB over the boost bed)`,
   });
+  // scrape is re-triggered for the length of a contact, so the sustained texture is what the
+  // player hears. The single-grain check above is necessary but not sufficient for this one cue.
+  const sg = measurement.sustainedGraze;
+  checks.push({
+    id: 'AUDIBLE.scrape.sustained',
+    passed: sg !== null && sg.bestIncrementDb > 1,
+    detail: sg === null
+      ? 'not measured'
+      : `a continuous graze lifts the boost bed by ${sg.bestIncrementDb} dB at ${sg.bestHz} Hz ` +
+        `(implied cue-over-bed ${sg.impliedSnrDb} dB; needs > 1 dB)`,
+  });
   const clipped = measurement.events.filter((e) => (e.truePeakDbTP ?? -99) > -0.5);
   checks.push({
     id: 'HEADROOM.truepeak',
@@ -612,6 +672,13 @@ function formatTable(measurement) {
     `${measurement.stress.lufsShortTerm} LUFS-S (+${measurement.stress.loudnessOverBedDb} over bed), ` +
     `${measurement.stress.peakNodes} nodes vs ${measurement.stress.permanentNodes} permanent`,
   );
+  if (measurement.sustainedGraze) {
+    lines.push(
+      `SUSTAINED GRAZE: continuous contact lifts the boost bed by ` +
+      `${measurement.sustainedGraze.bestIncrementDb} dB at ${measurement.sustainedGraze.bestHz} Hz ` +
+      `(implied cue-over-bed ${measurement.sustainedGraze.impliedSnrDb} dB)`,
+    );
+  }
   lines.push('');
   lines.push('CUES  (SNR = cue power over bed power, best third-octave band; > 0 dB = cue wins)');
   lines.push('  event            int   dur   dBTP   MomLUFS   vs cruise        vs boost         crit');
