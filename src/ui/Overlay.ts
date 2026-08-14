@@ -159,6 +159,8 @@ export class Overlay {
   update(t: Telemetry, dt: number): void {
     if (this.disposed) return;
     this.hud.update(t, dt);
+    /* Course facts the briefing states. Guarded inside; they change once per run at most. */
+    this.screens.setCourseFacts(t.courseLength, t.gate.total);
   }
 
   setPhase(phase: Phase): void {

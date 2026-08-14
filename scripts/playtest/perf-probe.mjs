@@ -1,3 +1,4 @@
+import { loadavg, cpus } from 'node:os';
 import {
   callHarness,
   criterion,
@@ -162,6 +163,11 @@ async function collectProfile(page, options) {
       fixedTimestep: 1 / 60,
       viewport: options.viewport,
       deviceScaleFactor: options.deviceScaleFactor,
+      // Recorded, not asserted. Two of round 2's performance blockers were measured at load
+      // average 19-36 and one verifier's magnitudes at 91-260; without this number in the
+      // evidence, a failure cannot be told apart from a busy machine.
+      hostLoad: loadavg().map((v) => Math.round(v * 100) / 100),
+      hostCpus: cpus().length,
       quality: options.quality,
       requestedProfileSeconds: options.profileSeconds,
       sample,

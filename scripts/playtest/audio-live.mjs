@@ -87,6 +87,17 @@ async function runInPage(config) {
     `engineDuck ${s.engineDuck.toFixed(3)} (want ${MENU_DUCK_DEPTH}), musicDuck ${s.musicDuck.toFixed(3)} (want ${MENU_MUSIC_DEPTH})`,
   );
 
+  // The score reaches the mix by two paths and one of them bypasses `musicDuck`. Ducking only the
+  // bus left ~93% of the pad's power at full level for the entire life of the project, audible as
+  // its reverb tail. Assert the send trim tracks the bus so a future third path cannot quietly
+  // reintroduce the same gap.
+  add(
+    'LIVE.music-send-trim-tracks-duck',
+    near(s.musicSendTrim, s.musicDuck),
+    `musicSendTrim ${s.musicSendTrim.toFixed(3)} vs musicDuck ${s.musicDuck.toFixed(3)} — the ` +
+      `reverb-send path must be ducked in step with the dry path or the duck only reaches the pad`,
+  );
+
   // --- the regression: a transient duck must not cancel the static trim -----------------------
   engine.play('uiClick', 0.5);
   await wait(settleMs);
@@ -208,13 +219,30 @@ async function readProvenance() {
     }
   };
   const commit = await git(['rev-parse', 'HEAD']);
+  // Scoped to the paths this suite's evidence actually depends on.
+  //
+  // Unscoped, `--require-clean` was a shared tripwire: ANY uncommitted file anywhere in the repo,
+  // by any author — a docs edit, a UI file, another agent mid-change — turned both audio suites
+  // into exit-2 infrastructure errors for every reviewer running the full suite at once. And it
+  // presents as "the audio gate is broken" rather than as "somebody has an uncommitted file",
+  // with only the exit code separating those readings.
+  //
+  // The property the flag exists for is "these numbers describe a commit". That is preserved by
+  // watching what the numbers are made of; watching the whole tree adds "and nobody else is
+  // working", which was never intended and is false by construction on a shared repo.
+  // What this suite's numbers are made of. The audio-layer phase builds src/audio alone; the
+  // game phase builds dist, and its provenance is recorded separately as distDecision and
+  // distBuiltByThisRun rather than by refusing to run.
+  const RELEVANT = ['src/audio/', 'src/core/', 'src/game/', 'scripts/playtest/audio-live.mjs'];
   const status = await git(['status', '--porcelain'], true);
-  const dirtyFiles = status ? status.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+  const allDirty = status ? status.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+  const dirtyFiles = allDirty.filter((f) => RELEVANT.some((r) => f.startsWith(r)));
   return {
     commit,
-    clean: status === '',
+    clean: dirtyFiles.length === 0,
+    dirtyOutsideScope: allDirty.filter((f) => !dirtyFiles.includes(f)),
     dirtyFiles,
-    measuredAt: commit ? `${commit.slice(0, 7)}${status === '' ? '' : ' (DIRTY TREE)'}` : 'unknown',
+    measuredAt: commit ? `${commit.slice(0, 7)}${dirtyFiles.length === 0 ? '' : ' (DIRTY TREE)'}` : 'unknown',
   };
 }
 

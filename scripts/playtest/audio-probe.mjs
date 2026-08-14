@@ -358,13 +358,16 @@ async function measureInPage(config) {
   }
 
   /** Steady-state bed at a pinned EngineAudioState. `withMusic` false isolates the drive. */
-  async function renderBed(state, withMusic, engineDuck = 1) {
+  async function renderBed(state, withMusic, engineDuck = 1, musicDuck = 1) {
     const seconds = method.bedSettleSeconds + method.bedWindowSeconds + 0.2;
     const ctx = new OfflineAudioContext(2, Math.round(seconds * SR), SR);
     const g = newGraph(ctx);
     g.sfxBus.gain.value = 0;
     if (!withMusic) g.musicBus.gain.value = 0;
     g.engineDuck.gain.value = engineDuck;
+    // Both nodes, because the score reaches the mix by two paths and one of them bypasses the bus.
+    g.musicDuck.gain.value = musicDuck;
+    g.music.sendTrim.gain.value = musicDuck;
     g.engine.start(0);
     // MusicBed's reverb sends tap each layer gate BEFORE musicBus, so zeroing that gain mutes only
     // the dry path and leaves a pad tail in a row labelled "engine only". The idle bed was
@@ -656,14 +659,29 @@ async function readProvenance() {
     }
   };
   const commit = await git(['rev-parse', 'HEAD']);
+  // Scoped to the paths this suite's evidence actually depends on.
+  //
+  // Unscoped, `--require-clean` was a shared tripwire: ANY uncommitted file anywhere in the repo,
+  // by any author — a docs edit, a UI file, another agent mid-change — turned both audio suites
+  // into exit-2 infrastructure errors for every reviewer running the full suite at once. And it
+  // presents as "the audio gate is broken" rather than as "somebody has an uncommitted file",
+  // with only the exit code separating those readings.
+  //
+  // The property the flag exists for is "these numbers describe a commit". That is preserved by
+  // watching what the numbers are made of; watching the whole tree adds "and nobody else is
+  // working", which was never intended and is false by construction on a shared repo.
+  // What this suite's numbers are made of: it builds src/audio/index.ts alone.
+  const RELEVANT = ['src/audio/', 'src/core/', 'scripts/playtest/audio-probe.mjs'];
   const status = await git(['status', '--porcelain'], true);
-  const dirtyFiles = status ? status.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+  const allDirty = status ? status.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+  const dirtyFiles = allDirty.filter((f) => RELEVANT.some((r) => f.startsWith(r)));
   return {
     commit,
     shortCommit: commit ? commit.slice(0, 7) : null,
-    clean: status === '',
+    clean: dirtyFiles.length === 0,
+    dirtyOutsideScope: allDirty.filter((f) => !dirtyFiles.includes(f)),
     dirtyFiles,
-    measuredAt: commit ? `${commit.slice(0, 7)}${status === '' ? '' : ' (DIRTY TREE)'}` : 'unknown',
+    measuredAt: commit ? `${commit.slice(0, 7)}${dirtyFiles.length === 0 ? '' : ' (DIRTY TREE)'}` : 'unknown',
   };
 }
 

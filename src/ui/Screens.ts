@@ -9,7 +9,15 @@
 
 import type { HudHost, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
 import { FICTION } from '../core/art.ts';
-import { clamp, el, formatDelta, formatTime, retrigger } from './Hud.ts';
+import {
+  clamp,
+  distanceUnit,
+  el,
+  formatDelta,
+  formatDistance,
+  formatTime,
+  retrigger,
+} from './Hud.ts';
 
 export type ScreenView =
   | 'none'
@@ -247,6 +255,13 @@ export class Screens {
     row: RowSpec;
     apply(value: unknown): void;
   }[] = [];
+
+  /* Briefing stats that are facts about the course rather than fiction. Held so they can be
+     read from telemetry instead of typed — see setCourseFacts. */
+  private nStatCorridor: HTMLElement | null = null;
+  private nStatMarkers: HTMLElement | null = null;
+  private pCorridor = -1;
+  private pMarkers = -1;
 
   private navItems: HTMLElement[] = [];
   private navIndex = 0;
@@ -561,13 +576,23 @@ export class Screens {
     const cols = el('div', 'lv-brief-cols');
 
     const stats = el('dl', 'lv-stats');
-    const addStat = (k: string, v: string): void => {
+    const addStat = (k: string, v: string): HTMLElement => {
       const row = el('div', 'lv-stat');
-      row.append(el('dt', '', k), el('dd', '', v));
+      const value = el('dd', '', v);
+      row.append(el('dt', '', k), value);
       stats.appendChild(row);
+      return value;
     };
-    addStat('MARKERS', '09');
-    addStat('CORRIDOR', '48.6 KM');
+    /*
+     * These two are measurements, not fiction, so they are read rather than typed. CORRIDOR
+     * shipped as the literal "48.6 KM" against a real 54,362 m — wrong by 10-12% in a block
+     * whose other rows were all true — and MARKERS was "09" hard-coded beside a course that
+     * publishes its own gate count. A copied number in this file has to track a generator in
+     * another one, which is the arrangement that goes stale silently. `--` until the first
+     * telemetry frame, because a placeholder is honest and a stale literal is not.
+     */
+    this.nStatMarkers = addStat('MARKERS', '--');
+    this.nStatCorridor = addStat('CORRIDOR', '--');
     addStat('PRIMARY', FICTION.starName);
     addStat('HULL', FICTION.shipName);
     addStat('DRIFT', 'CLOSING');
@@ -602,6 +627,25 @@ export class Screens {
     panel.append(head, cols, actions);
     view.append(el('div', 'lv-veil'), panel);
     return view;
+  }
+
+  /**
+   * Course facts from telemetry. Cheap enough for the frame loop: two integer comparisons that
+   * fail on every frame after the first.
+   */
+  setCourseFacts(courseLength: number | undefined, gateTotal: number): void {
+    if (this.nStatMarkers && gateTotal !== this.pMarkers) {
+      this.pMarkers = gateTotal;
+      this.nStatMarkers.textContent = gateTotal > 0 ? (gateTotal < 10 ? '0' : '') + gateTotal : '--';
+    }
+    if (this.nStatCorridor) {
+      const m = courseLength !== undefined && courseLength > 0 ? Math.round(courseLength) : -1;
+      if (m !== this.pCorridor) {
+        this.pCorridor = m;
+        this.nStatCorridor.textContent =
+          m > 0 ? `${formatDistance(m)} ${distanceUnit(m)}` : '--';
+      }
+    }
   }
 
   /* --------------------------------------------------------------- countdown */
