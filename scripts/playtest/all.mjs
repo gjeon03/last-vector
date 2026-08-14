@@ -9,6 +9,11 @@ const suites = [
   { name: 'playtest', script: 'playtest.mjs' },
   { name: 'perf-probe', script: 'perf-probe.mjs' },
   { name: 'screenshot-matrix', script: 'screenshot-matrix.mjs' },
+  // Nobody has heard this build, so the offline audio measurement IS the audio quality gate —
+  // and a gate that is not run does not gate. It fails the build when a gameplay-critical cue
+  // has no band with positive SNR against the boost engine bed, which is the exact property that
+  // went unnoticed until an outside review re-measured it.
+  { name: 'audio-probe', script: 'audio-probe.mjs' },
 ];
 const results = [];
 
