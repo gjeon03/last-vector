@@ -839,7 +839,6 @@ export class PostFX {
     setScalePair(this.compositeMat, 'uAOScale', 'uAOMax', ao);
 
     this.prefilterMat.uniforms.uTexel.value.set(1 / this.width, 1 / this.height);
-    this.ssaoMat.uniforms.uResolution.value.set(ao.renderW, ao.renderH);
     this.ssaoBlurMat.uniforms.uTexel.value.set(1 / ao.renderW, 1 / ao.renderH);
     this.compositeMat.uniforms.uResolution.value.set(this.width, this.height);
   }

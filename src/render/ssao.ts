@@ -22,7 +22,6 @@ export const SSAO_FRAG = /* glsl */ `
   uniform sampler2D tDepth;
   uniform mat4 uProjection;
   uniform mat4 uInverseProjection;
-  uniform vec2 uResolution;
   uniform float uRadius;
   uniform float uBias;
   uniform float uIntensity;
@@ -153,7 +152,6 @@ export function createSsaoUniforms(): Record<string, THREE.IUniform> {
     tDepth: { value: null },
     uProjection: { value: new THREE.Matrix4() },
     uInverseProjection: { value: new THREE.Matrix4() },
-    uResolution: { value: new THREE.Vector2(1, 1) },
     uRadius: { value: 3.6 },
     uBias: { value: 0.035 },
     uIntensity: { value: 0.95 },

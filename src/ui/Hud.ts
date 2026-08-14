@@ -687,7 +687,15 @@ export class Hud {
     if (gq !== this.pGload) {
       this.pGload = gq;
       this.nGload.textContent = `${(gq / 10).toFixed(1)} G`;
-      this.nGload.dataset['hot'] = gq >= 55 ? '1' : '0';
+      // 35 G, not 5.5.
+      //
+      // The 5.5 threshold was tuned against a value that had been divided by g twice, so it was
+      // reading roughly a tenth of the real load. Correcting the physics (Ship now stores m/s^2,
+      // as the contract always claimed) makes this readout truthful and made the old threshold
+      // meaningless: measured over a full autopilot lap the corrected G is median 9.0, p90 25.4,
+      // max 91.6, and 'hot' at 5.5 lit for 71% of the run. A warning that is on most of the time
+      // is not a warning. 35 lights for 8% of a lap — the hard turns, which is what it is for.
+      this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
     /* gate counter — splits.length is the unambiguous "cleared" count */

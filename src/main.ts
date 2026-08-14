@@ -169,6 +169,7 @@ function installHarness(game: Game): void {
     settings: () => game.settings.value,
     setSettings: (patch: Partial<Settings>) => game.settings.patch(patch),
     setPaused: (paused) => game.setPaused(paused),
+    pauseMenu: (on) => game.pauseMenu(on),
     setFixedTimestep: (dt) => game.setFixedTimestep(dt),
     errors: () => game.getErrors(),
   };

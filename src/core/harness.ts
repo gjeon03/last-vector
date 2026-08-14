@@ -188,8 +188,15 @@ export interface HarnessApi {
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;
   setSettings(patch: Partial<Settings>): void;
-  /** Freeze/unfreeze simulation without pausing rendering. */
+  /**
+   * Freezes SIMULATION only. Does NOT open the pause menu, release pointer lock or duck the
+   * drive, so it reaches a state no player can occupy: paused, pointer still locked, audio at
+   * full level. That is correct for a screenshot — a pause veil over every vantage is not what
+   * the stills suite is photographing — and wrong for anything testing pause behaviour.
+   */
   setPaused(paused: boolean): void;
+  /** The player's pause, by the route a player takes: `Game.pause()` / `Game.resume()`. */
+  pauseMenu(on: boolean): void;
   /**
    * Deterministic time control: fixes dt so playthroughs are reproducible.
    *

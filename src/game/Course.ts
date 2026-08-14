@@ -205,12 +205,29 @@ export class Course {
         radius: this.legClearance[i] ?? 320,
       });
     }
-    // Then the curve itself, at the clearance of whichever leg each sample falls in.
+    // Then the curve itself, at the clearance of whichever leg each sample ACTUALLY falls in.
+    //
+    // This used to interpolate the leg index proportionally — `floor(i / samples * legs)` — which
+    // assumes every leg occupies an equal share of the sampled curve. They do not: leg lengths
+    // vary from 0.52 to 1.4 of the nominal spacing, so the proportional index drifts, and spine
+    // segments were being protected at a neighbouring leg's clearance. Advancing a cursor as the
+    // sample passes each gate anchor puts every segment in its own leg.
+    const anchorIndex = gateAnchors.map((a) => {
+      let best = 0;
+      let bestSq = Infinity;
+      for (let i = 0; i < this.spine.length; i++) {
+        const d = a.position.distanceToSquared(this.spine[i]);
+        if (d < bestSq) {
+          bestSq = d;
+          best = i;
+        }
+      }
+      return best;
+    });
+    let legCursor = 0;
     for (let i = 0; i < this.spine.length - 1; i++) {
-      const legIndex = Math.min(
-        this.legClearance.length - 1,
-        Math.floor((i / (this.spine.length - 1)) * this.legClearance.length),
-      );
+      while (legCursor < anchorIndex.length && i > anchorIndex[legCursor]) legCursor++;
+      const legIndex = Math.min(this.legClearance.length - 1, legCursor);
       this.clearChannel.push({
         a: this.spine[i],
         b: this.spine[i + 1],

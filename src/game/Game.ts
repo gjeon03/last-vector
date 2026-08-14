@@ -490,6 +490,7 @@ export class Game {
       splits: [],
       bestTime: readBestTime(this.course.id),
       bestSplits: readBestSplits(this.course.id),
+      courseLength: this.course.totalLength,
       sectorName: FICTION.sectorName,
       destinationName: FICTION.destinationName,
       callout: null,
@@ -557,6 +558,7 @@ export class Game {
     this.telemetry.splits = [];
     this.telemetry.bestTime = readBestTime(this.course.id);
     this.telemetry.bestSplits = readBestSplits(this.course.id);
+    this.clearPause();
     this.autopilot = false;
     this.cinematic = false;
     this.activeVantage = null;
@@ -580,6 +582,7 @@ export class Game {
   }
 
   toBriefing(): void {
+    this.clearPause();
     this.autopilot = true;
     this.cinematic = true;
     this.setPhase('briefing');
@@ -610,6 +613,18 @@ export class Game {
     // interface cue fired from a menu — including the master-volume slider's own feedback —
     // scheduled into a frozen timeline and never sounded.
     this.audio.menuMix(true);
+  }
+
+  /**
+   * Leaving the pause state, by any route.
+   *
+   * RESTART, N and ABORT all left the menu mix latched, because they set `paused = false` directly
+   * and never told the audio layer. Filed independently by two disciplines with different
+   * harnesses, whose numbers matched to four decimal places.
+   */
+  private clearPause(): void {
+    this.paused = false;
+    this.audio.menuMix(false);
   }
 
   resume(): void {
@@ -942,8 +957,13 @@ export class Game {
     this.farCamera.aspect = this.chase.camera.aspect;
     this.farCamera.updateProjectionMatrix();
 
-    const pixelScale = Math.max(0.6, this.renderer.domElement.height / 1080);
-    this.starfield.setViewportHeight(this.renderer.domElement.height);
+    // Rendered height, not allocation height. gl_PointSize is in CURRENT-framebuffer pixels, and
+    // the scene renders into a sub-rectangle of the allocation, so deriving the scale from the
+    // canvas made every point sprite too large by 1/renderScale whenever the scaler was engaged.
+    // Moving the pixel floors past the multiply (last round) fixed the multiply ORDER and left
+    // the multiplicand wrong.
+    const pixelScale = Math.max(0.6, this.post.renderHeight / 1080);
+    this.starfield.setViewportHeight(this.post.renderHeight);
     this.starfield.update(this.clock);
     this.star.update(this.clock, this.farCamera);
     this.planet.update(this.clock);
@@ -1410,7 +1430,17 @@ export class Game {
     // The browser upscales from the CSS size, which it already does at every render scale.
     const rawDpr = window.devicePixelRatio || 1;
     const budget = Math.sqrt(FILL_BUDGET_PIXELS / Math.max(width * height, 1));
-    const dpr = Math.max(1, Math.min(rawDpr, 2, budget));
+    // No floor at 1. The first version wrote `Math.max(1, Math.min(rawDpr, 2, budget))`, which
+    // lets the budget pull the RATIO down but never the pixel COUNT — so a 4K desktop at dpr 1
+    // allocated 8.29 Mpx, 3.3x the declared budget, and that is exactly the case the change was
+    // committed to eliminate. Two disciplines found it independently.
+    //
+    // My own measurement did not catch it because I measured a 1080p window at dsf 2, where the
+    // budget does bind, and reported the class from the one configuration that happened to work.
+    // Below 1 the backing store is smaller than the CSS size and the browser upscales, which is
+    // what already happens at every dynamic render scale; the 320x240 floors below are the guard
+    // against an absurdly small buffer.
+    const dpr = Math.min(rawDpr, 2, budget);
     this.allocWidth = Math.max(320, Math.round(width * dpr));
     this.allocHeight = Math.max(240, Math.round(height * dpr));
 
@@ -1606,8 +1636,19 @@ export class Game {
     return this.vantages.map((v) => v.name);
   }
 
+  /**
+   * Freezes SIMULATION only, for capture. Deliberately does not open the pause menu, release
+   * pointer lock or duck the drive — the stills suite must not photograph a pause veil over every
+   * vantage. Use `pauseMenu` for anything testing pause behaviour.
+   */
   setPaused(paused: boolean): void {
     this.paused = paused;
+  }
+
+  /** The player's pause, by the route a player takes. */
+  pauseMenu(on: boolean): void {
+    if (on) this.pause();
+    else this.resume();
   }
 
   setFixedTimestep(dt: number | null): void {

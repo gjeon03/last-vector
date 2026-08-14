@@ -168,7 +168,15 @@ export class Starfield {
     this.object.geometry.setDrawRange(0, n);
   }
 
-  /** Point size is in device pixels, so it has to track the drawing-buffer height. */
+  /**
+   * Point size is in CURRENT-FRAMEBUFFER pixels, so it has to track the height actually being
+   * rendered — not the drawing-buffer height.
+   *
+   * The old wording said "drawing-buffer height", which is the allocation. The scene renders into
+   * a sub-rectangle of that allocation, so passing the canvas height made every star too large by
+   * 1/renderScale whenever the dynamic scaler engaged. The docstring is what made the bug look
+   * correct on inspection.
+   */
   setViewportHeight(pixels: number): void {
     this.material.uniforms.uPixelScale.value = Math.max(0.6, pixels / 1080);
   }

@@ -99,6 +99,14 @@ export interface Telemetry {
    * this interface — that has already happened twice this session.
    */
   pointerLockRefused?: boolean;
+  /**
+   * Total course length in metres, for anything that wants to state it.
+   *
+   * Optional so adding it cannot break an out-of-repo consumer. Exists because the briefing shipped
+   * `CORRIDOR 48.6 KM` as a hard-coded literal against a real length of 54,362 m — wrong by 10-12%
+   * in a stat block whose other four rows are all derived and all true.
+   */
+  courseLength?: number;
   fps: number;
 }
 

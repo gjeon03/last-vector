@@ -267,7 +267,10 @@ export class Ship {
 
     // --- felt load --------------------------------------------------------------------
     this.scratch.copy(this.velocity).sub(this.lastVelocity).divideScalar(Math.max(dt, 1e-4));
-    this.gLoad = damp(this.gLoad, this.scratch.length() / 9.81, 0.12, dt);
+    // Metres per second squared, as the Telemetry contract states. The division by g used to
+    // happen here AND again in the HUD, so the published contract was wrong by 9.81x and the
+    // "hot" threshold that nominally trips at 5.5 G actually tripped at 54.
+    this.gLoad = damp(this.gLoad, this.scratch.length(), 0.12, dt);
     this.lastVelocity.copy(this.velocity);
 
     this.shakeImpulse = damp(this.shakeImpulse, 0, 0.28, dt);
