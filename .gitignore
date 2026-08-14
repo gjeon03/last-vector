@@ -7,3 +7,6 @@ playtest-out/
 
 # ad-hoc diagnostic probes kept out of the tree; the durable checks live in scripts/playtest
 .lv-*.mjs
+
+# Playwright MCP debug snapshots — tooling output, not project files
+.playwright-mcp/
