@@ -142,6 +142,53 @@ allocated. An apparatus can be blind by *assertion*, not only by parameter, and 
 pins a variable is indistinguishable from one that tests it until someone asks what it excludes.
 
 
+
+**Two confirmations that share a hidden dependency are one confirmation, and they feel like two.**
+
+This is the rule that would have prevented the most expensive error in the project. Diagnosing a
+teammate's failing harness, the author ran two checks — `grep` for a method in the built bundle,
+and a live Playwright probe against the preview server — and both said the game was healthy, so the
+fault was handed back as "your static server is the variable". Both measurements pointed at a
+`dist/` the author had rebuilt in between; the teammate's suite had been serving one three commits
+older. Two *different instruments* agreeing read as independent corroboration. The agreement was
+structurally guaranteed and carried no information, and it is precisely the agreement that retired
+the doubt.
+
+The same observation arrives from the other side in the audio work: two implementations reproducing
+a figure to 0.0 dB rules out independent error — arithmetic, banding, window misalignment — and
+rules out nothing about a shared wrong assumption. Both instruments agreed perfectly the entire
+time they were blind to the two defects that mattered.
+
+So: **the evidence that feels strongest is the evidence to interrogate first.** Ask what two
+agreeing measurements share before treating their agreement as weight.
+
+**Corollaries earned since.**
+
+- *The right evidence for diagnosing a defect is often the wrong quantity for describing it.* The
+  music-send bypass was diagnosed by a fraction — 6.5% of the score reached the duck — and that
+  fraction implies "~15x more". The rendered outcome was 3.99 dB, bounded by the trim depth and
+  diluted by the drive in the bed. Anyone told "fifteen times" expects far more than four decibels.
+- *A gate can be blind by assertion, not only by parameter.* `perf-probe` hard-asserted
+  `deviceScaleFactor === 1` for four review rounds, so every frame-time figure described a
+  configuration the game does not ship in on any Retina or 4K display.
+- *The apparatus can be the load.* Inside `all.mjs` the perf arms measured a 66 ms worst frame;
+  standalone on the same commit, 18.6 ms and zero long frames. They were sampling the previous
+  suite's browser teardown. `hostLoad` is now recorded in the evidence so a future instance is
+  attributable rather than a mystery.
+- *Measure a class, claim a class.* `FILL_BUDGET_PIXELS` was verified at the single configuration
+  where the budget binds and shipped as a fix for every configuration; a 4K desktop still allocated
+  3.3x the declared budget.
+- *A number without its build is a claim without its commit.* Two G-load distributions (p90 25.4
+  and 34.7) looked like a measurement dispute and were two different courses, because a geometry
+  fix had landed in between and neither lap recorded which build it came from.
+- *A new check's first disagreement is more likely to be its own.* It has never run against a
+  known-good state, so it has no baseline to be surprising against. Three for three in the audio
+  suite: every surprising number was the instrument before it was the subject.
+- *Verify the result of a copy, not the exit of the command.* `cp` aliased to `cp -i` caught two
+  authors in one session, in opposite directions. The visible failure cost ten minutes; the silent
+  one cost correctness, because the copy did not happen and the author carried on believing two
+  files were in sync.
+
 ## Verification limits — what this build's evidence does NOT cover
 
 Recorded honestly, because an unstated gap reads as coverage.
