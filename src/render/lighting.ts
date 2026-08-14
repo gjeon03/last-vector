@@ -64,7 +64,9 @@ export const GLSL_LIGHTING = /* glsl */ `
     // Wrapped diffuse. A hard ndl terminator puts the unlit side straight onto the ambient
     // floor, which is what left every rock's shadow side sitting at the same value as the sky
     // behind it — and an object the same value as its background is an outline, not a solid.
-    float wrapped = clamp((dot(N, L) + 0.35) / 1.35, 0.0, 1.0);
+    // Wrap was 0.35, which lit a third of the way around the terminator and left every surface
+  // with some key light — no surface could go properly dark, so form had nothing to read against.
+  float wrapped = clamp((dot(N, L) + 0.15) / 1.15, 0.0, 1.0);
     vec3 direct = (kd * albedo / 3.14159265 * wrapped + spec * ndl) * uSunColor;
 
     // Hemisphere ambient keyed to the sky rather than a flat grey: the shadow side of every

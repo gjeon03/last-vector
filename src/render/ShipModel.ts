@@ -44,7 +44,6 @@ const HULL_FRAG = /* glsl */ `
   uniform float uEmissiveStrength;
   uniform float uDamage;
   uniform float uTime;
-  uniform vec3 uFill;
 
   ${GLSL_NOISE}
   ${GLSL_LIGHTING}
@@ -63,6 +62,12 @@ const HULL_FRAG = /* glsl */ `
     float ly = 1.0 - smoothstep(0.0, width, min(gy.x, gy.y));
     float lz = 1.0 - smoothstep(0.0, width, min(gz.x, gz.y));
     return lx * w.x + ly * w.y + lz * w.z;
+  }
+
+  /** One pseudo-random value per structural plate, keyed off the same grid the seams use. */
+  float panelId(vec3 p, float scale) {
+    vec3 cell = floor(p * scale);
+    return fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   }
 
   void main() {
@@ -86,20 +91,38 @@ const HULL_FRAG = /* glsl */ `
 
     albedo = mix(albedo, albedo * 0.28, seam * 0.78);
 
+    // Plate-to-plate variation. A hull built from separately fitted panels never has two
+    // adjacent plates at the same value or the same finish, and that difference is most of what
+    // reads as "machine" rather than "maquette". The material measured at 0.13 saturation and a
+    // single tone: it had seams and paint but every plate inside them was identical.
+    // Frequency matters more than amplitude here. Keyed to the 0.34 structural grid the whole
+    // airframe fell inside one or two cells — the variation applied as a near-constant and
+    // measured as a 1% change. The wing spans about +/-1.72 local units, so a plate has to be
+    // around half a unit across to read as a plate at all.
+    float plate = panelId(vLocal, 1.6);
+    float plateFine = panelId(vLocal + 13.0, 4.2);
+    albedo *= 0.84 + plate * 0.28 + (plateFine - 0.5) * 0.10;
+    // A minority of plates are bare metal rather than painted — the read is a repaired airframe.
+    // A minority of plates read as bare metal rather than painted — a repaired airframe. Held
+    // to a small minority: at a third of the plates it stopped reading as replacement panels and
+    // started reading as camouflage.
+    float bare = step(0.88, plate) * (1.0 - paint * 0.5);
+    albedo = mix(albedo, uBase * 1.5, bare * 0.5);
+
     float wear = smoothstep(0.55, 0.95, fbm(vLocal * 2.2 + 7.0, 4) * 0.5 + 0.5);
     albedo = mix(albedo, uBase * 0.55, wear * 0.35);
 
-    float roughness = clamp(0.34 + seam * 0.32 + wear * 0.24, 0.12, 0.95);
-    float metalness = mix(0.52, 0.22, paint);
+    float roughness = clamp(0.34 + seam * 0.32 + wear * 0.24 + (plateFine - 0.5) * 0.34, 0.10, 0.95);
+    float metalness = clamp(mix(0.52, 0.22, paint) + bare * 0.4, 0.0, 1.0);
     float ao = 1.0 - seam * 0.45;
 
     vec3 color = shadeSurface(N, V, albedo, roughness, metalness, ao);
 
-    // Hero fill. The ship is the focal object and the camera sits behind it, so whenever the
-    // star is ahead the hull would otherwise be a pure silhouette. A small view-aligned fill
-    // keeps its form readable without flattening the key light.
-    float fill = max(dot(N, V), 0.0);
-    color += albedo * uFill * (0.25 + fill * 0.75);
+    // There was a view-aligned hero fill here, adding albedo * uFill * (0.25 + fill * 0.75) so
+    // the hull would not go to pure silhouette when the star is ahead. It is a
+    // constant term across every visible surface, which is the definition of flattening: it
+    // raised the floor and desaturated everything at once. Screen-space occlusion and the
+    // directionally-gated rim now carry form on the unlit side, so the crutch is removed.
 
     // Running lights: thin channels down the flanks and a chevron on the nose.
     float channel = smoothstep(0.035, 0.0, abs(abs(vLocal.x) - 1.32)) * smoothstep(-6.0, -1.0, vLocal.z);
@@ -220,9 +243,8 @@ export class ShipModel {
     this.hullMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uBase: { value: new THREE.Color(0x2b323c) },
-        uFill: { value: new THREE.Color(0x8fa6c4).multiplyScalar(0.34) },
-        uPanel: { value: new THREE.Color(0xbfb9ab) },
+        uBase: { value: new THREE.Color(0x27313f) },
+        uPanel: { value: new THREE.Color(0xcdbd9c) },
         uTrim: { value: new THREE.Color(PALETTE.starRim).multiplyScalar(0.55) },
         uEmissive: { value: new THREE.Color(PALETTE.engineCore) },
         uEmissiveStrength: { value: 1.5 },
