@@ -13,6 +13,9 @@
   --c-bad: #ff5a6e;
   --c-ink: #e7f3ff;
   --c-ink-dim: rgba(185, 204, 221, 0.66);
+  /* 0.28 alpha tops out at 2.004:1 against ANY background in sRGB — brute-forced over the
+     whole cube, so it cannot reach AA, or even AA-large's 3:1, anywhere. Never use it as a
+     text colour. It survives here for the switch knob's fill, which is not text. */
   --c-ink-faint: rgba(185, 204, 221, 0.28);
   --c-panel: rgba(6, 12, 22, 0.62);
   --c-panel-solid: #060c16;
@@ -65,7 +68,12 @@
   box-sizing: border-box;
 }
 
-.lv-root button {
+/* :where() for the same reason as the element baseline below it: at (0,1,1) this beat every
+   authored class, so .lv-seg-b lost its 9 px mono, its padding, its cell fill and its colour
+   hierarchy — leaving unselected options at full ink on a transparent cell, the hover rule the
+   only survivor (making the hovered option dimmer than its neighbours), and all three assist
+   labels touching at 2560x1440. */
+.lv-root :where(button) {
   margin: 0;
   padding: 0;
   border: 0;
@@ -630,7 +638,7 @@
 }
 
 .lv-splitfeed-i {
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
 }
 
 .lv-splitfeed-t {
@@ -1507,7 +1515,7 @@
 }
 
 .lv-btn.is-ghost .lv-btn-t {
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
 }
 
 /* -------------------------------------------------------------- briefing --- */
@@ -1586,7 +1594,7 @@
 }
 
 .lv-stat dt {
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
   letter-spacing: 0.26em;
 }
 
@@ -1883,7 +1891,7 @@ kbd {
   font-size: var(--fs-micro);
   line-height: 1.4;
   letter-spacing: 0.02em;
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
 }
 
 /* segmented */
@@ -1906,7 +1914,7 @@ kbd {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.16em;
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
   background: rgba(4, 9, 17, 0.8);
   transition: color 0.18s linear, background 0.18s linear;
 }
@@ -1973,7 +1981,7 @@ kbd {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.2em;
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
   min-width: 2.6em;
 }
 
@@ -2130,7 +2138,7 @@ kbd {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.08em;
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
   text-transform: lowercase;
   padding: 0 0.05em;
 }
@@ -2216,7 +2224,7 @@ kbd {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.4em;
-  color: var(--c-ink-faint);
+  color: var(--c-ink-dim);
 }
 
 .lv-res-time {

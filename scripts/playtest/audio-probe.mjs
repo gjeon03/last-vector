@@ -42,11 +42,19 @@ const BEDS = {
   idle: { throttle: 0, speed01: 0.02, boosting: false, slip: 0 },
   /**
    * Behind the title and briefing screens. NOT silence: `Game.ts` flies the attract loop through
-   * the same `ship.update` branch as live play, at a measured mean throttle of ~0.95. An earlier
-   * version of this file asserted the engine layer was silent on menus and excluded the UI cues
-   * from the gate on that basis, which was simply false.
+   * the same `ship.update` branch as live play. An earlier version of this file asserted the
+   * engine layer was silent on menus and excluded the UI cues from the gate on that basis, which
+   * was simply false.
+   *
+   * Pinned from a 240-frame measurement on the title screen after `Game.ATTRACT_THROTTLE` capped
+   * the attract loop at 0.55: throttle mean 0.536, max 0.550, speed01 mean 0.403. Before that cap
+   * `driveAutopilot` pushed throttle toward 1 whenever alignment was good — and attract flies a
+   * clean line by construction — so the menus sat behind a near-redline drive at 0.954.
+   *
+   * THIS PIN TRACKS `Game.ATTRACT_THROTTLE`. If that cap changes, re-measure and change this with
+   * it, or every UI margin in the report becomes fiction while still looking measured.
    */
-  menu: { throttle: 0.95, speed01: 0.7, boosting: false, slip: 0.05 },
+  menu: { throttle: 0.55, speed01: 0.4, boosting: false, slip: 0.05 },
   /** `Game.ts` holds throttle 0.22 through the count so the frame is never static. */
   countdown: { throttle: 0.22, speed01: 0.2, boosting: false, slip: 0 },
   cruise: { throttle: 0.55, speed01: 0.45, boosting: false, slip: 0.05 },

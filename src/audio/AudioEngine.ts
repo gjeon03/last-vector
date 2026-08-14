@@ -338,6 +338,16 @@ export class AudioEngine implements AudioBus {
     const g = this.graph;
     if (!g) return;
     const now = g.ctx.currentTime;
+    // Cancel pending automation before ramping, exactly as `duckEngine` and `duck` already do.
+    //
+    // Without this, a transient duck scheduled microseconds earlier outranks the state change that
+    // follows it. Clicking RESUME fires `uiClick`, which schedules a release at `when + 0.16`;
+    // `menuMix(false)` then ramps toward 1 from `now`, and the still-pending release fires
+    // afterwards and pulls the bus back down to the menu floor. The menu closes and the drive
+    // never comes back. The asymmetry was the whole bug: the transient helpers cancelled, the
+    // state change did not, so whichever was scheduled later won regardless of which was meant to.
+    g.engineDuck.gain.cancelScheduledValues(now);
+    g.musicDuck.gain.cancelScheduledValues(now);
     rampTo(g.engineDuck.gain, this.menuEngineFloor, 0.12, now);
     rampTo(g.musicDuck.gain, this.menuMusicFloor, 0.12, now);
   }

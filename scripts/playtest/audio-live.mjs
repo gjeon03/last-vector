@@ -118,6 +118,39 @@ async function runInPage(config) {
     `engineDuck ${s.engineDuck.toFixed(3)}, musicDuck ${s.musicDuck.toFixed(3)} (both want 1)`,
   );
 
+  // The RESUME button, reproduced exactly: a UI confirmation and the menu closing on the SAME
+  // tick. The check above could never catch this — it waits 900 ms between the click and the
+  // release, by which time the transient duck has finished and there is nothing pending to
+  // outrank the state change. The defect only exists inside the ~160 ms window where the click's
+  // scheduled release is still in the future, which is precisely when a player clicks RESUME.
+  engine.menuMix(true);
+  await wait(settleMs);
+  engine.play('uiClick', 0.5);
+  engine.menuMix(false);
+  await wait(settleMs);
+  s = state();
+  add(
+    'LIVE.menu-release-same-tick-as-click',
+    near(s.engineDuck, 1) && near(s.musicDuck, 1),
+    `engineDuck ${s.engineDuck.toFixed(3)}, musicDuck ${s.musicDuck.toFixed(3)} after a click and ` +
+      `menuMix(false) in the same tick (both want 1; the menu floor means the click's pending ` +
+      `release outranked the state change and the drive never came back)`,
+  );
+
+  // And the mirror: the menu opening on the same tick as a click, which is the PAUSE button.
+  engine.play('uiClick', 0.5);
+  engine.menuMix(true);
+  await wait(settleMs);
+  s = state();
+  add(
+    'LIVE.menu-apply-same-tick-as-click',
+    near(s.engineDuck, MENU_DUCK_DEPTH) && near(s.musicDuck, MENU_MUSIC_DEPTH),
+    `engineDuck ${s.engineDuck.toFixed(3)}, musicDuck ${s.musicDuck.toFixed(3)} after a click and ` +
+      `menuMix(true) in the same tick (want ${MENU_DUCK_DEPTH} / ${MENU_MUSIC_DEPTH})`,
+  );
+  engine.menuMix(false);
+  await wait(settleMs);
+
   // --- a duck during flight still returns to unity ---------------------------------------------
   engine.play('uiClick', 0.5);
   await wait(settleMs);
@@ -149,11 +182,15 @@ async function runInPage(config) {
 /* eslint-enable */
 
 function parseArgs(argv) {
-  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-live'), json: false, requireClean: false };
+  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-live'), json: false, requireClean: false, noGame: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') options.out = resolve(REPO_ROOT, argv[++i] ?? '.');
     else if (argv[i] === '--json') options.json = true;
     else if (argv[i] === '--require-clean') options.requireClean = true;
+    // Audio-layer phase only. The game phase rebuilds dist/ when sources are newer, which is
+    // wrong to do while someone else has an in-progress edit in src/ — you would be building and
+    // testing their half-finished work and attributing the result to yours.
+    else if (argv[i] === '--no-game') options.noGame = true;
   }
   return options;
 }
@@ -517,7 +554,9 @@ async function main() {
     // Phase two: the same questions asked of the real game.
     let gameChecks = [];
     let distInfo = null;
-    try {
+    if (options.noGame) {
+      gameChecks = [];
+    } else try {
       distInfo = await ensureDist();
       gameChecks = await runGamePhase(playwright, distInfo.dist);
     } catch (error) {
@@ -548,6 +587,7 @@ async function main() {
       distDecision: distInfo?.reason ?? null,
       notCovered: [
         'Whether any of it sounds good. Every check here is a state assertion; none is perceptual.',
+        ...(options.noGame ? ['Game phase skipped via --no-game: nothing here exercises Game.ts wiring.'] : []),
       ],
     };
     await writeFile(resolve(options.out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);

@@ -177,6 +177,8 @@ export class Game {
    * canvas stays at native size — the only honest way to promise a smooth frame on hardware
    * you cannot see. The player's renderScale setting is the *ceiling*, not the value.
    */
+  /** Throttle cap for the attract flight. See driveAutopilot. */
+  private static readonly ATTRACT_THROTTLE = 0.55;
   private dynamicScale = 1;
   private allocWidth = 1;
   private allocHeight = 1;
@@ -815,6 +817,15 @@ export class Game {
     const alignment = clamp01(-this.tmpC.z);
     // Ease off the throttle when badly misaligned so the AI does not overshoot every gate.
     command.throttle = lerp(0.42, 1, Math.pow(alignment, 2.2));
+    // The attract loop cruises. It used to fly at the same near-redline throttle a timed run
+    // does, which is both implausible — an attract camera shows a ship cruising, not one at 95%
+    // with nobody aboard — and the reason the interface cues sit on a razor over it: the engine
+    // bed at throttle 0.95 measures -23.09 LUFS-S against -29.31 at cruise, so every UI margin on
+    // the title screen was paying 6.2 dB for a number nothing needed.
+    //
+    // Fixing the loudness at its source rather than ducking it downstream: no menu mix at the
+    // title, no new contract surface, and uiClick goes from +0.5 dB over the bed to about +6.7.
+    if (this.cinematic) command.throttle = Math.min(command.throttle, Game.ATTRACT_THROTTLE);
     const gate = this.course.nextGate;
     const far = gate ? this.ship.position.distanceTo(gate.position) > gate.radius * 12 : true;
     command.boost = this.autopilotSkill > 0.75 && alignment > 0.985 && far && this.ship.energy01 > 0.45;
