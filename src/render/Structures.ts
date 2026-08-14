@@ -72,8 +72,16 @@ const STRUCTURE_FRAG = /* glsl */ `
     seam = clamp(seam + seam2 * 0.4, 0.0, 1.0);
     albedo *= 1.0 - seam * 0.5;
 
-    float roughness = clamp(0.42 + plate * 0.34 + seam * 0.2, 0.12, 0.95);
-    vec3 color = shadeSurface(N, V, albedo, roughness, 0.72, 1.0 - seam * 0.3);
+    // Triplanar-ish breakup at a second frequency plus a darkened crease along every plate
+    // edge. At 230 m the hull previously showed two flat values and one bevel strip, and a
+    // surface with no detail gradient has no readable size.
+    float grain = fbm(vLocal * 0.11 + 5.0, 3) * 0.5 + 0.5;
+    albedo *= 0.72 + grain * 0.5;
+    float crease = smoothstep(0.35, 0.0, min(min(g.x, g.y), g.z));
+    albedo *= 1.0 - crease * 0.34;
+
+    float roughness = clamp(0.42 + plate * 0.34 + seam * 0.2 + grain * 0.16, 0.12, 0.95);
+    vec3 color = shadeSurface(N, V, albedo, roughness, 0.72, (1.0 - seam * 0.3) * (1.0 - crease * 0.45));
 
     // Lit window banks. Long thin strips rather than square panes: strips read as decks and
     // corridors, squares read as a pegboard, and strips also survive minification because
@@ -289,10 +297,19 @@ export class Terminus {
     const quat = new THREE.Quaternion();
     const pos = new THREE.Vector3();
     const scale = new THREE.Vector3(1, 1, 1);
+    // Perfect rotational symmetry with uniform element size is the loudest procedural tell
+    // there is — the eye clocks it in under a second. Ribs are jittered off their ideal spacing,
+    // vary in girth, and two are missing entirely: damage reads as history.
+    const ribStep = (Math.PI * 2) / ribCount;
+    const missing = new Set([rng.int(0, ribCount), rng.int(0, ribCount)]);
     for (let i = 0; i < ribCount; i++) {
-      const a = (i / ribCount) * Math.PI * 2;
-      pos.set(Math.cos(a) * ringMid, Math.sin(a) * ringMid, 0);
-      quat.setFromEuler(new THREE.Euler(0, 0, a));
+      const a = i * ribStep + rng.signed(ribStep * 0.4);
+      const broken = missing.has(i);
+      pos.set(Math.cos(a) * ringMid, Math.sin(a) * ringMid, rng.signed(18));
+      quat.setFromEuler(new THREE.Euler(rng.signed(0.05), rng.signed(0.05), a));
+      // A broken rib is collapsed rather than removed, so the ring still reads as continuous
+      // structure with pieces torn out of it.
+      scale.set(broken ? rng.range(0.18, 0.34) : rng.range(0.78, 1.25), rng.range(0.7, 1.4), 1);
       matrix.compose(pos, quat, scale);
       ribs.setMatrixAt(i, matrix);
     }
@@ -309,7 +326,7 @@ export class Terminus {
     const spireGeo = loft({ stations: spireProfile, radialSegments: 10, capStart: true, capEnd: true });
     this.geometries.push(spireGeo);
     for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4 + rng.signed(0.22);
       for (const face of [1, -1]) {
         const spire = new THREE.Mesh(spireGeo, this.hullMat);
         spire.position.set(Math.cos(a) * ringMid, Math.sin(a) * ringMid, face * 150);
@@ -329,7 +346,10 @@ export class Terminus {
       const face = rng.bool() ? 1 : -1;
       pos.set(Math.cos(a) * r, Math.sin(a) * r, face * rng.range(160, 205));
       quat.setFromEuler(new THREE.Euler(0, 0, a + rng.signed(0.25)));
-      scale.set(rng.range(70, 220), rng.range(50, 150), rng.range(30, 90));
+      // Power-law over a 4:1 range: a few large modules, many small fittings. Uniformly
+      // sized greebles are detail at one frequency, which is noise rather than design.
+      const g = 46 * Math.pow(4.4, Math.pow(rng.next(), 2.1));
+      scale.set(g * rng.range(0.9, 2.0), g * rng.range(0.6, 1.3), g * rng.range(0.4, 0.9));
       matrix.compose(pos, quat, scale);
       greebles.setMatrixAt(i, matrix);
     }

@@ -43,7 +43,9 @@ const DUST_VERT = /* glsl */ `
 
     float speed = length(uVelocity);
     vec3 dir = speed > 0.001 ? uVelocity / speed : vec3(0.0, 0.0, 1.0);
-    float streak = max(speed * uStretch, 0.7);
+    // No fixed floor: at rest a mote is a point, not a dash. A minimum length turned the
+    // low-speed vantages into a field of uniform tally marks.
+    float streak = max(speed * uStretch, uWidth * 1.2);
 
     vec3 view = normalize(uCameraPos - centre);
     vec3 side = cross(dir, view);

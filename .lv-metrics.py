@@ -128,3 +128,21 @@ if __name__ == '__main__':
             mean, n, p90 = streak_length(path)
             name = path.rsplit('/', 1)[-1]
             print(f'{name:<22} bright runs {n:<6} mean {mean:.1f}px  p90 {p90}px')
+
+
+def radial_rg(path, bins=10):
+    """Mean R-G by radius. The damage overlay has a distinctive smoothstep shape; a flat
+    profile means the cast is coming from the scene, not from a full-screen additive."""
+    w, h, bpp, px = read_png(path)
+    cx, cy = w / 2, h / 2
+    maxr = (cx ** 2 + cy ** 2) ** 0.5
+    sums = [0.0] * bins
+    counts = [0] * bins
+    for y in range(0, h, 3):
+        for x in range(0, w, 3):
+            o = (y * w + x) * bpp
+            r = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 / maxr
+            b = min(bins - 1, int(r * bins))
+            sums[b] += px[o] - px[o + 1]
+            counts[b] += 1
+    return [round(sums[i] / max(counts[i], 1), 1) for i in range(bins)]

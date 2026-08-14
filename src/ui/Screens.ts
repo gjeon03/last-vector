@@ -827,19 +827,25 @@ export class Screens {
     const body = this.nResultBody;
     body.textContent = '';
 
-    /* headline */
+    /* headline: destination left, rating right, so the top edge is not weighted to one side */
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    head.append(
+    const headline = el('div', 'lv-res-headline');
+    headline.append(
       el('div', 'lv-kicker', r.gatesCleared >= r.gatesTotal ? 'ARRIVAL CONFIRMED' : 'RUN ENDED'),
       el('h2', 'lv-res-title', r.destinationName),
     );
+    const rank = el('div', 'lv-res-rank');
+    rank.append(el('div', 'lv-res-k', 'RATING'), el('div', 'lv-res-letter', r.rank));
+    rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
+    head.append(headline, rank);
     body.appendChild(head);
 
-    /* hero: time + rank */
-    const hero = el('div', 'lv-res-hero');
-    hero.style.setProperty('--n', '1');
+    /* two columns: the run's headline number on the left, its shape on the right */
+    const main = el('div', 'lv-res-main');
+    main.style.setProperty('--n', '1');
 
+    const left = el('div', 'lv-res-left');
     const timeBlock = el('div', 'lv-res-timeblock');
     timeBlock.append(el('div', 'lv-res-k', 'TOTAL'), el('div', 'lv-res-time', formatTime(r.totalTime)));
     if (r.isNewBest) {
@@ -852,63 +858,68 @@ export class Screens {
       delta.dataset['tone'] = d <= 0 ? 'good' : 'bad';
       timeBlock.appendChild(delta);
     }
+    left.appendChild(timeBlock);
 
-    const rank = el('div', 'lv-res-rank');
-    rank.append(el('div', 'lv-res-k', 'RATING'), el('div', 'lv-res-letter', r.rank));
-    rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
-
-    hero.append(timeBlock, rank);
-    body.appendChild(hero);
-
-    /* stat strip */
-    const strip = el('div', 'lv-res-strip');
-    strip.style.setProperty('--n', '2');
+    const stats = el('dl', 'lv-res-stats');
     const addStat = (k: string, v: string, tone?: string): void => {
       const cell = el('div', 'lv-res-stat');
-      cell.append(el('span', 'lv-res-statk', k), el('span', 'lv-res-statv', v));
+      cell.append(el('dt', 'lv-res-statk', k), el('dd', 'lv-res-statv', v));
       if (tone) cell.dataset['tone'] = tone;
-      strip.appendChild(cell);
+      stats.appendChild(cell);
     };
     addStat('MARKERS', `${r.gatesCleared} / ${r.gatesTotal}`);
     addStat('TOP SPEED', `${Math.round(r.topSpeed)} M/S`);
     addStat('HULL', r.cleanRun ? 'UNTOUCHED' : 'SCARRED', r.cleanRun ? 'good' : 'warn');
-    body.appendChild(strip);
+    left.appendChild(stats);
 
-    /* splits */
+    /* splits, with a bar per segment so the shape of the run reads without arithmetic */
     const table = el('div', 'lv-res-splits');
-    table.style.setProperty('--n', '3');
     const header = el('div', 'lv-res-row is-head');
     header.append(
       el('span', '', 'MARKER'),
       el('span', '', 'SEGMENT'),
+      el('span', ''),
       el('span', '', 'ELAPSED'),
-      el('span', '', 'Δ FASTEST'),
+      el('span', '', 'Δ BEST'),
     );
     table.appendChild(header);
 
     let fastest = Infinity;
+    let slowest = 0;
     for (let i = 0; i < r.splits.length; i++) {
       const seg = r.splits[i]! - (i > 0 ? r.splits[i - 1]! : 0);
       if (seg < fastest) fastest = seg;
+      if (seg > slowest) slowest = seg;
     }
     for (let i = 0; i < r.splits.length; i++) {
       const seg = r.splits[i]! - (i > 0 ? r.splits[i - 1]! : 0);
       const row = el('div', 'lv-res-row');
       row.style.setProperty('--n', String(i));
       const isFast = seg <= fastest + 1e-6;
+      const bar = el('span', 'lv-res-barwrap');
+      const fill = el('i', 'lv-res-bar');
+      /* Normalised against the slowest segment, floored so the quickest is still a visible
+         mark rather than a sliver of nothing. */
+      fill.style.setProperty('--w', (slowest > 0 ? 0.08 + 0.92 * (seg / slowest) : 1).toFixed(3));
+      bar.appendChild(fill);
       row.append(
         el('span', 'lv-res-idx', (i + 1 < 10 ? '0' : '') + (i + 1)),
         el('span', 'lv-res-seg', seg.toFixed(2)),
+        bar,
         el('span', 'lv-res-cum', formatTime(r.splits[i]!)),
-        el('span', 'lv-res-dlt', isFast ? 'FASTEST' : formatDelta(seg - fastest)),
+        el('span', 'lv-res-dlt', isFast ? 'BEST' : formatDelta(seg - fastest)),
       );
       row.dataset['fast'] = isFast ? '1' : '0';
       table.appendChild(row);
     }
-    body.appendChild(table);
+
+    const right = el('div', 'lv-res-right');
+    right.appendChild(table);
+    main.append(left, right);
+    body.appendChild(main);
 
     const actions = el('div', 'lv-actions lv-actions--res');
-    actions.style.setProperty('--n', '4');
+    actions.style.setProperty('--n', '2');
     actions.append(
       this.button('RUN AGAIN', 'is-primary', () => this.host.restart()),
       this.button('RETURN', 'is-ghost', () => this.host.quitToTitle()),

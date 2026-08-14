@@ -2118,16 +2118,27 @@ kbd {
 .lv-results {
   position: relative;
   margin: auto;
-  width: min(92vw, 1000px);
+  width: min(94vw, 1320px);
   max-height: 92vh;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: clamp(20px, 3vmin, 46px) clamp(20px, 3vmin, 50px);
 }
 
+/* Block-level entrance only, and short. Individual split rows deliberately do NOT fade —
+   see .lv-res-splits below for why. */
 .lv-res-body > * {
-  animation: lv-fade-up 0.66s var(--ease-out) both;
-  animation-delay: calc(var(--n) * 0.1s);
+  animation: lv-fade-up 0.38s var(--ease-out) both;
+  animation-delay: calc(var(--n) * 0.05s);
+}
+
+.lv-res-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: clamp(16px, 3vmin, 48px);
+  padding-bottom: clamp(14px, 2vmin, 26px);
+  border-bottom: 1px solid var(--c-hairline);
 }
 
 .lv-res-title {
@@ -2138,14 +2149,25 @@ kbd {
   margin-top: 0.2em;
 }
 
-.lv-res-hero {
+/* Headline number left, shape of the run right. Single-column below 5:4 so 720p and portrait
+   do not squeeze the splits table into an unreadable strip. */
+.lv-res-main {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: clamp(20px, 4vmin, 64px);
+  margin-top: clamp(16px, 2.4vmin, 32px);
+}
+
+@media (max-aspect-ratio: 5 / 4) {
+  .lv-res-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lv-res-left {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 2em;
-  margin-top: clamp(16px, 2.4vmin, 34px);
-  padding-top: clamp(14px, 2vmin, 26px);
-  border-top: 1px solid var(--c-hairline);
+  flex-direction: column;
+  gap: clamp(16px, 2.6vmin, 38px);
 }
 
 .lv-res-k {
@@ -2240,27 +2262,28 @@ kbd {
   text-shadow: 0 0 70px rgba(255, 212, 122, 0.45);
 }
 
-.lv-res-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(18px, 3vmin, 54px);
-  margin-top: clamp(14px, 2vmin, 26px);
-  padding: clamp(12px, 1.6vmin, 22px) 0;
-  border-top: 1px solid rgba(185, 204, 221, 0.1);
-  border-bottom: 1px solid rgba(185, 204, 221, 0.1);
+.lv-res-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+  /* Capped so key and value do not drift to opposite ends of a wide column. */
+  max-width: 26em;
 }
 
 .lv-res-stat {
   display: flex;
-  flex-direction: column;
-  gap: 0.34em;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 0.5em 0;
+  border-bottom: 1px solid rgba(185, 204, 221, 0.08);
 }
 
 .lv-res-statk {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.32em;
-  color: var(--c-ink-faint);
+  color: var(--c-key);
 }
 
 .lv-res-statv {
@@ -2273,46 +2296,76 @@ kbd {
 .lv-res-stat[data-tone='good'] .lv-res-statv { color: var(--c-good); }
 .lv-res-stat[data-tone='warn'] .lv-res-statv { color: var(--c-warn); }
 
-.lv-res-splits {
-  margin-top: clamp(14px, 2vmin, 26px);
-}
-
 .lv-res-row {
   display: grid;
-  grid-template-columns: 5em minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-  gap: 1em;
-  padding: 0.34em 0;
+  /* Sized against the header labels, not the values: "MARKER" and "SEGMENT" are wider than
+     the two-digit index and the seconds figure they sit above. */
+  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em 5.2em;
+  align-items: center;
+  gap: 0.9em;
+  padding: 0.36em 0;
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-small);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--c-ink-dim);
   border-bottom: 1px solid rgba(185, 204, 221, 0.055);
 }
 
-.lv-res-row > span:not(:first-child) {
+.lv-res-row > span:not(:first-child):not(.lv-res-barwrap) {
   text-align: right;
 }
 
 .lv-res-row.is-head {
   font-size: var(--fs-micro);
-  letter-spacing: 0.3em;
-  color: var(--c-ink-faint);
+  letter-spacing: 0.16em;
+  color: var(--c-key);
   border-bottom-color: var(--c-hairline);
   padding-bottom: 0.6em;
 }
 
+/* Segment bar: the shape of the run, so where time was lost reads without arithmetic. */
+.lv-res-barwrap {
+  display: block;
+  height: clamp(4px, 0.5vmin, 7px);
+  background: rgba(185, 204, 221, 0.09);
+}
+
+/*
+ * No grow-in. A bar's length IS the segment time, so animating it up from zero states a
+ * different number for the duration of the animation — the same defect the rows had, and I
+ * reintroduced it here by reflex before catching it in an early capture. Data is drawn true
+ * from the first frame; the row slide and the block fade carry the motion.
+ */
+.lv-res-bar {
+  display: block;
+  height: 100%;
+  width: calc(var(--w, 0) * 100%);
+  background: var(--c-primary-dim);
+}
+
+.lv-res-row[data-fast='1'] .lv-res-bar {
+  background: var(--c-good);
+}
+
+/*
+ * Rows slide; they do NOT fade. An art reviewer captured this table mid-entrance and read it as
+ * "7 of 9 rows, row 07 near-invisible, under a header saying 9/9" — a screenshot cannot tell an
+ * unfinished animation from missing data, and on the resolution beat that reads as a bug. Every
+ * row is now at full opacity from the first frame, so a capture at any instant shows all nine.
+ * The block-level fade above still carries the entrance.
+ */
 .lv-res-splits .lv-res-row:not(.is-head) {
-  animation: lv-row-in 0.5s var(--ease-out) both;
-  animation-delay: calc(0.34s + var(--n) * 0.045s);
+  animation: lv-row-in 0.3s var(--ease-out) both;
+  animation-delay: calc(0.06s + var(--n) * 0.018s);
 }
 
 @keyframes lv-row-in {
-  from { opacity: 0; transform: translateX(-16px); }
+  from { transform: translateX(-10px); }
 }
 
 .lv-res-idx {
-  color: var(--c-ink-faint);
+  color: var(--c-key);
 }
 
 .lv-res-cum {

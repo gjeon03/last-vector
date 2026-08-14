@@ -61,6 +61,15 @@ const ASTEROID_FRAG = /* glsl */ `
     int detailOctaves = dist < 900.0 ? 3 : (dist < 3000.0 ? 2 : 1);
     float h = fbm(vWorldPos * uDetailScale, detailOctaves);
 
+    // A high-frequency near-field octave. Without detail that RESOLVES as you close, the eye
+    // has no way to judge how large a rock is or how far away it sits — which is why the scale
+    // read failed even though the depth layering was working.
+    float closeness = 1.0 - smoothstep(90.0, 420.0, dist);
+    if (closeness > 0.01) {
+      float fine = fbm(vWorldPos * uDetailScale * 7.5, 2);
+      h = mix(h, h * 0.72 + fine * 0.5, closeness);
+    }
+
     // Gradient of the height field straight from screen-space derivatives. One noise tap.
     vec3 dpdx = dFdx(vWorldPos);
     vec3 dpdy = dFdy(vWorldPos);
@@ -173,6 +182,20 @@ export interface AsteroidInstance {
   quaternion: THREE.Quaternion;
 }
 
+const segScratch = new THREE.Vector3();
+const segScratchB = new THREE.Vector3();
+
+/** Shortest distance from a point to a line segment. */
+function distanceToSegment(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  segScratch.subVectors(b, a);
+  const lenSq = segScratch.lengthSq();
+  if (lenSq < 1e-6) return point.distanceTo(a);
+  segScratchB.subVectors(point, a);
+  const t = Math.max(0, Math.min(1, segScratchB.dot(segScratch) / lenSq));
+  segScratchB.copy(a).addScaledVector(segScratch, t);
+  return point.distanceTo(segScratchB);
+}
+
 interface AsteroidBatch {
   mesh: THREE.InstancedMesh;
   instances: AsteroidInstance[];
@@ -190,6 +213,19 @@ export interface AsteroidFieldOptions {
   minRadius: number;
   maxRadius: number;
   seed: number;
+  /**
+   * Volumes that must stay empty regardless of where the corridor falls — the spawn point and
+   * every gate aperture. Without them the player begins the run already inside a boulder: a
+   * scripted run measured seven hull contacts in its first seven tenths of a second.
+   */
+  keepClear?: { center: THREE.Vector3; radius: number }[];
+  /**
+   * Capsules that must stay empty. The corridor is carved around the SPINE, but the line a
+   * pilot actually flies is gate to gate — where the spine curves, the racing line cuts the
+   * corner and leaves the protected channel. Clearing the spine alone left one or two
+   * unavoidable collisions per run at every level of autopilot aggression.
+   */
+  keepClearSegments?: { a: THREE.Vector3; b: THREE.Vector3; radius: number }[];
 }
 
 export class AsteroidField {
@@ -244,22 +280,46 @@ export class AsteroidField {
       rng.onSphere(dirScratch);
       // Flatten the distribution into a shelf: the field should look like an orbital plane,
       // not a spherical cloud. This is a big part of reading the sector as a *place*.
-      const dist = options.corridor + Math.pow(rng.next(), 0.62) * options.spread;
-      offset.set(dirScratch.x, dirScratch.y * 0.34, dirScratch.z).normalize().multiplyScalar(dist);
-
       // Power-law sizes: mostly small debris, a handful of landmark boulders. A uniform
       // distribution gives every rock a similar apparent size, which flattens the field.
       const spread01 = Math.pow(rng.next(), 2.4);
       const scale =
         options.minRadius * Math.pow(options.maxRadius / options.minRadius, spread01) *
         (rng.bool(0.035) ? 3.4 : 1);
+
       // Pick the detail band from the instance's size, then a silhouette within that band.
       const size01 = Math.min(1, (scale - options.minRadius) / (options.maxRadius - options.minRadius));
       const variant = size01 > 0.55 ? rng.int(0, 4) : size01 > 0.22 ? rng.int(4, 9) : rng.int(9, VARIANTS);
+      const collisionRadius = scale * this.variantGeometries[variant].boundRadius;
+
+      // The corridor clears the rock's SURFACE, not its centre. Measured to the centre, every
+      // large boulder intruded into the racing line by its own radius.
+      const dist = options.corridor + collisionRadius + Math.pow(rng.next(), 0.62) * options.spread;
+      offset.set(dirScratch.x, dirScratch.y * 0.34, dirScratch.z).normalize().multiplyScalar(dist);
+
+      const candidate = point.clone().add(offset);
+      // Reject anything intruding on a protected volume rather than nudging it, so the field
+      // keeps its natural distribution instead of growing a visible shell around each gate.
+      let blocked = false;
+      for (const zone of options.keepClear ?? []) {
+        if (candidate.distanceTo(zone.center) < zone.radius + collisionRadius) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) {
+        for (const seg of options.keepClearSegments ?? []) {
+          if (distanceToSegment(candidate, seg.a, seg.b) < seg.radius + collisionRadius) {
+            blocked = true;
+            break;
+          }
+        }
+      }
+      if (blocked) continue;
 
       const instance: AsteroidInstance = {
-        position: point.clone().add(offset),
-        radius: scale * this.variantGeometries[variant].boundRadius,
+        position: candidate,
+        radius: collisionRadius,
         scale,
         spinAxis: new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
         spinRate: rng.signed(0.09),

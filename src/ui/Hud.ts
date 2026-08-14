@@ -4,7 +4,7 @@
  * Split of responsibilities:
  *  - DOM  : typography, layout, anything the player reads as *text*. Crisp, accessible.
  *  - Canvas: the vector instruments — pipper, flight-path marker, gate director, off-screen
- *    chase arrow, attitude ladder, proximity ring. Per-frame vector work belongs here.
+ *    chase arrow, roll scale, proximity ring. Per-frame vector work belongs here.
  *
  * `update()` runs 60x/s. Every node reference is cached, every write is guarded by a
  * "did it actually change" check, and nothing allocates in the steady state.
@@ -333,7 +333,7 @@ export class Hud {
   private pLabelDist = '';
   private pLabelUnit = '';
   private pProx = -1;
-  private pHullPrev = 1;
+  private pImpactFlash = 0;
   private pBoosting = false;
   private pRailTicks = -1;
   private pGateCur = -1;
@@ -535,6 +535,10 @@ export class Hud {
     this.active = active;
     this.el.dataset['active'] = active ? '1' : '0';
     this.el.dataset['dim'] = dim ? '1' : '0';
+    /* Asymmetric: ease up gently, drop away quickly. At the old symmetric rate the HUD was
+       still a third visible a fifth of a second into the results screen, so a capture of the
+       resolution beat caught speed and split digits ghosting under the table. */
+    this.eAlpha.rate = active ? 5 : 16;
     this.eAlpha.target = active ? (dim ? 0.45 : 1) : 0;
     /**
      * Callouts opt out of the dim. `--a` eases from 0.45 to 1 across the countdown -> flying
@@ -937,15 +941,15 @@ export class Hud {
       this.nProxVignette.style.setProperty('--p', (pq / 50).toFixed(2));
       this.nProxVignette.dataset['crit'] = prox > 0.72 ? '1' : '0';
     }
-    /* impact = hull dropped this frame */
-    if (t.hull < this.pHullPrev - 0.0015) {
+    /* Explicit impact signal. The old heuristic watched `hull` fall frame to frame, which
+       missed a glancing contact that cost no hull and misfired whenever the value was
+       re-clamped. `impactFlash` spikes on the strike and decays on its own, so the pulse is
+       retriggered on the leading edge only. */
+    if (t.impactFlash > 0.05 && this.pImpactFlash <= 0.05) {
       retrigger(this.nImpact, 'is-hit');
-      this.nImpact.style.setProperty(
-        '--i',
-        clamp((this.pHullPrev - t.hull) * 6, 0.35, 1).toFixed(2),
-      );
+      this.nImpact.style.setProperty('--i', clamp(t.impactFlash, 0.35, 1).toFixed(2));
     }
-    this.pHullPrev = t.hull;
+    this.pImpactFlash = t.impactFlash;
   }
 
   /* ----------------------------------------------------------- canvas layer */

@@ -257,9 +257,34 @@ export class Game {
       lighting: this.lighting,
       spine: this.course.spine,
       spread: SCALE.asteroidFieldRadius * 0.55,
-      corridor: SCALE.gateRadius * 1.9,
+      // Absolute metres, deliberately not a multiple of the aperture: shrinking the gate
+      // for difficulty must not silently shrink the flyable channel as well.
+      corridor: 300,
       minRadius: 9,
       maxRadius: 160,
+      // The flown line: start -> every gate in order -> the terminus.
+      keepClearSegments: (() => {
+        const nodes = [
+          this.course.startPosition.clone(),
+          ...this.course.gates.map((g) => g.position.clone()),
+          this.course.terminusPosition.clone(),
+        ];
+        const segments = [];
+        for (let i = 0; i < nodes.length - 1; i++) {
+          segments.push({ a: nodes[i], b: nodes[i + 1], radius: 320 });
+        }
+        return segments;
+      })(),
+      keepClear: [
+        // The spawn point, generously: the very first thing a player sees must not be a
+        // collision. And every aperture, so threading a cairn is never blocked by a boulder
+        // that happens to have landed in the hole.
+        { center: this.course.startPosition.clone(), radius: 1100 },
+        ...this.course.gates.map((gate) => ({
+          center: gate.position.clone(),
+          radius: gate.radius * 2.4,
+        })),
+      ],
       seed: seed ^ 0x2f19,
     });
     this.mainScene.add(this.asteroids.object);
@@ -839,7 +864,8 @@ export class Game {
     const stretch = 0.008 + speed01 * 0.026 + boostBlend * 0.055;
     // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
     // wall of streaks under boost, which is where the cue is actually wanted.
-    const dustOpacity = 0.07 + speed01 * speed01 * 0.26 + boostBlend * 0.34;
+    // Cubic in speed: nearly invisible at a crawl, a wall of streaks under boost.
+    const dustOpacity = 0.02 + speed01 * speed01 * speed01 * 0.34 + boostBlend * 0.34;
     this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
 
     this.shipModel.update(
