@@ -41,6 +41,7 @@ const PRESENT_FRAG = /* glsl */ `
   uniform float uGrain;
   uniform float uTime;
   uniform float uEdgeThreshold;
+  uniform float uAberration;
   varying vec2 vUv;
 
   vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
@@ -96,6 +97,18 @@ const PRESENT_FRAG = /* glsl */ `
       // the narrow blend is used, which is what keeps FXAA from bleeding across a silhouette.
       float lB = luma(rgbB);
       color = (lB < lMin || lB > lMax) ? rgbA : rgbB;
+    }
+
+    // Lateral chromatic aberration. Runs here, after both the motion blur and the edge blend,
+    // and its offset is clamped to 1.4 px — below the smallest resolvable feature — so it can
+    // only ever tint a gradient the blur has already spread. Inside the blur loop it was
+    // separating individual discrete taps into near-pure channels.
+    if (uAberration > 0.0001) {
+      vec2 fromAxis = vUv - 0.5;
+      float ramp = dot(fromAxis, fromAxis) * smoothstep(0.3, 0.75, length(fromAxis));
+      vec2 ca = normalize(fromAxis + 1e-6) * min(uAberration * ramp * 40.0, 1.4) * uTexel;
+      color.r = texture2D(tDiffuse, srcUv(vUv + ca)).r;
+      color.b = texture2D(tDiffuse, srcUv(vUv - ca)).b;
     }
 
     if (uGrain > 0.0001) {
@@ -327,11 +340,12 @@ const COMPOSITE_FRAG = /* glsl */ `
   uniform vec3 uLift;
   uniform vec3 uGain;
 
+  uniform sampler2D tSceneDepth;
+  uniform float uNear;
   uniform vec2 uBlurCentre;
   uniform float uBlurStrength;
   uniform int uBlurSamples;
 
-  uniform float uAberration;
   uniform float uVignette;
   uniform float uDamage;
   uniform float uFade;
@@ -377,55 +391,58 @@ const COMPOSITE_FRAG = /* glsl */ `
     float r2 = dot(toCentre, toCentre);
     uv += toCentre * r2 * uWarp;
 
-    // Motion blur and chromatic aberration share ONE sampling loop.
+    // Motion blur.
     //
-    // They must: doing the blur first and then re-sampling the raw buffer for red and blue
-    // gives a blurred green channel against sharp red and blue, which fringes every small
-    // bright feature with a pure green halo. That defect is invisible in a still of a static
-    // scene and screams the moment the camera moves.
+    // Chromatic aberration used to live INSIDE this loop, on the reasoning that blurring green
+    // and then re-sampling the raw buffer for red and blue fringes every bright feature with a
+    // green halo. That reasoning was right about the failure it was avoiding and wrong about the
+    // cost: at boost the smear is ~54 px sampled by 8 taps, one tap per ~7 px, so a 2.5 px star
+    // deposits 8 discrete beads — and drawing each bead once per channel at a different place
+    // made them near-pure single channels. Measured at 102 pixels in a 70x40 box reading 96%
+    // red, 98% green, 84% blue on adjacent pixels.
     //
-    // Lateral aberration is an edge-of-frame effect, so it ramps in with radius and stays out
-    // of the centre where the ship and the reticle live.
-    vec2 fromAxis = uv - 0.5;
-    vec2 ca = fromAxis * dot(fromAxis, fromAxis) * uAberration
-      * smoothstep(0.3, 0.75, length(fromAxis));
-
+    // Two changes. The tap count now follows the streak length, so a tap never has to cover more
+    // than a couple of pixels; and CA moved to the present pass, AFTER the blur has spread the
+    // source, where its offset is clamped below the smallest resolvable feature and cannot
+    // separate anything the blur has not already smeared.
     vec3 scene;
-    if (uBlurStrength > 0.0005 && uBlurSamples > 1) {
+    // Screen-space length of the smear at this pixel, in pixels.
+    float smearPx = length((uv - uBlurCentre) * uBlurStrength * uResolution);
+    // Distance falloff: a radial smear represents forward motion, and an object at infinity has
+    // no screen-space velocity from translation. The planet at 2.9 million km was being smeared
+    // into a brown streak alongside the star. Reconstructed from the depth buffer rather than
+    // thresholded on it, because at a 90 km far plane every reachable object sits within 0.002
+    // of the far value and a threshold cannot separate them.
+    float rawDepth = texture2D(tSceneDepth, srcUv(uv)).r;
+    float viewZ = uNear / max(1.0 - rawDepth, 1e-7);
+    float travelMask = smoothstep(26000.0, 5000.0, viewZ);
+    float strength = uBlurStrength * travelMask;
+
+    if (strength > 0.0005 && uBlurSamples > 1) {
       // Radial smear along the direction of travel. The centre of the smear is the projected
       // velocity vector, so turning skews the streaks the way a real camera would.
-      vec2 dir = (uv - uBlurCentre) * uBlurStrength;
+      vec2 dir = (uv - uBlurCentre) * strength;
+      // One tap per ~2.2 px of smear, floored at the profile's count and capped so the cost is
+      // bounded. Below the cap the streak is continuous; above it the jitter carries the rest.
+      int taps = int(clamp(smearPx / 2.2, float(uBlurSamples), 32.0));
       vec3 accum = vec3(0.0);
       float total = 0.0;
-      for (int i = 0; i < 16; i++) {
-        if (i >= uBlurSamples) break;
+      for (int i = 0; i < 32; i++) {
+        if (i >= taps) break;
         // Jittered per pixel. Evenly spaced taps deposit a visible chain of separate copies
         // once the streak is longer than about sixteen source-feature widths, and regular
         // discrete repetition is read as a rendering artefact, never as motion. Dithering the
-        // tap position dissolves the beads into grain.
-        float t = (float(i) + hash12(gl_FragCoord.xy + uTime * 61.0)) / float(uBlurSamples);
+        // tap position dissolves the residue into grain.
+        float t = (float(i) + hash12(gl_FragCoord.xy + uTime * 61.0)) / float(taps);
         float w = 1.0 - t * 0.55;
-        vec2 base = uv - dir * t;
-        accum.r += texture2D(tScene, srcUv(base + ca)).r * w;
-        accum.g += texture2D(tScene, srcUv(base)).g * w;
-        accum.b += texture2D(tScene, srcUv(base - ca)).b * w;
+        accum += texture2D(tScene, srcUv(uv - dir * t)).rgb * w;
         total += w;
       }
-      scene = accum / total;
+      scene = accum / max(total, 1e-4);
     } else {
-      scene = vec3(
-        texture2D(tScene, srcUv(uv + ca)).r,
-        texture2D(tScene, srcUv(uv)).g,
-        texture2D(tScene, srcUv(uv - ca)).b
-      );
+      scene = texture2D(tScene, srcUv(uv)).rgb;
     }
 
-    // Ambient occlusion. It should darken the AMBIENT term only — occlusion does not dim a
-    // surface the key light is hitting directly — but this is a forward pipeline with no
-    // separate ambient buffer to multiply into. The weight below is the standing approximation:
-    // apply it in full where the pixel is dim (and therefore ambient-dominated) and taper it
-    // away where the pixel is bright (and therefore key-lit). It is a heuristic, not physics,
-    // and it is here because the alternative is an MRT that touches every material in the game.
     if (uAOStrength > 0.001) {
       float ao = texture2D(tAO, aoUv(uv)).r;
       float sceneLuma = dot(scene, vec3(0.2126, 0.7152, 0.0722));
@@ -639,6 +656,7 @@ export class PostFX {
       uGrain: { value: 0.035 },
       uTime: { value: 0 },
       uEdgeThreshold: { value: 0.125 },
+      uAberration: { value: 0 },
     });
 
     this.prefilterMat = makePassMaterial(PREFILTER_FRAG, {
@@ -726,7 +744,8 @@ export class PostFX {
       uBlurCentre: { value: new THREE.Vector2(0.5, 0.5) },
       uBlurStrength: { value: 0 },
       uBlurSamples: { value: profile.motionBlurSamples },
-      uAberration: { value: 0 },
+      tSceneDepth: { value: null },
+      uNear: { value: 0.5 },
       uVignette: { value: 0.85 },
       uDamage: { value: 0 },
       uFade: { value: 1 },
@@ -825,6 +844,8 @@ export class PostFX {
   setCamera(camera: THREE.PerspectiveCamera): void {
     this.ssaoMat.uniforms.uProjection.value.copy(camera.projectionMatrix);
     this.ssaoMat.uniforms.uInverseProjection.value.copy(camera.projectionMatrixInverse);
+    // The motion blur reconstructs view distance from depth to fall the smear off with range.
+    this.compositeMat.uniforms.uNear.value = camera.near;
   }
 
   render(grade: GradeParams): void {
@@ -857,6 +878,7 @@ export class PostFX {
     u.tBloom.value = this.bloomTargets[0].texture;
     u.tGodrays.value = this.godrayTarget.texture;
     u.tAO.value = this.aoBlurTarget.texture;
+    u.tSceneDepth.value = this.sceneTarget.depthTexture;
     u.uTime.value = grade.time;
     u.uExposure.value = grade.exposure;
     u.uContrast.value = grade.contrast;
@@ -865,7 +887,8 @@ export class PostFX {
     u.uGodrayStrength.value = grade.godrayStrength;
     u.uBlurCentre.value.copy(grade.blurCentre);
     u.uBlurStrength.value = grade.blurStrength;
-    u.uAberration.value = this.compositeMat.userData.allowAberration === false ? 0 : grade.aberration;
+    this.presentMat.uniforms.uAberration.value =
+      this.compositeMat.userData.allowAberration === false ? 0 : grade.aberration;
     u.uWarp.value = grade.warp;
     u.uVignette.value = grade.vignette;
     u.uDamage.value = clamp01(grade.damage);
