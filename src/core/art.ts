@@ -123,3 +123,17 @@ export const FLIGHT: Record<
   boostRegen: 17,
   boostRegenDelay: 0.9,
 };
+
+/**
+ * Maximum pixels the renderer will allocate for the scene, before the dynamic scaler.
+ *
+ * A device-ratio clamp is the wrong shape: it budgets a RATIO when the cost is a COUNT. At
+ * `min(dpr, 2)` a 1920x1080 window on a Retina or 4K panel allocated 8.29 Mpx — four times what
+ * every measurement in this project's first four review rounds was taken at, and about 3x the
+ * GPU cost against 2.19x of headroom.
+ *
+ * 2.5 Mpx is a little above 1920x1080 native, so an ordinary 1080p window is unaffected and a
+ * HiDPI one lands near the same fill. The browser upscales from the CSS size, exactly as it
+ * already does at every dynamic render scale.
+ */
+export const FILL_BUDGET_PIXELS = 2_500_000;

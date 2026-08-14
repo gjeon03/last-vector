@@ -8,6 +8,9 @@ const { outputRoot, forwardedArgs } = extractOutput(process.argv.slice(2));
 const suites = [
   { name: 'playtest', script: 'playtest.mjs' },
   { name: 'perf-probe', script: 'perf-probe.mjs' },
+  // The same probe at the backing store a Retina or 4K display actually allocates. Pinned at 1
+  // for four rounds, this arm is the one that would have caught the HiDPI fill defect.
+  { name: 'perf-probe-hidpi', script: 'perf-probe.mjs', args: ['--device-scale-factor', '2'] },
   { name: 'screenshot-matrix', script: 'screenshot-matrix.mjs' },
   // Nobody has heard this build, so the offline audio measurement IS the audio quality gate —
   // and a gate that is not run does not gate. It fails the build when a gameplay-critical cue

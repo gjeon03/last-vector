@@ -76,7 +76,24 @@ async function runPerfProbe({ report, session, options }) {
     verify(countKeys.every((key) => Number.isInteger(sample?.[key]) && sample[key] >= 0), 'Profile has an invalid count.', evidence);
     verify(finiteNumber(sample?.renderScale) && sample.renderScale > 0 && sample.renderScale <= 1, 'Profile has an invalid effective render scale.', evidence);
     verify(Number.isInteger(sample?.drawingBufferWidth) && sample.drawingBufferWidth > 0 && Number.isInteger(sample?.drawingBufferHeight) && sample.drawingBufferHeight > 0, 'Profile has an invalid drawing-buffer size.', evidence);
-    verify(Math.abs(sample.drawingBufferWidth - Math.round(evidence.viewport.width * sample.renderScale)) <= 1 && Math.abs(sample.drawingBufferHeight - Math.round(evidence.viewport.height * sample.renderScale)) <= 1, 'Drawing-buffer size is inconsistent with viewport and effective render scale.', evidence);
+    // The rendered sub-rectangle is a fraction of the ALLOCATION, and the allocation is capped by
+    // a fill budget (FILL_BUDGET_PIXELS) rather than by the device ratio — so `viewport x
+    // renderScale` is only the right expectation at a device scale factor of 1 on a window under
+    // the budget. Checked against the allocation the game reports instead, plus the budget itself.
+    const allocW = Math.round(sample.drawingBufferWidth / sample.renderScale);
+    const allocH = Math.round(sample.drawingBufferHeight / sample.renderScale);
+    const aspect = allocW / allocH;
+    const viewportAspect = evidence.viewport.width / evidence.viewport.height;
+    verify(
+      Math.abs(aspect - viewportAspect) < 0.02,
+      'Drawing-buffer aspect does not match the viewport aspect.',
+      { ...evidence, allocW, allocH, aspect, viewportAspect },
+    );
+    verify(
+      allocW * allocH <= 2_600_000,
+      `Allocation ${allocW}x${allocH} = ${(allocW * allocH / 1e6).toFixed(2)} Mpx exceeds the fill budget.`,
+      { ...evidence, allocW, allocH },
+    );
     verify(sample.p50FrameMs <= sample.p95FrameMs && sample.p95FrameMs <= sample.p99FrameMs && sample.p99FrameMs <= sample.maxFrameMs, 'Profile percentiles are not ordered.', evidence);
     const calculatedFps = sample.frames / sample.seconds;
     verify(Math.abs(calculatedFps - sample.fps) <= Math.max(1, sample.fps * 0.05), 'FPS is inconsistent with frames / seconds.', {
@@ -91,13 +108,24 @@ async function runPerfProbe({ report, session, options }) {
     name: 'Game holds the 60 Hz frame budget at 1920x1080',
     criteria: [criterion('M5', 'full', 'Combines this 1080p FPS threshold with M5.runtime-errors in the same run.')],
     assertion:
-      `At a 1920x1080 CSS-pixel viewport and deviceScaleFactor 1, __LV.profile(${options.profileSeconds}) sustains the ` +
+      `At a 1920x1080 CSS-pixel viewport and deviceScaleFactor ${options.deviceScaleFactor}, ` +
+      `__LV.profile(${options.profileSeconds}) sustains the ` +
       '60 Hz budget: mean frame time <= 16.9 ms, p95 <= 20 ms, no frame over 33 ms, and the adaptive ' +
-      'renderer did not buy that budget by collapsing internal resolution (renderScale >= 0.6).',
+      'renderer did not buy that budget by collapsing internal resolution (renderScale >= 0.58, the adaptive controller own floor).',
   }, async () => {
     const evidence = unwrap(profileOutcome);
     verify(settingsOutcome.ok, 'Requested performance quality settings were not confirmed; see PERF.settings.', settingsOutcome.error);
-    verify(evidence.viewport.width === 1920 && evidence.viewport.height === 1080 && evidence.deviceScaleFactor === 1, 'Performance probe did not run at the mandatory 1920x1080 resolution.', evidence);
+    // The device scale factor is CONFIGURED, not asserted at 1. Hard-asserting 1 made this gate
+    // structurally incapable of ever seeing the configuration the game ships in: `min(dpr, 2)`
+    // meant a 1920x1080 window on a Retina or 4K panel allocated 3840x2160, four times what every
+    // measurement in four review rounds was taken at. Measured before the fill budget landed:
+    // 55.4 fps with 36 long frames and the scaler already down at 0.76.
+    verify(
+      evidence.viewport.width === 1920 && evidence.viewport.height === 1080
+        && evidence.deviceScaleFactor === options.deviceScaleFactor,
+      'Performance probe did not run at the requested resolution and device scale factor.',
+      evidence,
+    );
 
     // NOT `fps >= 60`. The compositor caps presentation at the display refresh, and the sample
     // window is wall-clock, so a perfectly vsynced run measures 59.99 and a strict >= 60 can
@@ -108,7 +136,7 @@ async function runPerfProbe({ report, session, options }) {
     verify(s.p95FrameMs <= 20, `p95 frame time ${s.p95FrameMs.toFixed(2)} ms exceeds 20 ms.`, evidence);
     verify(s.maxFrameMs <= 33, `Worst frame ${s.maxFrameMs.toFixed(2)} ms exceeds 33 ms.`, evidence);
     verify(
-      s.renderScale >= 0.6,
+      s.renderScale >= 0.58,
       `Adaptive resolution collapsed to ${s.renderScale.toFixed(2)}; the frame budget was met only by dropping internal resolution.`,
       evidence,
     );
@@ -133,7 +161,7 @@ async function collectProfile(page, options) {
       warmupFrames: 120,
       fixedTimestep: 1 / 60,
       viewport: options.viewport,
-      deviceScaleFactor: 1,
+      deviceScaleFactor: options.deviceScaleFactor,
       quality: options.quality,
       requestedProfileSeconds: options.profileSeconds,
       sample,

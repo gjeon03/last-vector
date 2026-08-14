@@ -20,6 +20,10 @@ const DEFAULTS = {
   url: null,
   vantages: null,
   viewport: { width: 1920, height: 1080 },
+  // The backing store the game actually allocates is viewport x deviceScaleFactor, and this was
+  // pinned at 1 for four rounds of review — so every frame-time figure ever produced for this
+  // project described a configuration the game does not ship in on any Retina or 4K display.
+  deviceScaleFactor: 1,
 };
 
 export function criterion(id, coverage, note) {
@@ -56,6 +60,9 @@ export function parseOptions(suite, argv) {
         break;
       case '--max-sim-seconds':
         options.maxSimSeconds = parsePositiveNumber(flag, takeValue());
+        break;
+      case '--device-scale-factor':
+        options.deviceScaleFactor = parsePositiveNumber(flag, takeValue());
         break;
       case '--out':
         options.out = resolveFromRepo(takeValue());
@@ -518,7 +525,7 @@ async function openSession(report, options, requiredMethods) {
   }, async () => {
     session.context = await session.browser.newContext({
       viewport: options.viewport,
-      deviceScaleFactor: 1,
+      deviceScaleFactor: options.deviceScaleFactor,
       serviceWorkers: 'block',
     });
     await installNetworkBoundary(session.context, session.observations);

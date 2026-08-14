@@ -24,7 +24,7 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
-import { FICTION, FLIGHT, SCALE } from '../core/art.ts';
+import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
 import type {
@@ -160,6 +160,8 @@ export class Game {
   private readonly gateHistory: GatePassRecord[] = [];
   /** Exposure multiplier from the active vantage; 1 during normal play. */
   private vantageExposure = 1;
+  /** Title-camera offset in the ship's frame; see updateCinematicCamera. */
+  private readonly cinematicOffset = new THREE.Vector3(0, 9, 46);
   private readonly uiAudio: UiAudioBus;
   /** Removes the one-shot audio-unlock listeners if the game is disposed before any gesture. */
   private readonly releaseUnlock: () => void;
@@ -593,7 +595,15 @@ export class Game {
    * can legitimately arrive in the same frame.
    */
   pause(): void {
-    if (this.paused || this.phase !== 'flying') return;
+    // Countdown counts. Lock is taken during `countdown`, but every recovery path was gated on
+    // `flying`, so Esc or a focus steal in that ~3 s window was silently ignored and the run went
+    // live and timed with the mouse dead. Worse than a gap: Screens.ts ships the sentence
+    // "ESC releases it and holds the flight" and lists ESC -> Pause unconditionally, so the
+    // shipped copy was false in that window.
+    //
+    // Safe because `simulate()` is gated on `!paused` and `countdownTimer` only advances inside
+    // it — the countdown freezes behind the menu rather than expiring.
+    if (this.paused || (this.phase !== 'flying' && this.phase !== 'countdown')) return;
     this.paused = true;
     this.input.releaseLock();
     // Duck, do not suspend. Suspending freezes the context clock for the whole graph, so every
@@ -606,7 +616,7 @@ export class Game {
     if (!this.paused) return;
     this.paused = false;
     this.audio.menuMix(false);
-    if (this.phase === 'flying') this.input.requestLock();
+    if (this.phase === 'flying' || this.phase === 'countdown') this.input.requestLock();
   }
 
   get isPaused(): boolean {
@@ -982,9 +992,22 @@ export class Game {
     // A slow, wide orbit around the ship while it cruises: the title screen is a beauty shot.
     const angle = this.cinematicTime * 0.11;
     const radius = 46 + Math.sin(this.cinematicTime * 0.07) * 12;
+    // Damped in the SHIP's frame, then reconstructed in the world.
+    //
+    // This used to lerp the camera's WORLD position toward the orbit anchor. An exponential
+    // follower chasing a target moving at constant velocity settles at a permanent lag of
+    // v * tau: at the attract flight's 940 m/s with tau = 0.5 s that is 470 m, and the reviewer
+    // measured 478 m — the ship shrinks to a dot and the title screen photographs empty space.
+    // 39 of 60 sampled seconds failed the stills brightness bar, and 25 of those frames were
+    // darker than the one the round-3 art review already condemned.
+    //
+    // ChaseCamera.ts:68-75 documents this exact failure and its cure for the flight camera. The
+    // cinematic camera never got the treatment.
     this.tmpA.set(Math.sin(angle) * radius, 9 + Math.sin(this.cinematicTime * 0.13) * 4, Math.cos(angle) * radius);
-    this.tmpA.applyQuaternion(this.ship.quaternion).add(this.ship.position);
-    this.chase.camera.position.lerp(this.tmpA, 1 - Math.exp(-dt / 0.5));
+    this.cinematicOffset.lerp(this.tmpA, 1 - Math.exp(-dt / 0.5));
+    this.chase.camera.position.copy(this.cinematicOffset)
+      .applyQuaternion(this.ship.quaternion)
+      .add(this.ship.position);
     this.ship.getForward(this.tmpB);
     this.tmpC.copy(this.ship.position).addScaledVector(this.tmpB, 30);
     this.chase.camera.up.set(0, 1, 0);
@@ -1375,7 +1398,19 @@ export class Game {
   private readonly handleResize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Budget the FILL, not the device ratio.
+    //
+    // Clamping to `min(dpr, 2)` meant a 1920x1080 window on any Retina or 4K display allocated
+    // 3840x2160 — four times the pixels of every measurement ever taken for this project, in
+    // four rounds of review. Measured with EXT_disjoint_timer_query_webgl2, renderScale pinned
+    // at 0.58 in both arms so the scaler cannot explain it: 4.58 ms at dsf=1 against 13.71 ms at
+    // dsf=2, a 2.99x ratio, against 2.19x of headroom. `detectQuality()` returns `high` on the
+    // machine this was built on, so the auto-selected default there was the untested case.
+    //
+    // The browser upscales from the CSS size, which it already does at every render scale.
+    const rawDpr = window.devicePixelRatio || 1;
+    const budget = Math.sqrt(FILL_BUDGET_PIXELS / Math.max(width * height, 1));
+    const dpr = Math.max(1, Math.min(rawDpr, 2, budget));
     this.allocWidth = Math.max(320, Math.round(width * dpr));
     this.allocHeight = Math.max(240, Math.round(height * dpr));
 
@@ -1426,7 +1461,16 @@ export class Game {
 
   private readonly handleVisibility = (): void => {
     if (document.hidden) this.audio.suspend();
-    else if (!this.paused) this.audio.resume();
+    // Resume unconditionally. The `!this.paused` guard was correct when pause() itself suspended
+    // the context, but 874d6d9 replaced that with menuMix() and deleted the only other recovery
+    // path — so alt-tabbing away during a pause and coming back left the context suspended with
+    // no route out. Two reviewers filed it independently and two skeptics failed to refute it.
+    //
+    // Resuming a never-suspended context is a no-op, and menuMix(true) already holds the engine
+    // and score ducked, so this returns to a running-but-ducked graph: exactly what a pause menu
+    // needs. Fixing it inside resume() instead would leave the pause screen silent between
+    // tab-return and the RESUME click, which is the state 874d6d9 existed to fix.
+    else this.audio.resume();
   };
 
   // ---------------------------------------------------------------------------------
