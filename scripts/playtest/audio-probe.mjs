@@ -21,7 +21,7 @@
  * called the result "the boost bed", and the numbers disagreed by 10 dB with no way to tell who
  * was right. The pinned state is the fix for that class of dispute.
  *
- * Usage:  node scripts/playtest/audio-probe.mjs [--out <dir>] [--json]
+ * Usage:  node scripts/playtest/audio-probe.mjs [--out <dir>] [--json] [--require-clean]
  */
 
 import { createServer } from 'node:http';
@@ -553,12 +553,47 @@ const thirdOctaveCentres = (() => {
 
 function parseArgs(argv) {
   // Default under playtest-out/, which .gitignore already covers.
-  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-probe'), json: false };
+  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-probe'), json: false, requireClean: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') options.out = resolve(REPO_ROOT, argv[++i] ?? '.');
     else if (argv[i] === '--json') options.json = true;
+    else if (argv[i] === '--require-clean') options.requireClean = true;
   }
   return options;
+}
+
+/**
+ * What the numbers were measured at.
+ *
+ * This harness builds `src/audio/index.ts` from disk, so a green report can be true of code that
+ * is not in any commit. Recording the SHA and the dirty file list makes a stale or unattributable
+ * measurement visibly so, instead of leaving it to be quoted later as though it described a
+ * commit. `--require-clean` turns that into a hard precondition for runs producing evidence.
+ */
+async function readProvenance() {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  // `trim()` would strip the leading space of porcelain's two-column status prefix and shift the
+  // first path by one character, so status is read raw and only the trailing newline removed.
+  const git = async (args, raw = false) => {
+    try {
+      const { stdout } = await run('git', args, { cwd: REPO_ROOT });
+      return raw ? stdout.replace(/\n$/, '') : stdout.trim();
+    } catch {
+      return null;
+    }
+  };
+  const commit = await git(['rev-parse', 'HEAD']);
+  const status = await git(['status', '--porcelain'], true);
+  const dirtyFiles = status ? status.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+  return {
+    commit,
+    shortCommit: commit ? commit.slice(0, 7) : null,
+    clean: status === '',
+    dirtyFiles,
+    measuredAt: commit ? `${commit.slice(0, 7)}${status === '' ? '' : ' (DIRTY TREE)'}` : 'unknown',
+  };
 }
 
 async function buildAudioBundle(outDir) {
@@ -700,6 +735,14 @@ async function main() {
   const workDir = resolve(tmpdir(), `lv-audio-probe-${process.pid}`);
   await mkdir(options.out, { recursive: true });
 
+  const provenance = await readProvenance();
+  if (options.requireClean && !provenance.clean) {
+    console.error(
+      `Refusing to produce evidence from a dirty tree. Uncommitted:\n  ${provenance.dirtyFiles.join('\n  ')}`,
+    );
+    process.exit(2);
+  }
+
   let playwright;
   try {
     playwright = await import('playwright');
@@ -735,6 +778,7 @@ async function main() {
     const report = {
       status: failed.length === 0 && pageErrors.length === 0 ? 'PASS' : 'FAIL',
       summary: { passed: checks.length - failed.length, failed: failed.length, total: checks.length },
+      provenance,
       method: { ...METHOD, thirdOctaveCentres },
       gameplayCritical: GAMEPLAY_CRITICAL,
       checks,
@@ -749,7 +793,13 @@ async function main() {
       console.log('');
       for (const c of checks) console.log(`${c.passed ? 'PASS' : 'FAIL'}  ${c.id}  — ${c.detail}`);
       if (pageErrors.length) console.log(`\nconsole/page errors:\n  ${pageErrors.join('\n  ')}`);
-      console.log(`\n${report.status}  ${report.summary.passed}/${report.summary.total} checks`);
+      console.log(
+        `\n${report.status}  ${report.summary.passed}/${report.summary.total} checks` +
+        `  at ${provenance.measuredAt}`,
+      );
+      if (!provenance.clean) {
+        console.log(`  tree is dirty; these numbers describe no commit. Uncommitted: ${provenance.dirtyFiles.join(', ')}`);
+      }
       console.log(`report: ${resolve(options.out, 'report.json')}`);
     }
     process.exitCode = report.status === 'PASS' ? 0 : 1;
