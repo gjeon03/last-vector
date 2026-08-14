@@ -6,7 +6,10 @@ dist/
 playtest-out/
 
 # ad-hoc diagnostic probes kept out of the tree; the durable checks live in scripts/playtest
-.lv-*.mjs
+# Ad-hoc measurement probes and their output. Broadened from `.lv-*.mjs` because agents write
+# Python probes and output directories under the same prefix, and MCP debug snapshots have
+# already been swept into a commit once by a `git add -A`.
+.lv-*
 
 # Playwright MCP debug snapshots — tooling output, not project files
 .playwright-mcp/
