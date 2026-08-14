@@ -59,11 +59,15 @@ export function formatTime(seconds: number | null | undefined): string {
   return `${PAD2(m)}:${PAD2(s)}.${PAD2(cs)}`;
 }
 
-/** Signed delta, e.g. `-1.24` / `+0.08`. */
+/**
+ * Signed delta, e.g. `−1.24` / `+0.08`. The sign is taken from the *rounded* value, so a
+ * difference too small to print does not claim a direction — `−0.004` reads `±0.00`, not
+ * `−0.00`, which asserts a gain of nothing.
+ */
 export function formatDelta(seconds: number): string {
-  const sign = seconds > 0 ? '+' : seconds < 0 ? '−' : '±';
-  const a = Math.abs(seconds);
-  return `${sign}${a.toFixed(2)}`;
+  const rounded = Math.round(seconds * 100) / 100;
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '±';
+  return `${sign}${Math.abs(rounded).toFixed(2)}`;
 }
 
 /** Metres below 10 km, kilometres above. Thin space between thousands. */
@@ -239,6 +243,7 @@ export class Hud {
 
   /* text nodes cached once */
   private readonly nSector: HTMLElement;
+  private readonly nInputMode: HTMLElement;
   private readonly nFps: HTMLElement;
   private readonly nFpsFrame: HTMLElement;
   /**
@@ -315,6 +320,7 @@ export class Hud {
   private pHullState = '';
   private pGload = -1;
   private pSector = '';
+  private pLockRefused: boolean | undefined = undefined;
   private pFps = -1;
   private pGateTot = -1;
   private pGateName = '';
@@ -416,7 +422,14 @@ export class Hud {
     fpsWrap.append(el('span', 'lv-fps-k', 'FPS'));
     this.nFps = el('span', 'lv-fps-v', '--');
     fpsWrap.appendChild(this.nFps);
-    top.append(this.nSector, fpsWrap);
+    /**
+     * Shown only when the browser refused mouse capture. The game already raises a callout for
+     * it, but a callout is transient and this condition lasts the whole run: the player needs
+     * to know why the mouse is dead for as long as it is dead, not for two seconds at the start.
+     */
+    this.nInputMode = el('div', 'lv-inputmode', 'KEYBOARD FLIGHT');
+    this.nInputMode.dataset['on'] = '0';
+    top.append(this.nSector, this.nInputMode, fpsWrap);
     frame.appendChild(top);
 
     /* ---- LEFT cluster: throttle / speed / bars ---- */
@@ -641,6 +654,13 @@ export class Hud {
     if (t.destinationName !== this.pDestination) {
       this.pDestination = t.destinationName;
       this.setDestination(t.destinationName);
+    }
+    /* Optional field: absent on older telemetry and in the standalone probe, so compare
+       loosely rather than assuming it is present. */
+    const refused = t.pointerLockRefused === true;
+    if (refused !== this.pLockRefused) {
+      this.pLockRefused = refused;
+      this.nInputMode.dataset['on'] = refused ? '1' : '0';
     }
 
     if (this.showFps) {

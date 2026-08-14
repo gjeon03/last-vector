@@ -2300,7 +2300,7 @@ kbd {
   display: grid;
   /* Sized against the header labels, not the values: "MARKER" and "SEGMENT" are wider than
      the two-digit index and the seconds figure they sit above. */
-  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em 5.2em;
+  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em;
   align-items: center;
   gap: 0.9em;
   padding: 0.54em 0;
@@ -2372,10 +2372,20 @@ kbd {
   color: var(--c-ink);
 }
 
-.lv-res-row[data-fast='1'] .lv-res-seg,
-.lv-res-row[data-fast='1'] .lv-res-dlt {
+.lv-res-row[data-fast='1'] .lv-res-seg {
   color: var(--c-good);
 }
+
+/* The delta column exists only when there is a best run to compare against, so the grid gains
+   its track only then — an always-present empty column would reserve space for a comparison
+   the run cannot make. */
+.lv-res-splits[data-delta='1'] .lv-res-row {
+  grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em 5.2em;
+}
+
+.lv-res-dlt[data-tone='good'] { color: var(--c-good); }
+.lv-res-dlt[data-tone='bad'] { color: var(--c-ink-dim); }
+.lv-res-dlt[data-tone='flat'] { color: var(--c-key); }
 
 /* Pulled up: the two columns end at different heights, so the divider lands below the taller
    one and the default margin stacked on top of that gap left the buttons stranded. */
@@ -2420,4 +2430,21 @@ kbd {
   .lv-screen--title.is-in .lv-glyph {
     animation-delay: calc(var(--n) * 0.012s);
   }
+}
+
+/* Persistent marker for refused mouse capture. Sits in the top strip, warm rather than red —
+   it is a changed control scheme, not a failure the player can act on. */
+.lv-inputmode {
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.3em;
+  color: var(--c-warn);
+  text-shadow: var(--scrim);
+  padding: 0.15em 0.7em;
+  background: rgba(2, 6, 13, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.28);
+}
+
+.lv-inputmode[data-on='0'] {
+  display: none;
 }

@@ -136,7 +136,19 @@ export class Overlay {
     }
   }
 
+  /**
+   * Single funnel for interface audio. Every widget already reports through here, so the bus
+   * is driven from one place rather than sprinkled across the screens — which also means a new
+   * control cannot be added silently: it has to opt in to `onSound` to be navigable at all.
+   *
+   * `move` (keyboard selection changed) maps to `hover` (pointer selection changed) because
+   * they are the same event to the player: the highlighted thing is now a different thing.
+   */
   private emitSound(kind: UiSound): void {
+    const audio = this.host.audio;
+    if (kind === 'click') audio.click();
+    else if (kind === 'back') audio.back();
+    else audio.hover();
     this.root.dispatchEvent(
       new CustomEvent('lv-ui', { detail: kind, bubbles: true, composed: true }),
     );

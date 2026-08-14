@@ -39,6 +39,12 @@ interface ControlRow {
   readonly action: string;
   /** Also shown in the briefing primer. Flagged per row so reordering cannot silently change it. */
   readonly primer?: boolean;
+  /**
+   * Terser wording for the primer, which sits in a narrow column and has to read at a glance.
+   * The full legend keeps the longer text — that screen has the width and the reader's
+   * attention; the primer has neither.
+   */
+  readonly short?: string;
 }
 
 /**
@@ -46,7 +52,7 @@ interface ControlRow {
  * the game is actually about, so they lead the primer alongside steering and throttle.
  */
 const CONTROLS: readonly ControlRow[] = [
-  { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true },
+  { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
   { groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
   { groups: [['A', 'D']], action: 'Roll left / right', primer: true },
   { groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
@@ -363,10 +369,24 @@ export class Screens {
     if (key === 'Enter' || key === ' ') {
       if (isRange) return true;
       const node = this.navItems[this.navIndex];
-      if (node) {
-        node.click();
-        this.opts.onSound('click');
+      if (!node) return true;
+      if (node.dataset['nav'] === 'segmented') {
+        /* A radiogroup has no click behaviour of its own, so Enter used to be a dead key that
+           still played a confirm. Advance through the options instead, wrapping. */
+        const buttons = node.querySelectorAll<HTMLElement>('[data-seg]');
+        if (buttons.length > 0) {
+          let cur = 0;
+          for (let i = 0; i < buttons.length; i++) {
+            if (buttons[i]!.getAttribute('aria-checked') === 'true') cur = i;
+          }
+          buttons[(cur + 1) % buttons.length]!.click();
+        }
+        return true;
       }
+      /* No sound here: the widget's own click handler reports it. Firing one as well double-
+         struck every keyboard activation — inaudible while this was an unlistened event, a
+         real double click now that it drives the bus. */
+      node.click();
       return true;
     }
     return false;
@@ -546,7 +566,7 @@ export class Screens {
       const row = CONTROLS[i]!;
       if (!row.primer) continue;
       const li = el('li');
-      li.append(keyChips(row), el('span', '', row.action));
+      li.append(keyChips(row), el('span', '', row.short ?? row.action));
       keys.appendChild(li);
     }
     primer.appendChild(keys);
@@ -555,7 +575,7 @@ export class Screens {
 
     const actions = el('div', 'lv-actions');
     actions.append(
-      this.button('ENGAGE', 'is-primary', () => this.host.start()),
+      this.button('ENGAGE', 'is-primary', () => this.host.engage()),
       this.button('BACK', 'is-ghost', () => this.opts.onBack()),
     );
 
@@ -872,16 +892,28 @@ export class Screens {
     addStat('HULL', r.cleanRun ? 'UNTOUCHED' : 'SCARRED', r.cleanRun ? 'good' : 'warn');
     left.appendChild(stats);
 
-    /* splits, with a bar per segment so the shape of the run reads without arithmetic */
+    /*
+     * Splits, with a bar per segment so the shape of the run reads without arithmetic.
+     *
+     * The delta column compares each leg against THE SAME LEG on the best run, which is the
+     * only comparison that means anything: an earlier version compared a leg against the
+     * shortest leg of the same run, so a long leg read as lost time when it was merely long.
+     * The column is omitted entirely when there is no best to compare against, rather than
+     * printed with a placeholder — a column of dashes still implies the comparison exists.
+     */
+    const bestSplits = r.bestSplits;
+    const hasBest = bestSplits.length >= r.splits.length && r.splits.length > 0;
+
     const table = el('div', 'lv-res-splits');
+    table.dataset['delta'] = hasBest ? '1' : '0';
     const header = el('div', 'lv-res-row is-head');
     header.append(
       el('span', '', 'MARKER'),
       el('span', '', 'SEGMENT'),
       el('span', ''),
       el('span', '', 'ELAPSED'),
-      el('span', '', 'Δ BEST'),
     );
+    if (hasBest) header.append(el('span', '', 'Δ BEST'));
     table.appendChild(header);
 
     let fastest = Infinity;
@@ -907,8 +939,17 @@ export class Screens {
         el('span', 'lv-res-seg', seg.toFixed(2)),
         bar,
         el('span', 'lv-res-cum', formatTime(r.splits[i]!)),
-        el('span', 'lv-res-dlt', isFast ? 'BEST' : formatDelta(seg - fastest)),
       );
+      if (hasBest) {
+        /* Leg i on this run against leg i on the best run — like for like. */
+        const bestSeg = bestSplits[i]! - (i > 0 ? bestSplits[i - 1]! : 0);
+        const d = seg - bestSeg;
+        const dlt = el('span', 'lv-res-dlt', formatDelta(d));
+        /* Tone keys off the rounded value too, so a leg that prints ±0.00 is not coloured as
+           a gain. */
+        dlt.dataset['tone'] = Math.round(d * 100) === 0 ? 'flat' : d < 0 ? 'good' : 'bad';
+        row.appendChild(dlt);
+      }
       row.dataset['fast'] = isFast ? '1' : '0';
       table.appendChild(row);
     }
