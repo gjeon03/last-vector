@@ -10,9 +10,25 @@ import { PALETTE } from '../core/art.ts';
 
 const PLANET_VERT = /* glsl */ `
   varying vec3 vNormal;
+  /**
+   * World-space normal, for every term that meets uSunDir.
+   *
+   * The lighting used the VIEW-space normal against a WORLD-space sun, which is
+   * dot(n_world, transpose(R) * sun): the sun counter-rotates with the camera and the lit
+   * hemisphere is pinned to a fixed SCREEN direction. Measured across a 60 s lap, the disc was
+   * 35-45% too dark with contrast cut about 60%, and its luminance correlated with screen-x at
+   * r = +0.962 — the planet was lit by where you were looking rather than by the star. At one
+   * point in the lap the build renders a fully lit ring system wrapped around a solid black
+   * void with the star visible in the same frame.
+   *
+   * vNormal stays view-space on purpose: the limb fresnel and the atmosphere rim pair it with
+   * a view-space vector, and swapping those too would fix the diffuse and break both rims.
+   */
+  varying vec3 vWorldNormal;
   varying vec3 vPos;
   void main() {
     vNormal = normalize(normalMatrix * normal);
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
     vPos = position;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -51,7 +67,7 @@ const PLANET_FRAG = /* glsl */ `
     base = mix(base, vec3(0.78, 0.42, 0.30), storm * (0.55 + stormSwirl * 0.45));
 
     // Wrapped diffuse: gas giants have deep atmospheres, so the terminator is soft and warm.
-    float ndl = dot(n, uSunDir);
+    float ndl = dot(normalize(vWorldNormal), uSunDir);
     float wrap = clamp((ndl + 0.28) / 1.28, 0.0, 1.0);
     float light = pow(wrap, 1.35);
 
@@ -76,8 +92,12 @@ const PLANET_FRAG = /* glsl */ `
 const ATMO_VERT = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vView;
+  varying vec3 vWorldNormal;
   void main() {
     vNormal = normalize(normalMatrix * normal);
+    // See PLANET_VERT: the rim term below is view-space and stays that way; only the sun dot
+    // moves to world space.
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vView = normalize(-mv.xyz);
     gl_Position = projectionMatrix * mv;
@@ -96,7 +116,7 @@ const ATMO_FRAG = /* glsl */ `
   void main() {
     vec3 n = normalize(vNormal);
     float rim = pow(1.0 - max(dot(n, normalize(vView)), 0.0), uPower);
-    float ndl = dot(n, uSunDir);
+    float ndl = dot(normalize(vWorldNormal), uSunDir);
     // Only the lit limb glows, and the brightest band sits just inside the terminator.
     float lit = smoothstep(-0.22, 0.55, ndl);
     float grazing = smoothstep(-0.05, 0.45, ndl) * (1.0 - smoothstep(0.6, 1.0, ndl) * 0.45);
@@ -200,7 +220,9 @@ export class Planet {
         varying vec3 vWorldPos;
         void main() {
           vUv = uv;
-          vNormal = normalize(normalMatrix * normal);
+          // World space outright: the sun dot at the bottom of the fragment shader is this
+          // varying's only consumer, so there is no view-space term to preserve here.
+          vNormal = normalize(mat3(modelMatrix) * normal);
           vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
