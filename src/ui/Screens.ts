@@ -913,6 +913,29 @@ export class Screens {
     const bestSplits = r.bestSplits;
     const hasBest = bestSplits.length >= r.splits.length && r.splits.length > 0;
 
+    /*
+     * `splits` holds cairn crossing times and stops at the last cairn, but the clock stops at
+     * the terminus plane 6800 m further on. Without a row for that run-in the ELAPSED column's
+     * last value is not TOTAL and the table cannot account for the run — a reviewer measured
+     * 6.06 s, 9.8% of a run, sitting unattributed beside a headline that included it. Worse,
+     * a run lost on the approach showed nine near-zero deltas: the only diagnostic in the game
+     * reporting nothing wrong about the leg where everything went wrong.
+     *
+     * The figure is exact rather than derived-and-fragile: `totalTime` and `splits` are the
+     * same clock on the same run, so this is plain subtraction with nothing sampled.
+     */
+    const lastSplit = r.splits.length > 0 ? r.splits[r.splits.length - 1]! : 0;
+    const runIn = r.totalTime - lastSplit;
+    /*
+     * The run-in delta needs the two runs to have cleared the same number of cairns. Leg i is
+     * leg i on a fixed course whatever happened afterwards, but "the run-in" spans a different
+     * distance if one run started it from cairn 9 and the other from cairn 2.
+     */
+    const bestLast = bestSplits.length > 0 ? bestSplits[bestSplits.length - 1]! : 0;
+    const hasRunInBest =
+      hasBest && r.bestTime != null && bestSplits.length === r.splits.length;
+    const bestRunIn = hasRunInBest ? r.bestTime! - bestLast : 0;
+
     const table = el('div', 'lv-res-splits');
     table.dataset['delta'] = hasBest ? '1' : '0';
     const header = el('div', 'lv-res-row is-head');
@@ -925,6 +948,8 @@ export class Screens {
     if (hasBest) header.append(el('span', '', 'Δ BEST'));
     table.appendChild(header);
 
+    /* The run-in is a leg like any other for scaling purposes — leaving it out of `slowest`
+       would let its bar overflow the track, since it is the third-longest leg on the course. */
     let fastest = Infinity;
     let slowest = 0;
     for (let i = 0; i < r.splits.length; i++) {
@@ -932,11 +957,19 @@ export class Screens {
       if (seg < fastest) fastest = seg;
       if (seg > slowest) slowest = seg;
     }
-    for (let i = 0; i < r.splits.length; i++) {
-      const seg = r.splits[i]! - (i > 0 ? r.splits[i - 1]! : 0);
+    if (runIn > slowest) slowest = runIn;
+    if (runIn < fastest) fastest = runIn;
+    /** One table row. Shared so the run-in cannot drift from the cairn legs. */
+    const addRow = (
+      n: number,
+      label: string,
+      seg: number,
+      cumulative: number,
+      delta: number | null,
+      terminus = false,
+    ): void => {
       const row = el('div', 'lv-res-row');
-      row.style.setProperty('--n', String(i));
-      const isFast = seg <= fastest + 1e-6;
+      row.style.setProperty('--n', String(n));
       const bar = el('span', 'lv-res-barwrap');
       const fill = el('i', 'lv-res-bar');
       /* Normalised against the slowest segment, floored so the quickest is still a visible
@@ -944,24 +977,45 @@ export class Screens {
       fill.style.setProperty('--w', (slowest > 0 ? 0.08 + 0.92 * (seg / slowest) : 1).toFixed(3));
       bar.appendChild(fill);
       row.append(
-        el('span', 'lv-res-idx', (i + 1 < 10 ? '0' : '') + (i + 1)),
+        el('span', 'lv-res-idx', label),
         el('span', 'lv-res-seg', seg.toFixed(2)),
         bar,
-        el('span', 'lv-res-cum', formatTime(r.splits[i]!)),
+        el('span', 'lv-res-cum', formatTime(cumulative)),
       );
       if (hasBest) {
-        /* Leg i on this run against leg i on the best run — like for like. */
-        const bestSeg = bestSplits[i]! - (i > 0 ? bestSplits[i - 1]! : 0);
-        const d = seg - bestSeg;
-        const dlt = el('span', 'lv-res-dlt', formatDelta(d));
-        /* Tone keys off the rounded value too, so a leg that prints ±0.00 is not coloured as
-           a gain. */
-        dlt.dataset['tone'] = Math.round(d * 100) === 0 ? 'flat' : d < 0 ? 'good' : 'bad';
+        /* An empty cell rather than a skipped one: the grid has the track either way, and a
+           blank reads as "not comparable" where a dash reads as a measured zero. */
+        const dlt = el('span', 'lv-res-dlt', delta === null ? '' : formatDelta(delta));
+        if (delta !== null) {
+          /* Tone keys off the rounded value too, so a leg that prints ±0.00 is not coloured as
+             a gain. */
+          dlt.dataset['tone'] =
+            Math.round(delta * 100) === 0 ? 'flat' : delta < 0 ? 'good' : 'bad';
+        }
         row.appendChild(dlt);
       }
-      row.dataset['fast'] = isFast ? '1' : '0';
+      row.dataset['fast'] = seg <= fastest + 1e-6 ? '1' : '0';
+      if (terminus) row.dataset['term'] = '1';
       table.appendChild(row);
+    };
+
+    for (let i = 0; i < r.splits.length; i++) {
+      const seg = r.splits[i]! - (i > 0 ? r.splits[i - 1]! : 0);
+      /* Leg i on this run against leg i on the best run — like for like. */
+      const delta = hasBest ? seg - (bestSplits[i]! - (i > 0 ? bestSplits[i - 1]! : 0)) : null;
+      addRow(i, (i + 1 < 10 ? '0' : '') + (i + 1), seg, r.splits[i]!, delta);
     }
+
+    /* The run-in to the terminus. Its ELAPSED is TOTAL, which is what makes the column
+       reconcile with the headline instead of falling short of it. */
+    addRow(
+      r.splits.length,
+      'TERMINUS',
+      runIn,
+      r.totalTime,
+      hasRunInBest ? runIn - bestRunIn : null,
+      true,
+    );
 
     const right = el('div', 'lv-res-right');
     right.appendChild(table);
