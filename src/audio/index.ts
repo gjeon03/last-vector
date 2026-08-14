@@ -17,6 +17,9 @@ export type { SfxKitOptions } from './sfx.ts';
 export { MusicBed } from './music.ts';
 export type { MusicBedOptions } from './music.ts';
 
+export { createUiAudio, SILENT_UI_AUDIO } from './uiAudio.ts';
+export type { UiAudioBus } from './uiAudio.ts';
+
 export {
   clamp,
   clamp01,

@@ -63,6 +63,29 @@ interface NoiseSpec {
   dest?: AudioNode;
 }
 
+/**
+ * Minimum seconds between retriggers of the same event.
+ *
+ * Some cues are driven by continuous world state rather than by discrete moments: a graze along a
+ * rock sets `overlap > 0` on every frame, so the collision loop calls `scrape` at the frame rate,
+ * once per contact. Sixty overlapping voices a second is both a wall of noise and several hundred
+ * live nodes, and the audio layer cannot assume any particular caller cadence — so it defends
+ * itself here rather than relying on every call site to remember.
+ *
+ * The floors are set just under the shortest interval at which two triggers are still perceived
+ * as separate events, so nothing a player could actually distinguish is ever dropped. Cues the
+ * game fires from genuine one-off transitions are absent from this table and are never throttled.
+ */
+const RETRIGGER_FLOOR: Partial<Record<SfxEvent, number>> = {
+  /** Continuous contact: enough overlap to read as one sustained texture, not a swarm. */
+  scrape: 0.09,
+  /** Two strikes 35 ms apart are one strike to the ear, and stacking them only clips. */
+  impact: 0.035,
+  gateNear: 0.05,
+  warnProximity: 0.12,
+  uiHover: 0.03,
+};
+
 /** Inharmonic partial ratios of a struck metal ring — the backbone of every gate sound. */
 const METAL_RATIOS = [1, 1.487, 2.031, 2.756, 3.923, 5.412];
 /** Tubular-bell ratios: fewer, sweeter partials for the finish chord's top layer. */
@@ -77,6 +100,8 @@ export class SfxKit {
   private readonly spark: AudioBuffer;
   private readonly rng: () => number;
   private readonly grit: Float32Array<ArrayBuffer>;
+  /** Scheduled time of the last accepted trigger per event, for the retrigger floors above. */
+  private readonly lastTriggered = new Map<SfxEvent, number>();
 
   constructor(options: SfxKitOptions) {
     this.ctx = options.ctx;
@@ -94,6 +119,12 @@ export class SfxKit {
    * `when` lets the caller schedule ahead of the audio clock.
    */
   play(event: SfxEvent, intensity: number, when: number): void {
+    const floor = RETRIGGER_FLOOR[event];
+    if (floor !== undefined) {
+      const last = this.lastTriggered.get(event);
+      if (last !== undefined && when - last < floor) return;
+      this.lastTriggered.set(event, when);
+    }
     const i = clamp01(intensity);
     switch (event) {
       case 'gatePass':
@@ -310,26 +341,41 @@ export class SfxKit {
    * the canopy, which reads as the interval tightening even at a constant repeat rate.
    */
   private gateNear(intensity: number, when: number): void {
-    const v = this.begin(when, 0.45, 0.18);
-    const freq = 1180 + intensity * 1250;
-    // Amplitude is deliberately flat across intensity. The game already raises the repeat rate
-    // from ~3 Hz to 8.3 Hz as the gate closes; letting loudness climb on top of that is what
-    // turns a proximity cue into a smoke alarm. Rate and pitch carry the urgency, level does not.
+    const v = this.begin(when, 1.05, 0.14);
+    // Placement is measured, not chosen by ear. At the pinned boost bed the drive's turbine and
+    // ion layers own everything above ~1.5 kHz, and the bed rises about 8 dB between the 630 Hz
+    // and 800 Hz third-octave bands. So the fundamental stays inside the 630 Hz band at every
+    // intensity: it climbs about three semitones for the "closing" cue but never leaves the one
+    // window where the tick can win. An earlier version swept 1180 -> 2430 Hz as the gate closed,
+    // walking the cue into the loudest part of the drive exactly as it became urgent (measured
+    // SNR fell from -10 dB to -27 dB), and the version before that never cleared the bed at all.
+    const freq = 570 + intensity * 110;
+    // Energy is held roughly flat across intensity rather than level: the decay shortens to keep
+    // the tick tightening, and the peak rises just enough to pay for the energy that costs. The
+    // urgency is carried by the game's 3 -> 8.3 Hz repeat rate, the pitch and the shortening —
+    // never by loudness, which at 8 Hz is how a proximity cue becomes a smoke alarm.
+    // Longer and lower rather than shorter and spikier: the same energy — and so the same
+    // audibility — at ~1.5 dB less peak, which matters for the sound the player hears more often
+    // than any other. Even at the closest range the decay stays well inside the 120 ms floor of
+    // the game's repeat interval, so the ticks remain discrete rather than fusing into a tone.
     this.tone(v, {
       type: 'sine',
       freq,
-      peak: 0.36 - intensity * 0.04,
+      peak: 0.44 + intensity * 0.05,
       attack: 0.001,
-      decay: 0.075 - intensity * 0.045,
+      decay: 0.1 - intensity * 0.025,
     });
+    // Character only. These give it a tick's edge rather than a woodblock's thud; neither
+    // carries the audibility, so both stay quiet and neither grows with intensity.
+    this.tone(v, { type: 'sine', freq: freq * 2.51, peak: 0.1, attack: 0.001, decay: 0.028 });
     this.noise(v, {
       colour: 'spark',
       filter: 'bandpass',
-      freq: freq * 1.6,
-      q: 7,
-      peak: 0.2 - intensity * 0.03,
+      freq: 3400,
+      q: 6,
+      peak: 0.1,
       attack: 0.001,
-      decay: 0.045,
+      decay: 0.02,
     });
     this.finishVoice(v);
   }
@@ -617,7 +663,7 @@ export class SfxKit {
    * `intensity` = contact pressure.
    */
   private scrape(intensity: number, when: number): void {
-    const v = this.begin(when, 0.56, 0.24);
+    const v = this.begin(when, 0.8, 0.24);
     const dur = 0.34 + intensity * 0.42;
 
     const src = this.ctx.createBufferSource();
@@ -625,8 +671,11 @@ export class SfxKit {
     src.loop = true;
     const bp = this.ctx.createBiquadFilter();
     bp.type = 'bandpass';
-    bp.frequency.value = 1500 + intensity * 900;
-    bp.Q.value = 11;
+    // Centred in the 500-900 Hz window the drive leaves open rather than up at 1.5-2.4 kHz,
+    // where the turbine buried it: contact against the hull has to be heard at full throttle,
+    // which is the only time the player is close enough to anything to scrape it.
+    bp.frequency.value = 620 + intensity * 320;
+    bp.Q.value = 9;
     const shaper = this.ctx.createWaveShaper();
     shaper.curve = this.grit;
     const gain = this.ctx.createGain();
@@ -643,7 +692,9 @@ export class SfxKit {
     ratLp.type = 'lowpass';
     ratLp.frequency.value = 42;
     const ratDepth = this.ctx.createGain();
-    ratDepth.gain.value = 1500 + intensity * 1200;
+    // Swing scaled to the new, lower centre: the old +/-1.5-2.7 kHz sweep would throw the peak
+    // clean out of the open window on every excursion and clamp at zero on the way down.
+    ratDepth.gain.value = 360 + intensity * 260;
     rat.connect(ratLp);
     ratLp.connect(ratDepth);
     ratDepth.connect(bp.frequency);
