@@ -346,6 +346,13 @@ export class Game {
     // --- input, ui, audio -------------------------------------------------------------
     this.input = new Input(this.canvas);
     this.input.onLockChange = (locked) => this.overlay.setPointerLocked(locked);
+    this.input.onLockError = (reason) => {
+      // Surfaced, not swallowed: a mouse that does nothing with no explanation is worse than
+      // no mouse flight at all, and the player needs to be told the keyboard still flies.
+      this.errors.push(`pointer lock: ${reason}`);
+      this.pushCallout('MOUSE CAPTURE UNAVAILABLE', 'W A S D / ARROWS STILL FLY', 'bad', 4.5);
+      this.pushLog('mouse capture refused · keyboard flight active', 'bad');
+    };
     this.input.onAction = (action) => {
       if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
     };

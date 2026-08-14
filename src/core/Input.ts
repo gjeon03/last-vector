@@ -62,6 +62,18 @@ export class Input {
   private disposed = false;
 
   onLockChange: ((locked: boolean) => void) | null = null;
+  /**
+   * Mouse capture was refused, with the reason if the browser gave one.
+   *
+   * The rejection used to be swallowed on the grounds that pointer lock "is never
+   * load-bearing". That is true of the ship — keyboard and gamepad fly it — and false of the
+   * player, who is left holding a mouse that does nothing with no indication why. It is also
+   * how mouse flight went unexercised: four of eight reviewers could not judge the primary
+   * control scheme because a silent failure looks exactly like a working one from outside.
+   */
+  onLockError: ((reason: string) => void) | null = null;
+  /** Set once capture has been refused, so the interface can offer keyboard flight instead. */
+  lockRefused = false;
   onAction: ((action: 'restart' | 'view' | 'match') => void) | null = null;
 
   constructor(canvas: HTMLElement) {
@@ -70,6 +82,7 @@ export class Input {
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('blur', this.handleBlur);
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
+    document.addEventListener('pointerlockerror', this.handlePointerLockError);
     document.addEventListener('mousemove', this.handleMouseMove);
     document.addEventListener('mousedown', this.handleMouseButton);
     document.addEventListener('mouseup', this.handleMouseButton);
@@ -83,15 +96,35 @@ export class Input {
 
   requestLock(): void {
     if (this.locked || this.disposed) return;
-    // Pointer lock rejects in sandboxed frames and in headless drivers. It is never
-    // load-bearing — keyboard and gamepad still fly the ship — so the failure is swallowed.
+    if (!this.canvas.requestPointerLock) {
+      this.reportLockError('this browser does not support mouse capture');
+      return;
+    }
+    // Rejects in sandboxed frames, in headless drivers, when the document is not focused, and
+    // when the browser applies its post-exit cooldown. Reported rather than swallowed.
     try {
-      const result = this.canvas.requestPointerLock?.() as unknown;
-      if (result instanceof Promise) result.catch(() => undefined);
-    } catch {
-      /* pointer lock unavailable */
+      const result = this.canvas.requestPointerLock() as unknown;
+      if (result instanceof Promise) {
+        result.then(
+          () => { this.lockRefused = false; },
+          (err: unknown) => this.reportLockError(err instanceof Error ? err.message : 'mouse capture was refused'),
+        );
+      }
+    } catch (err) {
+      this.reportLockError(err instanceof Error ? err.message : 'mouse capture was refused');
     }
   }
+
+  private reportLockError(reason: string): void {
+    if (this.disposed) return;
+    this.lockRefused = true;
+    this.onLockError?.(reason);
+  }
+
+  private readonly handlePointerLockError = (): void => {
+    // Older browsers signal failure only through this event; the promise form is newer.
+    this.reportLockError('mouse capture was refused by the browser');
+  };
 
   releaseLock(): void {
     if (!this.locked) return;
@@ -201,6 +234,7 @@ export class Input {
     window.removeEventListener('keyup', this.handleKeyUp);
     window.removeEventListener('blur', this.handleBlur);
     document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
+    document.removeEventListener('pointerlockerror', this.handlePointerLockError);
     document.removeEventListener('mousemove', this.handleMouseMove);
     document.removeEventListener('mousedown', this.handleMouseButton);
     document.removeEventListener('mouseup', this.handleMouseButton);
@@ -246,6 +280,7 @@ export class Input {
     const locked = document.pointerLockElement === this.canvas;
     if (locked === this.locked) return;
     this.locked = locked;
+    if (locked) this.lockRefused = false;
     if (!locked) {
       this.mouseDx = 0;
       this.mouseDy = 0;

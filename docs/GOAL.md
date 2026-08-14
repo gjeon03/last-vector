@@ -57,19 +57,42 @@ Concretely, the build is only "excellent" when all of these hold:
 Recorded honestly, because an unstated gap reads as coverage.
 
 - **Nobody has heard the audio.** Every audio claim rests on offline `OfflineAudioContext`
-  renders measured in headless Chromium: per-event band energy, RMS, and an "audibility
-  increment" over the engine bed. That proves each cue exists, is placed in a band the drive
-  leaves open, and clears the detection threshold. It does not establish that anything *sounds*
-  good. A single human listening to one boost lockout and one gate approach is worth more than
-  every measurement in the report.
+  renders, now via a committed harness (`scripts/playtest/audio-probe.mjs`) that reports per-band
+  SNR against both the cruise and the boost bed, BS.1770-4 momentary loudness and true peak, with
+  the exact `EngineAudioState` of each bed pinned in its output. It does not establish that
+  anything *sounds* good — a single human listening to one boost lockout and one gate approach is
+  worth more than every measurement in the report.
+
+  An earlier version of this document claimed every cue "clears the detection threshold". **That
+  was false.** Independent re-measurement found `gateNear` at −15.6 dB against the cruise bed and
+  −23.2 dB against the boost bed, and the committed harness then found the mechanism: the cue's
+  own escalation raised its pitch from 1180 to 2430 Hz as the gate approached, walking it into the
+  band the turbine owns, so it grew *less* audible as it grew more urgent. Now measured at +7.5 dB
+  (intensity 0.2) and +5.4 dB (intensity 1.0) against the boost bed. `scrape` was also failing at
+  −0.6 dB and is now +2.5 dB. The claim is replaced by a stated margin under a stated metric
+  (200 ms integration window; the full-span figures are 8–12 dB lower and are also reported).
 - **Peak levels in the audio tables carry roughly ±3 dB of harness noise** for click-heavy
   events. The limiter's 4× oversampling resamples a 1 ms transient differently depending on its
   phase within the render quantum, so a pure time shift moved a reported peak by 2.95 dB. RMS,
   band-energy and increment figures are averages and are unaffected; the conclusions rest on
   those.
-- **Pointer-locked mouse flight is inferred, not felt.** Pointer lock is unavailable in the
-  headless driver, so the virtual-stick behaviour is reasoned from `src/core/Input.ts`. Keyboard
-  and harness axes are measured.
+- **Pointer-locked mouse flight has never been exercised, in any driver.** This is the largest
+  evidence gap in the project: four of eight reviewers on the expert panel could not judge the
+  primary control scheme.
+
+  The failure is environmental, and that is established rather than assumed. `requestPointerLock`
+  is refused in Playwright Chromium both headless and headed, with the browser's own reason —
+  "The root document of this element is not valid for pointer lock." A control experiment calling
+  `document.body.requestPointerLock()` directly from a trusted click on the same page fails
+  identically, so the refusal is not caused by anything in `src/core/Input.ts`. The Chrome
+  extension driver cannot reach the local static server in this environment either.
+
+  What HAS changed: the refusal is no longer swallowed. `Input` listens for `pointerlockerror`,
+  reports the promise rejection, exposes `lockRefused`, and the game raises a player-facing
+  callout that the keyboard still flies. Previously a browser that refused capture was
+  indistinguishable from one that granted it — which is precisely why this went unnoticed.
+
+  Closing this needs a human with a mouse. Nothing else will do it.
 - **No gamepad has been connected.** The code path is read-only verified.
 - **The results, pause and settings screens have only synthetic-background evidence.** The
   in-flight HUD was re-verified against the real renderer; those three were not.
