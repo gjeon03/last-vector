@@ -308,16 +308,16 @@ function revolveShell(meridian: ShellStation[], segments: number): THREE.BufferG
  * object of this size behaves, and it gives the eye two independent depth cues.
  */
 const TERMINUS_FRONT: ShellStation[] = [
-  { r: 520, z: -650, lobe: 0 }, //  funnel mouth lip, the closest point to the pilot
-  { r: 596, z: -600, lobe: 0 }, //  mouth chamfer
-  { r: 646, z: -432, lobe: 0.15 }, //  collar wall     73 deg off face-on
-  { r: 722, z: -402, lobe: 0.25 }, //  terrace 1 deck
-  { r: 794, z: -236, lobe: 0.45 }, //  riser 1         67 deg
-  { r: 932, z: -212, lobe: 0.6 }, //   terrace 2 deck
-  { r: 1004, z: -74, lobe: 0.8 }, //   riser 2         62 deg
-  { r: 1132, z: -54, lobe: 0.92 }, //  terrace 3 deck
-  { r: 1200, z: 34, lobe: 1 }, //      riser 3         52 deg
-  { r: 1274, z: 60, lobe: 1 }, //      outer lip
+  { r: 520, z: -880, lobe: 0 }, //  funnel mouth lip, the closest point to the pilot
+  { r: 596, z: -820, lobe: 0 }, //  mouth chamfer
+  { r: 660, z: -590, lobe: 0.15 }, //  collar wall     75 deg off face-on
+  { r: 722, z: -556, lobe: 0.25 }, //  terrace 1 deck
+  { r: 794, z: -330, lobe: 0.45 }, //  riser 1         72 deg
+  { r: 932, z: -300, lobe: 0.6 }, //   terrace 2 deck
+  { r: 1004, z: -110, lobe: 0.8 }, //  riser 2         69 deg
+  { r: 1132, z: -84, lobe: 0.92 }, //  terrace 3 deck
+  { r: 1200, z: 34, lobe: 1 }, //      riser 3         60 deg
+  { r: 1274, z: 62, lobe: 1 }, //      outer lip
 ];
 
 const TERMINUS_BACK: ShellStation[] = [
@@ -329,8 +329,8 @@ const TERMINUS_BACK: ShellStation[] = [
   { r: 434, z: 302, lobe: 0 }, //      rear bore lip
   { r: 400, z: 250, lobe: 0 },
   { r: 400, z: -84, lobe: 0 }, //      throat: the narrowest part of the hole
-  { r: 446, z: -424, lobe: 0 }, //     funnel wall, opening toward the pilot
-  { r: 520, z: -650, lobe: 0 }, //     closes on the first station
+  { r: 440, z: -560, lobe: 0 }, //     funnel wall, opening toward the pilot
+  { r: 520, z: -880, lobe: 0 }, //     closes on the first station
 ];
 
 /** The rear deck, radius-ascending, for anything that has to sit on the underside. */
