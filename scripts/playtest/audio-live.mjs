@@ -181,6 +181,58 @@ async function readProvenance() {
   };
 }
 
+/**
+ * The game phase needs a real build, and it must not be an old one.
+ *
+ * An earlier version reused any existing `dist/` unconditionally. A `dist/` built before
+ * `audioState()` was added to the harness therefore served a game whose `window.__LV` lacked the
+ * method this phase waits for, and the suite reported a 45 s timeout — which reads as the game
+ * failing to boot, sends you looking in `Game.ts` and `main.ts`, and is none of those things. It
+ * is the stale-artefact failure the project's own measurement notes warn about, in the harness
+ * that is supposed to catch that class.
+ *
+ * So: rebuild whenever anything under `src/` is newer than the build, and say which path was taken.
+ */
+async function ensureDist() {
+  const { stat, readdir } = await import('node:fs/promises');
+  const dist = resolve(REPO_ROOT, 'dist');
+  const rebuild = async (reason) => {
+    const { build } = await import('vite');
+    await build({ root: REPO_ROOT, logLevel: 'silent' });
+    return { dist, built: true, reason };
+  };
+
+  let builtAt;
+  try {
+    builtAt = (await stat(resolve(dist, 'index.html'))).mtimeMs;
+  } catch {
+    return rebuild('no dist/index.html');
+  }
+
+  let newestSource = 0;
+  let newestPath = null;
+  const roots = ['src', 'index.html', 'vite.config.ts', 'package.json'];
+  for (const rel of roots) {
+    const abs = resolve(REPO_ROOT, rel);
+    try {
+      const info = await stat(abs);
+      if (info.isDirectory()) {
+        for (const entry of await readdir(abs, { recursive: true })) {
+          const file = resolve(abs, entry);
+          const st = await stat(file).catch(() => null);
+          if (st?.isFile() && st.mtimeMs > newestSource) { newestSource = st.mtimeMs; newestPath = `${rel}/${entry}`; }
+        }
+      } else if (info.mtimeMs > newestSource) {
+        newestSource = info.mtimeMs;
+        newestPath = rel;
+      }
+    } catch { /* a missing optional root is not an error */ }
+  }
+
+  if (newestSource > builtAt) return rebuild(`${newestPath} is newer than dist/index.html`);
+  return { dist, built: false, reason: 'dist is newer than every source file' };
+}
+
 async function buildAudioBundle(outDir) {
   const { build } = await import('vite');
   await build({
@@ -197,14 +249,217 @@ async function buildAudioBundle(outDir) {
   });
 }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+};
 
-async function serveDir(dir) {
+/**
+ * Phase two: the same questions asked of the real game rather than of the audio layer alone.
+ *
+ * The defect this exists for lived in `Game.ts` wiring, not in the mix — a guard that refused to
+ * resume the context while paused, so alt-tabbing away during a pause left the game silent with no
+ * route back. Nothing that constructs `AudioEngine` directly can see that, which is why this phase
+ * drives the built game through `window.__LV`.
+ */
+async function runGamePhase(playwright, distDir) {
+  const checks = [];
+  const add = (id, passed, detail, severity = 'fail') => checks.push({ id, passed, detail, severity });
+  const served = await serveDir(distDir);
+  // The GPU flags match scripts/playtest/runtime.mjs. Without them three.js cannot get a WebGL
+  // context on macOS, the game never boots, and `window.__LV` never appears — which presents as a
+  // timeout waiting for the harness rather than as anything to do with audio.
+  const browser = await playwright.chromium.launch({
+    args: [
+      '--autoplay-policy=no-user-gesture-required',
+      ...(process.platform === 'darwin'
+        ? ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+        : []),
+    ],
+  });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  try {
+    await page.goto(`${served.origin}/`, { waitUntil: 'load' });
+    // Distinguish "the game never booted" from "the game booted but this build is too old", which
+    // otherwise present identically as a timeout on the line below.
+    const booted = await page
+      .waitForFunction(() => Boolean(window.__LV), null, { timeout: 45000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!booted) {
+      add('GAME.harness-present', false,
+        `window.__LV never appeared within 45 s. Served from ${distDir}. ` +
+        (errors.length ? `page errors: ${errors.slice(0, 3).join(' ; ')}` : 'no page errors — suspect the static server, not the game'));
+      return checks;
+    }
+    const hasAudioState = await page.evaluate(() => typeof window.__LV?.audioState === 'function');
+    if (!hasAudioState) {
+      add('GAME.harness-present', false,
+        'window.__LV exists but has no audioState(). The served build predates that method: this is a ' +
+        'stale dist, not a broken game. Delete dist/ or touch a source file and re-run.');
+      return checks;
+    }
+    add('GAME.harness-present', true, 'window.__LV.audioState() is available in the served build');
+    await page.evaluate(() => window.__LV.ready());
+
+    // unlock() is wired to the first pointerdown/keydown on the window, so this is the gesture.
+    await page.mouse.click(400, 400);
+    await page.waitForTimeout(600);
+
+    let st = await page.evaluate(() => window.__LV.audioState());
+    add('GAME.audio-running', st !== null && st.contextState === 'running',
+      st === null ? 'audioState() returned null; the context was never created' : `ctx.state = ${st.contextState} after a click`);
+
+    await page.evaluate(() => window.__LV.startRun({ skipIntro: true }));
+    await page.waitForTimeout(700);
+
+    // Pause with a real ESC keypress, not `__LV.setPaused`. The harness setter assigns the flag
+    // and nothing else; `pause()` is what releases pointer lock and applies the menu mix, so a
+    // test that pauses through the harness is asserting against a state no player ever sees.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(900);
+
+    st = await page.evaluate(() => window.__LV.audioState());
+    add('GAME.paused-duck', st !== null && st.menuEngineFloor < 1 && Math.abs(st.engineDuck - st.menuEngineFloor) <= TOL,
+      st === null ? 'no audio state' : `while paused via ESC: engineDuck ${st.engineDuck.toFixed(3)}, menuEngineFloor ${st.menuEngineFloor} ` +
+        `(the drive must be sitting on the menu floor, not at unity)`);
+
+    // `pauseMenu()` is the sanctioned harness route to the player's pause. When it exists, use it:
+    // it is the same code path as ESC without the keyboard-focus fragility, and the property worth
+    // asserting becomes "the sanctioned route reaches the state a player reaches".
+    //
+    // `setPaused` deliberately does less — it freezes simulation for the stills suite and must not
+    // open the menu, release the pointer or duck the drive. That is by design ONCE a sanctioned
+    // route exists. Until then it is the only pause a headless check can reach, and a path that
+    // silently does less than the real one is how a defect hides from every automated run, so it
+    // is reported as a warning in that case and not in the other.
+    const hasPauseMenu = await page.evaluate(() => typeof window.__LV?.pauseMenu === 'function');
+    if (hasPauseMenu) {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+      await page.evaluate(() => window.__LV.pauseMenu(true));
+      await page.waitForTimeout(900);
+      const viaMenu = await page.evaluate(() => window.__LV.audioState());
+      add(
+        'GAME.pauseMenu-matches-real-pause',
+        viaMenu !== null && viaMenu.menuEngineFloor < 1 && Math.abs(viaMenu.engineDuck - viaMenu.menuEngineFloor) <= TOL,
+        `pauseMenu(true): engineDuck ${viaMenu?.engineDuck?.toFixed(3) ?? 'n/a'}, menuEngineFloor ` +
+          `${viaMenu?.menuEngineFloor ?? 'n/a'} — the sanctioned harness route must reach the same ` +
+          `mix state as a real ESC, which it is compared against directly above`,
+      );
+      await page.evaluate(() => window.__LV.pauseMenu(false));
+      await page.waitForTimeout(300);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+    } else {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+      await page.evaluate(() => window.__LV.setPaused(true));
+      await page.waitForTimeout(900);
+      const viaSetter = await page.evaluate(() => window.__LV.audioState());
+    // Reported as a warning rather than a hard failure: the defect is real and in Game.ts, but it
+    // is not an audio defect, and turning the audio gate red for it would leave the whole suite
+    // blocked on a fix nobody had agreed to own. It stays loudly in the output and in
+    // report.json so it cannot decay into an unstated gap. Flip `'warn'` to `'fail'` once
+    // Game.setPaused routes through pause()/resume().
+    add('GAME.setPaused-matches-real-pause', viaSetter !== null && viaSetter.menuEngineFloor < 1,
+      `__LV.setPaused(true) leaves menuEngineFloor ${viaSetter?.menuEngineFloor ?? 'n/a'} where ESC leaves it below 1. ` +
+      `Game.setPaused assigns the flag without calling pause(), so it skips menuMix and releaseLock — ` +
+      `any headless check that pauses this way tests a state the player cannot reach`,
+        'warn');
+      await page.evaluate(() => window.__LV.setPaused(false));
+      await page.waitForTimeout(300);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+    }
+
+    // The round trip. A real tab switch is preferred; a synthesised visibilitychange is the
+    // fallback, and which one ran is reported, because they are not equally strong evidence.
+    const other = await context.newPage();
+    await other.goto('about:blank');
+    await other.bringToFront();
+    await page.waitForTimeout(400);
+    const reallyHidden = await page.evaluate(() => document.hidden);
+    if (!reallyHidden) {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    }
+    await page.waitForTimeout(700);
+    const hiddenState = await page.evaluate(() => window.__LV.audioState());
+
+    await page.bringToFront();
+    if (!reallyHidden) {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    }
+    await other.close();
+    await page.waitForTimeout(900);
+
+    st = await page.evaluate(() => window.__LV.audioState());
+    const method = reallyHidden ? 'real tab switch' : 'synthesised visibilitychange';
+    add('GAME.visibility-roundtrip-while-paused', st !== null && st.contextState === 'running',
+      `hidden -> ${hiddenState?.contextState ?? 'n/a'}, shown -> ${st?.contextState ?? 'n/a'} while paused, via ${method} ` +
+      `(must return to running; this is the alt-tab-during-pause path that left the game silent)`);
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(900);
+    st = await page.evaluate(() => window.__LV.audioState());
+    add('GAME.unpause-restores', st !== null && st.contextState === 'running' && st.engineDuck > 0.5,
+      st === null ? 'no audio state' : `after unpause: ctx ${st.contextState}, engineDuck ${st.engineDuck.toFixed(3)} (drive must come back up)`);
+
+    add('GAME.no-page-errors', errors.length === 0, errors.length ? errors.join(' | ') : 'no uncaught page errors');
+  } catch (error) {
+    add(
+      'GAME.phase-completed',
+      false,
+      `game phase threw: ${error instanceof Error ? error.message : String(error)}` +
+        (errors.length ? ` | page errors: ${errors.slice(0, 3).join(' ; ')}` : ' | no page errors captured'),
+    );
+  } finally {
+    await browser.close().catch(() => {});
+    await new Promise((done) => served.server.close(done));
+  }
+  return checks;
+}
+
+/**
+ * `stubHtml` is served at `/` for the audio-layer phase, which only needs a blank page to import a
+ * module into. The game phase passes null so `/` resolves to the real dist/index.html — serving the
+ * stub there loads an empty document, and the symptom is a timeout waiting for `window.__LV` that
+ * looks like a browser or WebGL problem and is neither.
+ */
+async function serveDir(dir, stubHtml = null) {
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
-    if (path === '/' || path === '/index.html') {
+    if (stubHtml && (path === '/' || path === '/index.html')) {
       res.writeHead(200, { 'content-type': MIME['.html'] });
-      res.end('<!doctype html><meta charset="utf-8"><title>audio-live</title><body></body>');
+      res.end(stubHtml);
+      return;
+    }
+    if (path === '/') {
+      try {
+        const body = await readFile(resolve(dir, 'index.html'));
+        res.writeHead(200, { 'content-type': MIME['.html'] });
+        res.end(body);
+      } catch {
+        res.writeHead(404).end('not found');
+      }
       return;
     }
     try {
@@ -242,7 +497,7 @@ async function main() {
   let browser = null;
   try {
     await buildAudioBundle(workDir);
-    const served = await serveDir(workDir);
+    const served = await serveDir(workDir, '<!doctype html><meta charset="utf-8"><title>audio-live</title><body></body>');
     server = served.server;
     // Without this the context starts suspended and every assertion below would be measuring the
     // autoplay policy rather than the mix.
@@ -259,28 +514,57 @@ async function main() {
       tol: TOL,
     });
 
-    const failed = result.checks.filter((c) => !c.passed);
+    // Phase two: the same questions asked of the real game.
+    let gameChecks = [];
+    let distInfo = null;
+    try {
+      distInfo = await ensureDist();
+      gameChecks = await runGamePhase(playwright, distInfo.dist);
+    } catch (error) {
+      gameChecks = [{
+        id: 'GAME.phase-available',
+        passed: false,
+        detail: `could not run the game phase: ${error instanceof Error ? error.message : String(error)}`,
+      }];
+    }
+    result.checks.push(...gameChecks);
+
+    const failed = result.checks.filter((c) => !c.passed && c.severity !== 'warn');
+    const warned = result.checks.filter((c) => !c.passed && c.severity === 'warn');
     const report = {
       status: failed.length === 0 && pageErrors.length === 0 ? 'PASS' : 'FAIL',
-      summary: { passed: result.checks.length - failed.length, failed: failed.length, total: result.checks.length },
+      summary: {
+        passed: result.checks.length - failed.length - warned.length,
+        failed: failed.length,
+        warned: warned.length,
+        total: result.checks.length,
+      },
+      warnings: warned.map((c) => ({ id: c.id, detail: c.detail })),
       provenance,
       constants: result.constants,
       checks: result.checks,
       pageErrors,
+      distBuiltByThisRun: distInfo?.built ?? null,
+      distDecision: distInfo?.reason ?? null,
       notCovered: [
-        'Game-level visibility wiring: that ctx.state is running after the tab is hidden and shown '
-        + 'while paused. This suite constructs AudioEngine directly and cannot see Game.ts wiring; '
-        + 'asserting it needs window.__LV to expose the audio bus.',
+        'Whether any of it sounds good. Every check here is a state assertion; none is perceptual.',
       ],
     };
     await writeFile(resolve(options.out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
 
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else {
-      for (const c of result.checks) console.log(`${c.passed ? 'PASS' : 'FAIL'}  ${c.id}  — ${c.detail}`);
+      for (const c of result.checks) {
+        const tag = c.passed ? 'PASS' : c.severity === 'warn' ? 'WARN' : 'FAIL';
+        console.log(`${tag}  ${c.id}  — ${c.detail}`);
+      }
       if (pageErrors.length) console.log(`\nconsole/page errors:\n  ${pageErrors.join('\n  ')}`);
       console.log(`\nNOT COVERED: ${report.notCovered[0]}`);
-      console.log(`\n${report.status}  ${report.summary.passed}/${report.summary.total} checks  at ${provenance.measuredAt}`);
+      console.log(
+        `\n${report.status}  ${report.summary.passed}/${report.summary.total} checks` +
+        (report.summary.warned ? `, ${report.summary.warned} warning(s) — see warnings[] in report.json` : '') +
+        `  at ${provenance.measuredAt}`,
+      );
       console.log(`report: ${resolve(options.out, 'report.json')}`);
     }
     process.exitCode = report.status === 'PASS' ? 0 : 1;
