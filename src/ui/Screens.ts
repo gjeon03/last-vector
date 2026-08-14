@@ -23,11 +23,20 @@ export type ScreenView =
 
 export type UiSound = 'hover' | 'click' | 'back' | 'move';
 
-/** Original pre-run fiction. Short: the visuals carry the mood. */
+/**
+ * Original pre-run fiction. Short: the visuals carry the mood.
+ *
+ * The closing line names the brake as the answer to a specific problem rather than listing it
+ * as a key. It previously read "do not slow for anything that is not a marker", written when
+ * the corridor was a 320 m debris-free tube — advice that told the player the one verb they
+ * most need is the one thing not to use, and which the course now punishes at 145 m clearance.
+ * It is also kept the shortest of the three: a closing beat that runs longer than the lines
+ * setting it up stops landing.
+ */
 const BRIEF_LINES: readonly string[] = [
   'ACHRA is going out. Every hour it sheds another kilometre of shelf ice and tumbling iron across the only corridor anything hull-sized can still survive.',
   'The cairns answer a hail — nine of them, set by hands that stopped setting things a long time ago. They are the line.',
-  'Fly them in order. Do not trust the quiet between them, and do not slow for anything that is not a marker.',
+  'Fly them in order. The line between two markers is not empty — on the tight legs the rock comes in close, and only the brake buys you room.',
 ];
 
 interface ControlRow {
