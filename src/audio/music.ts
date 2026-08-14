@@ -74,6 +74,8 @@ export class MusicBed {
   private readonly ledger: NodeLedger;
   private readonly rng: () => number;
 
+  /** Trim on the reverb-send path, ducked in step with `musicDuck`. See the constructor. */
+  readonly sendTrim: GainNode;
   private readonly padGate: GainNode;
   private readonly subGate: GainNode;
   private readonly subEnv: GainNode;
@@ -96,11 +98,24 @@ export class MusicBed {
     this.rng = rng;
 
     const keep = <T extends AudioNode>(node: T): T => ledger.keep(node);
+    // Every layer's reverb send passes through this before reaching the shared bus.
+    //
+    // The sends tap each layer gate directly, which is upstream of `musicBus` — so they bypass
+    // `musicVolume` and `musicDuck` entirely. Measured consequence: ducking `musicDuck` by 5.2 dB
+    // moved the score's contribution to the menu bed by 0.2 dB, because only ~6.5% of its power in
+    // that band was travelling the dry path. Every music duck in the mix — gate hits, the finish
+    // chord, the menu trim — was ducking a twentieth of the score and leaving its reverb at full
+    // level. This node is what makes those ducks reach the wet path too; per-layer send amounts
+    // stay intact behind it.
+    this.sendTrim = ledger.keep(ctx.createGain());
+    this.sendTrim.gain.value = 1;
+    this.sendTrim.connect(send);
+
     const wet = (source: AudioNode, amount: number): void => {
       const g = keep(ctx.createGain());
       g.gain.value = amount;
       source.connect(g);
-      g.connect(send);
+      g.connect(this.sendTrim);
     };
 
     // --- pad ---------------------------------------------------------------------------

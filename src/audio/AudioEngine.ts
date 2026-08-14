@@ -76,6 +76,7 @@ export const UI_DUCK_DEPTH = 0.28;
 export const MENU_DUCK_DEPTH = 0.12;
 export const MENU_MUSIC_DEPTH = 0.55;
 
+
 /** Events loud enough that the pad should step out of their way for a moment. */
 const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
   'gatePass',
@@ -348,8 +349,12 @@ export class AudioEngine implements AudioBus {
     // state change did not, so whichever was scheduled later won regardless of which was meant to.
     g.engineDuck.gain.cancelScheduledValues(now);
     g.musicDuck.gain.cancelScheduledValues(now);
+    g.music.sendTrim.gain.cancelScheduledValues(now);
     rampTo(g.engineDuck.gain, this.menuEngineFloor, 0.12, now);
     rampTo(g.musicDuck.gain, this.menuMusicFloor, 0.12, now);
+    // The score's reverb send bypasses `musicDuck`, so trimming only that node ducks the dry pad
+    // and leaves its tail — which is most of what is audible — untouched.
+    rampTo(g.music.sendTrim.gain, this.menuMusicFloor, 0.12, now);
   }
 
   suspend(): void {
@@ -408,6 +413,7 @@ export class AudioEngine implements AudioBus {
     contextState: string;
     engineDuck: number;
     musicDuck: number;
+    musicSendTrim: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
   } | null {
@@ -417,6 +423,7 @@ export class AudioEngine implements AudioBus {
       contextState: g.ctx.state,
       engineDuck: g.engineDuck.gain.value,
       musicDuck: g.musicDuck.gain.value,
+      musicSendTrim: g.music.sendTrim.gain.value,
       menuEngineFloor: this.menuEngineFloor,
       menuMusicFloor: this.menuMusicFloor,
     };
@@ -456,6 +463,7 @@ export class AudioEngine implements AudioBus {
       graph.musicVolume.gain.value = this.musicVolume;
       graph.engineDuck.gain.value = this.menuEngineFloor;
       graph.musicDuck.gain.value = this.menuMusicFloor;
+      graph.music.sendTrim.gain.value = this.menuMusicFloor;
 
       this.graph = graph;
       this.startTicker();
@@ -503,9 +511,11 @@ export class AudioEngine implements AudioBus {
   private duck(when: number, depth: number): void {
     const g = this.graph;
     if (!g) return;
-    const param = g.musicDuck.gain;
-    param.cancelScheduledValues(when);
-    param.setTargetAtTime(Math.min(depth, this.menuMusicFloor), when, 0.02);
-    param.setTargetAtTime(this.menuMusicFloor, when + 0.22, 0.42);
+    const target = Math.min(depth, this.menuMusicFloor);
+    for (const param of [g.musicDuck.gain, g.music.sendTrim.gain]) {
+      param.cancelScheduledValues(when);
+      param.setTargetAtTime(target, when, 0.02);
+      param.setTargetAtTime(this.menuMusicFloor, when + 0.22, 0.42);
+    }
   }
 }
