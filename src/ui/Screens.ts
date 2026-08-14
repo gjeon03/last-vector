@@ -357,6 +357,17 @@ export class Screens {
     const active = document.activeElement as HTMLElement | null;
     const isRange = active instanceof HTMLInputElement && active.type === 'range';
 
+    /*
+     * Trust the document, not the bookkeeping. `navIndex` only advanced when this class moved
+     * focus, so anything else that focused a control — a click, assistive technology, a test
+     * harness — left the index stale and the next Tab appeared to do nothing because it
+     * "moved" to where focus already was. Derive it from what is actually focused instead.
+     */
+    if (active) {
+      const actual = this.navItems.indexOf(active);
+      if (actual >= 0) this.navIndex = actual;
+    }
+
     if (key === 'ArrowDown' || key === 's' || key === 'S' || (key === 'Tab' && !ev.shiftKey)) {
       this.focusNav(this.navIndex + 1);
       return true;

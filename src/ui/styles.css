@@ -72,15 +72,11 @@
   cursor: pointer;
 }
 
-.lv-root h1,
-.lv-root h2,
-.lv-root h3,
-.lv-root p,
-.lv-root dl,
-.lv-root dd,
-.lv-root dt,
-.lv-root ul,
-.lv-root li {
+/* :where() contributes zero specificity, so this baseline is (0,1,0) and any authored class
+   rule below it wins on source order instead of being silently defeated. As a plain element
+   list it was (0,1,1) and beat every class — .lv-splitfeed's authored top margin computed to
+   0 px, and .lv-keys had the same defect unnoticed. */
+.lv-root :where(h1, h2, h3, p, dl, dd, dt, ul, li) {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -657,6 +653,17 @@
 
 /* --- callout --- */
 
+/*
+ * All three scrims below use `closest-side` with the final stop at 100%, which puts the
+ * zero-alpha boundary exactly on the nearest box edge. That is the only construction that
+ * cannot clip: any explicit size or the `farthest-corner` default leaves the 0 stop outside
+ * the border box, so the paint truncates along a straight line at whatever alpha it had
+ * reached — 0.29 for the callout's top and bottom edges, which is a visible dark band.
+ *
+ * `closest-side` only behaves for a centred gradient, so the two off-centre scrims were
+ * re-centred and their boxes widened instead. Sizing the gradient off-centre and hoping the
+ * box contains it is what produced the defect.
+ */
 .lv-callout {
   --f: 1;
   top: 24%;
@@ -666,17 +673,18 @@
   flex-direction: column;
   align-items: center;
   gap: 0.32em;
-  padding: 1.5em 3.4em;
+  padding: 2.4em 3.6em;
   text-align: center;
   opacity: 0;
   pointer-events: none;
   white-space: nowrap;
   /* Its own scrim: a callout lands centre-upper, which is where a lit gate or the star ends
      up during an approach, and thin 200-weight letterforms lose that fight on shadow alone.
-     The ellipse is kept inside the padding box — at 140% height it overran the box and got
-     clipped, which read as a faint rectangle on darker backgrounds. */
+     An earlier note here claimed 92% height had fixed the clipping. It had not — 92% is still
+     greater than 50%, so the 0 stop stayed outside the box and the top and bottom edges
+     truncated at alpha 0.29. Reducing the overrun is not the same as removing it. */
   background: radial-gradient(
-    ellipse 58% 92% at 50% 50%,
+    ellipse closest-side at 50% 50%,
     rgba(2, 6, 13, 0.74),
     rgba(2, 6, 13, 0.26) 58%,
     rgba(2, 6, 13, 0) 100%
@@ -740,12 +748,12 @@
 .lv-feed::before {
   content: '';
   position: absolute;
-  inset: -14% -30% -18% -34%;
+  inset: -34% -40% -34% -44%;
   background: radial-gradient(
-    ellipse at 22% 60%,
-    rgba(2, 6, 13, 0.68),
-    rgba(2, 6, 13, 0.28) 52%,
-    rgba(2, 6, 13, 0) 80%
+    ellipse closest-side at 50% 50%,
+    rgba(2, 6, 13, 0.72),
+    rgba(2, 6, 13, 0.3) 52%,
+    rgba(2, 6, 13, 0) 100%
   );
   z-index: -1;
 }
@@ -1182,12 +1190,12 @@
 .lv-title::before {
   content: '';
   position: absolute;
-  inset: -14% -30% -14% -34%;
+  inset: -26% -34% -26% -38%;
   background: radial-gradient(
-    ellipse at 26% 50%,
-    rgba(2, 5, 11, 0.88),
-    rgba(2, 5, 11, 0.52) 46%,
-    rgba(2, 5, 11, 0) 80%
+    ellipse closest-side at 50% 50%,
+    rgba(2, 5, 11, 0.9),
+    rgba(2, 5, 11, 0.56) 46%,
+    rgba(2, 5, 11, 0) 100%
   );
   z-index: -1;
 }

@@ -271,7 +271,18 @@ export class Overlay {
     if (this.disposed) return;
     const target = ev.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
-      if (ev.key !== 'Escape' && ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+      /* Tab is allowed through so the interface moves focus itself. Input.ts unconditionally
+         preventDefaults Tab on a window listener — correct in flight — so relying on the
+         browser's native focus move would leave the five range widgets as keyboard traps.
+         Left/Right still fall through to the range, which owns them. */
+      if (
+        ev.key !== 'Escape' &&
+        ev.key !== 'ArrowUp' &&
+        ev.key !== 'ArrowDown' &&
+        ev.key !== 'Tab'
+      ) {
+        return;
+      }
     }
 
     if (ev.key === 'Escape') {

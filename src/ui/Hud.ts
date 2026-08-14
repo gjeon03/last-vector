@@ -922,7 +922,10 @@ export class Hud {
         node.append(
           el('span', 'lv-splitfeed-i', PAD2(i + 1)),
           el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!)),
-          el('span', 'lv-splitfeed-d', `+${seg.toFixed(2)}`),
+          /* Unsigned. This is a leg duration, which cannot be negative, so a leading "+"
+             reads as a delta and tells a player they are down time they may in fact be up.
+             The results table prints the identical quantity unsigned; these must agree. */
+          el('span', 'lv-splitfeed-d', seg.toFixed(2)),
         );
         this.nSplitFeed.appendChild(node);
         retrigger(node, 'is-in');
