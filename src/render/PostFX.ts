@@ -20,18 +20,92 @@ import { SSAO_BLUR_FRAG, SSAO_FRAG, SSAO_PROFILES, createSsaoUniforms } from './
 const BLOOM_MIPS = 5;
 
 /**
- * Blits the rendered sub-rectangle up to the full canvas. Only used when the dynamic scale is
- * below 1: at native the composite writes to the drawing buffer directly and this pass costs
- * nothing because it never runs.
+ * Present: anti-aliasing, then grain, then the blit to the canvas.
+ *
+ * The renderer had no anti-aliasing of any kind — the context is created without it and no
+ * target carried samples, so every hard edge in a scene made almost entirely of hard-edged
+ * hulls and rocks against a near-black void was a raw staircase.
+ *
+ * This is a separate pass because FXAA has to see the FINAL display-referred image: it works on
+ * perceptual luma, so it has to run after the tonemap and the grade. Grain and dither moved here
+ * with it and now run AFTER the edge blend — as part of the composite they were high-frequency
+ * noise on exactly the luma signal FXAA uses to find edges, which both softens real edges and
+ * invents false ones.
  */
-const UPSCALE_FRAG = /* glsl */ `
+const PRESENT_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform vec2 uSrcScale;
   uniform vec2 uSrcMax;
+  uniform vec2 uTexel;
+  uniform float uGrain;
+  uniform float uTime;
+  uniform float uEdgeThreshold;
   varying vec2 vUv;
+
+  vec2 srcUv(vec2 uv) { return min(uv * uSrcScale, uSrcMax); }
+  float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+  float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+  }
+
   void main() {
-    gl_FragColor = vec4(texture2D(tDiffuse, min(vUv * uSrcScale, uSrcMax)).rgb, 1.0);
+    vec3 rgbM = texture2D(tDiffuse, srcUv(vUv)).rgb;
+    float lM = luma(rgbM);
+
+    // Cross-neighbourhood contrast. Below the threshold the pixel is left exactly alone, so
+    // flat regions — most of a starfield — pay four taps and are never touched.
+    float lN = luma(texture2D(tDiffuse, srcUv(vUv + vec2(0.0, -uTexel.y))).rgb);
+    float lS = luma(texture2D(tDiffuse, srcUv(vUv + vec2(0.0,  uTexel.y))).rgb);
+    float lW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x, 0.0))).rgb);
+    float lE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x, 0.0))).rgb);
+
+    float lMin = min(lM, min(min(lN, lS), min(lW, lE)));
+    float lMax = max(lM, max(max(lN, lS), max(lW, lE)));
+    float range = lMax - lMin;
+
+    vec3 color = rgbM;
+    if (range >= max(0.028, lMax * uEdgeThreshold)) {
+      float lNW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x, -uTexel.y))).rgb);
+      float lNE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x, -uTexel.y))).rgb);
+      float lSW = luma(texture2D(tDiffuse, srcUv(vUv + vec2(-uTexel.x,  uTexel.y))).rgb);
+      float lSE = luma(texture2D(tDiffuse, srcUv(vUv + vec2( uTexel.x,  uTexel.y))).rgb);
+
+      // Edge direction from the luma gradient, normalised so the step never exceeds 8 px.
+      vec2 dir = vec2(
+        -((lNW + lNE) - (lSW + lSE)),
+         ((lNW + lSW) - (lNE + lSE))
+      );
+      float reduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+      float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+      dir = clamp(dir * rcpMin, -8.0, 8.0) * uTexel;
+
+      vec3 rgbA = 0.5 * (
+        texture2D(tDiffuse, srcUv(vUv + dir * (1.0 / 3.0 - 0.5))).rgb +
+        texture2D(tDiffuse, srcUv(vUv + dir * (2.0 / 3.0 - 0.5))).rgb
+      );
+      vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture2D(tDiffuse, srcUv(vUv + dir * -0.5)).rgb +
+        texture2D(tDiffuse, srcUv(vUv + dir *  0.5)).rgb
+      );
+
+      // The wide blend is only trusted while it stays inside the local luma range; outside it
+      // the narrow blend is used, which is what keeps FXAA from bleeding across a silhouette.
+      float lB = luma(rgbB);
+      color = (lB < lMin || lB > lMax) ? rgbA : rgbB;
+    }
+
+    if (uGrain > 0.0001) {
+      float n = hash12(gl_FragCoord.xy + fract(uTime) * 733.7);
+      color += (n - 0.5) * uGrain * (1.2 - lM * 0.8);
+    }
+    // Ordered-ish dither kills banding in the huge smooth nebula gradients.
+    color += (hash12(gl_FragCoord.xy * 1.7 + 11.3) - 0.5) / 255.0;
+
+    gl_FragColor = vec4(color, 1.0);
   }
 `;
 
@@ -259,7 +333,6 @@ const COMPOSITE_FRAG = /* glsl */ `
 
   uniform float uAberration;
   uniform float uVignette;
-  uniform float uGrain;
   uniform float uDamage;
   uniform float uFade;
   uniform float uWarp;
@@ -396,17 +469,9 @@ const COMPOSITE_FRAG = /* glsl */ `
     color = clamp(color, 0.0, 1.0);
     color = pow(color, vec3(0.4545454545));
 
-    if (uGrain > 0.0001) {
-      float n = hash12(gl_FragCoord.xy + fract(uTime) * 733.7);
-      color += (n - 0.5) * uGrain * (1.2 - luma * 0.8);
-    }
-
+    // Grain and dither moved to the present pass, so they are applied after the edge blend
+    // instead of being fed into its luma edge detector.
     color *= uFade;
-
-    // Ordered-ish dither kills banding in the huge smooth nebula gradients.
-    float d = hash12(gl_FragCoord.xy * 1.7 + 11.3) - 0.5;
-    color += d / 255.0;
-
     gl_FragColor = vec4(color, 1.0);
   }
 `;
@@ -476,7 +541,7 @@ export class PostFX {
   private readonly ssaoBlurMat: THREE.ShaderMaterial;
   private ssaoSamples = 12;
   private readonly compositeMat: THREE.ShaderMaterial;
-  private readonly upscaleMat: THREE.ShaderMaterial;
+  private readonly presentMat: THREE.ShaderMaterial;
   private readonly presentTarget: THREE.WebGLRenderTarget;
 
   private profile: QualityProfile;
@@ -566,10 +631,14 @@ export class PostFX {
     register(this.aoBlurTarget, 2);
     register(this.presentTarget, 1);
 
-    this.upscaleMat = makePassMaterial(UPSCALE_FRAG, {
+    this.presentMat = makePassMaterial(PRESENT_FRAG, {
       tDiffuse: { value: this.presentTarget.texture },
       uSrcScale: { value: new THREE.Vector2(1, 1) },
       uSrcMax: { value: new THREE.Vector2(1, 1) },
+      uTexel: { value: new THREE.Vector2() },
+      uGrain: { value: 0.035 },
+      uTime: { value: 0 },
+      uEdgeThreshold: { value: 0.125 },
     });
 
     this.prefilterMat = makePassMaterial(PREFILTER_FRAG, {
@@ -659,7 +728,6 @@ export class PostFX {
       uBlurSamples: { value: profile.motionBlurSamples },
       uAberration: { value: 0 },
       uVignette: { value: 0.85 },
-      uGrain: { value: 0.035 },
       uDamage: { value: 0 },
       uFade: { value: 1 },
       uWarp: { value: 0 },
@@ -728,7 +796,8 @@ export class PostFX {
     const bloom0 = this.sized[1];
     const rays = this.sized[1 + BLOOM_MIPS];
     const ao = this.sized[2 + BLOOM_MIPS];
-    applyScale(this.upscaleMat, this.sized[4 + BLOOM_MIPS]);
+    applyScale(this.presentMat, this.sized[4 + BLOOM_MIPS]);
+    this.presentMat.uniforms.uTexel.value.set(1 / this.width, 1 / this.height);
 
     applyScale(this.prefilterMat, scene);
     applyScale(this.godrayMat, scene);
@@ -748,7 +817,7 @@ export class PostFX {
   /** Applies the settings the player controls without disturbing the frame-level grade. */
   setFeatureFlags(flags: { motionBlur: boolean; grain: boolean; chromaticAberration: boolean }): void {
     this.compositeMat.uniforms.uBlurSamples.value = flags.motionBlur ? this.profile.motionBlurSamples : 0;
-    this.compositeMat.uniforms.uGrain.value = flags.grain ? 0.035 : 0;
+    this.presentMat.uniforms.uGrain.value = flags.grain ? 0.035 : 0;
     this.compositeMat.userData.allowAberration = flags.chromaticAberration;
   }
 
@@ -806,12 +875,9 @@ export class PostFX {
     // the sub-rectangle of an 8-bit target and one bilinear blit scales it up, so the expensive
     // pass in the chain — an 8-tap blur with a per-channel offset — runs at the reduced size
     // too. Rendering it at native would have given back most of what the scaler saves.
-    if (this.width >= this.allocWidth) {
-      this.quad.render(renderer, this.compositeMat, null);
-    } else {
-      this.quad.render(renderer, this.compositeMat, this.presentTarget);
-      this.quad.render(renderer, this.upscaleMat, null);
-    }
+    this.presentMat.uniforms.uTime.value = grade.time;
+    this.quad.render(renderer, this.compositeMat, this.presentTarget);
+    this.quad.render(renderer, this.presentMat, null);
     renderer.autoClear = prevAutoClear;
   }
 
@@ -858,7 +924,7 @@ export class PostFX {
 
   dispose(): void {
     this.presentTarget.dispose();
-    this.upscaleMat.dispose();
+    this.presentMat.dispose();
     this.sceneTarget.dispose();
     this.sceneTarget.depthTexture?.dispose();
     for (const t of this.bloomTargets) t.dispose();
