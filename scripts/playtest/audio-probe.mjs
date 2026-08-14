@@ -358,7 +358,13 @@ async function measureInPage(config) {
   }
 
   /** Steady-state bed at a pinned EngineAudioState. `withMusic` false isolates the drive. */
-  async function renderBed(state, withMusic, engineDuck = 1, musicDuck = 1) {
+  /**
+   * `musicSendDuck` defaults to `musicDuck` because both paths should always move together. It is
+   * separable only so the report can quantify what ducking the send path is worth: rendering the
+   * same bed with the dry path ducked alone reproduces the behaviour the mix had before
+   * `MusicBed.sendTrim` existed.
+   */
+  async function renderBed(state, withMusic, engineDuck = 1, musicDuck = 1, musicSendDuck = musicDuck) {
     const seconds = method.bedSettleSeconds + method.bedWindowSeconds + 0.2;
     const ctx = new OfflineAudioContext(2, Math.round(seconds * SR), SR);
     const g = newGraph(ctx);
@@ -367,7 +373,7 @@ async function measureInPage(config) {
     g.engineDuck.gain.value = engineDuck;
     // Both nodes, because the score reaches the mix by two paths and one of them bypasses the bus.
     g.musicDuck.gain.value = musicDuck;
-    g.music.sendTrim.gain.value = musicDuck;
+    g.music.sendTrim.gain.value = musicSendDuck;
     g.engine.start(0);
     // MusicBed's reverb sends tap each layer gate BEFORE musicBus, so zeroing that gain mutes only
     // the dry path and leaves a pad tail in a row labelled "engine only". The idle bed was
@@ -448,6 +454,27 @@ async function measureInPage(config) {
     engineDuckDepth: mod.UI_DUCK_DEPTH,
     engineOnly: await renderBed(beds.menu, false, mod.UI_DUCK_DEPTH),
     withMusic: await renderBed(beds.menu, true, mod.UI_DUCK_DEPTH),
+  };
+
+  // The pause menu, which nobody had measured: the drive and score both held at their menu floors
+  // over whatever the player was last flying. Pinned to the `full` bed underneath because pausing
+  // at speed is the loud case and therefore the conservative one.
+  bedResults.menuPaused = {
+    state: beds.full,
+    derivedFrom: 'full',
+    engineDuckDepth: mod.MENU_DUCK_DEPTH,
+    musicDuckDepth: mod.MENU_MUSIC_DEPTH,
+    engineOnly: await renderBed(beds.full, false, mod.MENU_DUCK_DEPTH),
+    withMusic: await renderBed(beds.full, true, mod.MENU_DUCK_DEPTH, mod.MENU_MUSIC_DEPTH),
+  };
+  // Same bed with the score's reverb send left at full level: what the menu trim actually did
+  // before the send path became duckable. The difference is what the fix is worth, rendered
+  // rather than inferred from the bypass fraction.
+  const menuPausedDryDuckOnly = await renderBed(beds.full, true, mod.MENU_DUCK_DEPTH, mod.MENU_MUSIC_DEPTH, 1);
+  bedResults.menuPaused.musicDuckEffect = {
+    lufsWithSendDucked: bedResults.menuPaused.withMusic.lufsShortTerm,
+    lufsWithSendAtFullLevel: menuPausedDryDuckOnly.lufsShortTerm,
+    gainedDb: round(menuPausedDryDuckOnly.lufsShortTerm - bedResults.menuPaused.withMusic.lufsShortTerm, 2),
   };
 
   const eventResults = [];
