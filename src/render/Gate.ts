@@ -59,7 +59,7 @@ const MONOLITH_FRAG = /* glsl */ `
     vec3 grad = (r1 * dFdx(grain) + r2 * dFdy(grain)) / max(abs(det), 1e-6) * sign(det);
     N = normalize(N - grad * 0.35);
 
-    vec3 albedo = uStone * (0.7 + grain * 0.34);
+    vec3 albedo = uStone * (0.82 + grain * 0.4);
     float roughness = clamp(0.62 + grain * 0.2, 0.2, 0.95);
     vec3 color = shadeSurface(N, V, albedo, roughness, 0.05, 0.85);
 
@@ -136,10 +136,10 @@ const FIELD_FRAG = /* glsl */ `
     density *= mix(0.18, 1.0, pow(facing, 0.6));
 
     vec3 col = mix(uColor, uHot, ripple * 0.6 + rim * 0.4);
-    col *= density * (0.35 + uCharge * 2.4);
-    col += uHot * uFlash * (rim * 3.0 + body * 6.0);
+    col *= density * (0.3 + uCharge * 1.45);
+    col += uHot * uFlash * (rim * 2.2 + body * 4.0);
 
-    float alpha = clamp(density * (0.3 + uCharge * 0.9) + uFlash * 0.7, 0.0, 1.0);
+    float alpha = clamp(density * (0.28 + uCharge * 0.72) + uFlash * 0.6, 0.0, 1.0);
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -222,7 +222,10 @@ export class Gate {
     this.monolithMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uStone: { value: new THREE.Color(0x6e6a63) },
+        // The cairn is stone that someone put a light in, and it was reading as a light with
+        // some black shapes near it: the aperture blew out while the monoliths sat one value
+        // step above the void. Raised so the stone holds its own against its own beacon.
+        uStone: { value: new THREE.Color(0x8d887e) },
         uGlyph: { value: new THREE.Color(PALETTE.gateArmed) },
         uCharge: { value: 0 },
         uTime: { value: 0 },
@@ -267,7 +270,13 @@ export class Gate {
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
-    const field = new THREE.Mesh(new THREE.CircleGeometry(options.radius * 0.99, 96), this.fieldMat);
+    // The disc must run PAST the ring's inner edge and let the ring cover the join. At 0.99R
+    // against a torus whose inner edge sits at 0.988R the overlap was 0.002R, and a 96-gon
+    // inscribed in that circle pulls its edge midpoints in further still — which left a one to
+    // two pixel dark hairline right around every aperture, on the one silhouette in the game
+    // that has to read cleanly from four kilometres. Segment count matched to the ring so the
+    // two polygons agree where they meet.
+    const field = new THREE.Mesh(new THREE.CircleGeometry(options.radius * 1.006, 160), this.fieldMat);
     field.renderOrder = 5;
     this.object.add(field);
 
@@ -310,7 +319,7 @@ export class Gate {
           // A light pulse chases around the ring when armed: unmistakable directionality.
           float chase = smoothstep(0.55, 1.0, sin(vUv.x * 6.2831 * 2.0 - uTime * 1.9) * 0.5 + 0.5);
           float a = core * (0.18 + uCharge * 0.45 + chase * uCharge * 0.7 + uFlash * 1.2);
-          gl_FragColor = vec4(uColor * (0.4 + uCharge * 1.3 + uFlash * 3.2) * ranged, a * ranged);
+          gl_FragColor = vec4(uColor * (0.36 + uCharge * 0.85 + uFlash * 2.1) * ranged, a * ranged);
         }
       `,
       transparent: true,
