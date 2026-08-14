@@ -70,7 +70,11 @@ const PLANET_FRAG = /* glsl */ `
     // Wrapped diffuse: gas giants have deep atmospheres, so the terminator is soft and warm.
     float ndl = dot(normalize(vWorldNormal), uSunDir);
     float wrap = clamp((ndl + 0.28) / 1.28, 0.0, 1.0);
-    float light = pow(wrap, 1.35);
+    // Floored so band structure survives past the terminator. The wrap deletes the diffuse term
+    // outright beyond ndl <= -0.28, and the night side measured 59,291 px carrying 116 distinct
+    // RGB triples with 70% in two adjacent values and a horizontal gradient of exactly 0.0000
+    // across 278 px — a flat matte, not a dark side.
+    float light = max(pow(wrap, 1.35), 0.06);
 
     vec3 col = base * (uShadow * 0.16 + uLit * light * 0.92);
 

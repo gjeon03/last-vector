@@ -107,7 +107,10 @@ export function detectQuality(): QualityLevel {
 
 function sanitise(raw: Partial<Settings>): Settings {
   const s: Settings = { ...DEFAULT_SETTINGS, ...raw };
-  s.renderScale = clamp(s.renderScale, 0.5, 1.5);
+  // 0.58 is the adaptive controller's own floor. A stored 0.5 is a value the game can never
+  // actually run at, and the perf gate's failure threshold sat above it too — so the only lever
+  // left on a dense display landed below the project's declared failure line.
+  s.renderScale = clamp(s.renderScale, 0.58, 1);
   s.masterVolume = clamp01(s.masterVolume);
   s.musicVolume = clamp01(s.musicVolume);
   s.mouseSensitivity = clamp(s.mouseSensitivity, 0.2, 3);

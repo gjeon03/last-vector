@@ -121,9 +121,6 @@ const PRESENT_FRAG = /* glsl */ `
       float n = hash12(gl_FragCoord.xy + fract(uTime) * 733.7);
       color += (n - 0.5) * uGrain * (1.2 - lM * 0.8);
     }
-    // Ordered-ish dither kills banding in the huge smooth nebula gradients.
-    color += (hash12(gl_FragCoord.xy * 1.7 + 11.3) - 0.5) / 255.0;
-
     gl_FragColor = vec4(color, 1.0);
   }
 `;
@@ -421,7 +418,11 @@ const COMPOSITE_FRAG = /* glsl */ `
     // of the far value and a threshold cannot separate them.
     float rawDepth = texture2D(tSceneDepth, srcUv(uv)).r;
     float viewZ = uNear / max(1.0 - rawDepth, 1e-7);
-    float travelMask = smoothstep(26000.0, 5000.0, viewZ);
+    // Far falloff: an object at infinity has no screen-space velocity from translation.
+    // Near falloff: neither does the player's own ship, which is rigidly attached to the camera
+    // and was being smeared by its own motion — the far scene was already excluded and the ship
+    // never was.
+    float travelMask = smoothstep(26000.0, 5000.0, viewZ) * smoothstep(60.0, 140.0, viewZ);
     float strength = uBlurStrength * travelMask;
 
     if (strength > 0.0005 && uBlurSamples > 1) {
@@ -495,6 +496,10 @@ const COMPOSITE_FRAG = /* glsl */ `
     // Grain and dither moved to the present pass, so they are applied after the edge blend
     // instead of being fed into its luma edge detector.
     color *= uFade;
+    // Ordered-ish dither kills banding in the huge smooth nebula gradients. It belongs HERE,
+    // ahead of the 8-bit write into the present target — downstream of that write the banding
+    // has already been quantised in and a dither can only add noise on top of it.
+    color += (hash12(gl_FragCoord.xy * 1.7 + 11.3) - 0.5) / 255.0;
     gl_FragColor = vec4(color, 1.0);
   }
 `;

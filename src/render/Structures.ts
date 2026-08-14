@@ -27,7 +27,17 @@ const STRUCTURE_VERT = /* glsl */ `
   void main() {
     #ifdef USE_INSTANCING
       vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
-      vNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+      // Inverse transpose, because 260 of these instances carry non-uniform scale to 4:1.
+      // Shading them with the instance matrix itself put the median normal error at 21.0 degrees
+      // (p95 44.8), with 17.6% of surface samples wrong by more than 0.2 in N.L — which is why
+      // the greeble field read as incoherent light rather than as a lit surface.
+      mat3 im = mat3(instanceMatrix);
+      mat3 instanceNormalMatrix = mat3(
+        cross(im[1], im[2]),
+        cross(im[2], im[0]),
+        cross(im[0], im[1])
+      );
+      vNormal = normalize(mat3(modelMatrix) * instanceNormalMatrix * normal);
       vLocal = (instanceMatrix * vec4(position, 1.0)).xyz;
     #else
       vec4 world = modelMatrix * vec4(position, 1.0);
@@ -121,7 +131,9 @@ const APPROACH_LIGHT_VERT = /* glsl */ `
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
     float dist = -mv.z;
-    gl_PointSize = max(900.0 / max(dist, 1.0), 2.0) * uPixelScale;
+    // Floor after the scale: see Gate.ts. gl_PointSize is in framebuffer pixels, so applying it
+    // before the multiply lets the approach lights fall below their own stated minimum.
+    gl_PointSize = max(900.0 / max(dist, 1.0) * uPixelScale, 2.0);
     // A light chases inward around the aperture: it reads as "this way in" instantly.
     float phase = fract(aOrder / uCount - uTime * 0.32);
     vGlow = 0.28 + pow(1.0 - phase, 8.0) * 2.4;

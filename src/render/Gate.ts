@@ -156,7 +156,12 @@ const BEACON_VERT = /* glsl */ `
     float dist = -mv.z;
     // Angular size with a hard pixel floor: a cairn is never smaller than a findable dot,
     // which is what keeps the next gate locatable from 6 km out.
-    float size = max(280.0 / max(dist, 1.0), 2.4) * uPixelScale;
+    //
+    // The floor is applied AFTER the scale, not before. gl_PointSize is in framebuffer pixels,
+    // so a floor taken before the multiply is a floor on the pre-scaled quantity and the drawn
+    // dot falls under it whenever uPixelScale < 1 — which the dynamic scaler now makes routine.
+    // 2.4 px is a stated gameplay affordance and it has to be 2.4 px on the screen.
+    float size = max(280.0 / max(dist, 1.0) * uPixelScale, 2.4);
     float blink = 0.55 + 0.45 * sin(uTime * 2.4 + aPhase);
     gl_PointSize = size * (0.85 + blink * 0.4);
     vAlpha = (0.35 + uCharge * 0.65) * blink;

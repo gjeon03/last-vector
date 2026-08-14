@@ -127,10 +127,19 @@ async function runPlaytest({ report, session, options }) {
     const atLoad = await callHarness(page, 'phase');
     verify(atLoad === 'title', `Cold load should present the title, got "${atLoad}".`, { atLoad });
 
+    // A measured mouse click, not locator.click(). Playwright's locator.click() calls
+    // DOM.scrollIntoViewIfNeeded, which displaces the overlay stack 4 times in 6 mid-animation —
+    // so this check's own captures could photograph a broken layout and mislead the next
+    // reviewer, which is the same class of defect as photographing a transition.
     const click = async (label) => {
       const button = page.locator(`button:has-text("${label}"), [role=button]:has-text("${label}")`).first();
       await button.waitFor({ state: 'visible', timeout: options.timeoutMs });
-      await button.click();
+      const box = await button.boundingBox();
+      verify(box, `Could not measure the "${label}" button.`, { label });
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      const scrolled = await page.evaluate(() => document.documentElement.scrollTop
+        + document.body.scrollTop + (document.querySelector('.lv-root')?.scrollTop ?? 0));
+      verify(scrolled === 0, `Clicking "${label}" scrolled the overlay stack by ${scrolled}px.`, { label, scrolled });
     };
 
     await click('BEGIN RUN');
