@@ -3,6 +3,7 @@ import { loft, type LoftStation } from './loft.ts';
 import { GLSL_NOISE } from './glslNoise.ts';
 import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.ts';
 import { Rng } from '../core/rng.ts';
+import { clamp01 } from '../core/mathx.ts';
 import { PALETTE } from '../core/art.ts';
 
 /**
@@ -204,6 +205,167 @@ function buildRingHull(
   return geometry;
 }
 
+/**
+ * A station on the meridian of a surface of revolution, in (radius, axial) metres.
+ */
+interface ShellStation {
+  r: number;
+  /** Along the axis. Negative is toward the arriving pilot. */
+  z: number;
+  /**
+   * How much of the angular lobe this station takes, 0..1. Held at zero across the bore so the
+   * hole the player flies through stays a true circle whatever the outside is doing, and taken
+   * in full at the rim, where a perfectly circular outline is the thing that made a
+   * two-kilometre structure read as a decal.
+   */
+  lobe?: number;
+}
+
+/**
+ * Breaks the rotational symmetry of a revolved shell. Three low harmonics rather than noise:
+ * noise at this scale reads as a wobbly edge, whereas a small number of large lobes reads as
+ * a plan that someone drew.
+ */
+function lobeRadial(angle: number): number {
+  return (
+    0.058 * Math.sin(angle * 3 + 1.13) +
+    0.027 * Math.sin(angle * 7 - 0.61) +
+    0.014 * Math.sin(angle * 11 + 2.2)
+  );
+}
+
+/** Axial warp, metres. Lifts and drops the terraces so no deck is a flat plane. */
+function lobeAxial(angle: number): number {
+  return 46 * Math.sin(angle * 3 - 0.42) + 21 * Math.sin(angle * 5 + 1.7);
+}
+
+/**
+ * Revolves a closed meridian around the local Z axis.
+ *
+ * One flat-shaded band per meridian edge, with its own vertices, so every crease between a
+ * deck and a riser stays hard. A shared-vertex revolve run through computeVertexNormals
+ * averages the deck normal into the riser normal, and a step whose corner is smoothed away is
+ * not a step: it is a gradient, and it reads as one.
+ *
+ * A straight meridian edge revolves to an exact cone, so per-band averaging is not an
+ * approximation here — it is the true normal.
+ */
+function revolveShell(meridian: ShellStation[], segments: number): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const stride = segments + 1;
+  const bands = meridian.length - 1;
+
+  for (let b = 0; b < bands; b++) {
+    const base = positions.length / 3;
+    for (const station of [meridian[b], meridian[b + 1]]) {
+      const w = station.lobe ?? 1;
+      for (let i = 0; i <= segments; i++) {
+        const a = (i / segments) * Math.PI * 2;
+        const r = station.r * (1 + w * lobeRadial(a));
+        positions.push(Math.cos(a) * r, Math.sin(a) * r, station.z + w * lobeAxial(a));
+        uvs.push(i / segments, b / bands);
+      }
+    }
+    for (let i = 0; i < segments; i++) {
+      const a0 = base + i;
+      const a1 = a0 + 1;
+      const b0 = base + stride + i;
+      const b1 = b0 + 1;
+      indices.push(a0, a1, b0, b0, a1, b1);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * THE MERIDIAN OF VESPER TERMINUS, approach face first.
+ *
+ * The shape of this table is the whole fix, so it is worth saying why it is shaped this way.
+ *
+ * The terminus is met head-on, and the star sits about 27 degrees off the approach axis on the
+ * FAR side of it — so the face the player sees is a good 27 degrees past its own terminator.
+ * With the shared wrapped-diffuse model, a surface square to the approach receives exactly
+ * zero key light, and it keeps receiving zero however far forward or back you move it: the
+ * renderer has no shadow maps, so depth alone casts nothing. Stacking three flat annuli at
+ * three different Z values therefore changes nothing that can be measured.
+ *
+ * What does receive light is TILT. Direct light appears at about 45 degrees off face-on and
+ * the product of lit-ness and visible area peaks near 70. So the approach face is built as a
+ * terraced cone: wide decks joined by risers pitched 62-75 degrees off face-on, which catch
+ * the key on the sunward side of the ring and receive nothing at all on the other side. That
+ * is the directional read, and it comes from geometry rather than from staging.
+ *
+ * The bore runs the other way — it flares open toward the pilot — so the inside of the funnel
+ * is lit on the side opposite the terraces. A lit crater inside a lit mesa is how a real
+ * object of this size behaves, and it gives the eye two independent depth cues.
+ */
+const TERMINUS_FRONT: ShellStation[] = [
+  { r: 520, z: -650, lobe: 0 }, //  funnel mouth lip, the closest point to the pilot
+  { r: 596, z: -600, lobe: 0 }, //  mouth chamfer
+  { r: 646, z: -432, lobe: 0.15 }, //  collar wall     73 deg off face-on
+  { r: 722, z: -402, lobe: 0.25 }, //  terrace 1 deck
+  { r: 794, z: -236, lobe: 0.45 }, //  riser 1         67 deg
+  { r: 932, z: -212, lobe: 0.6 }, //   terrace 2 deck
+  { r: 1004, z: -74, lobe: 0.8 }, //   riser 2         62 deg
+  { r: 1132, z: -54, lobe: 0.92 }, //  terrace 3 deck
+  { r: 1200, z: 34, lobe: 1 }, //      riser 3         52 deg
+  { r: 1274, z: 60, lobe: 1 }, //      outer lip
+];
+
+const TERMINUS_BACK: ShellStation[] = [
+  { r: 1294, z: 172, lobe: 1 }, //     outer flank: the silhouette's thickness
+  { r: 1212, z: 286, lobe: 1 },
+  { r: 982, z: 324, lobe: 0.75 }, //   underside, in permanent shadow
+  { r: 700, z: 302, lobe: 0.4 },
+  { r: 521, z: 248, lobe: 0.1 },
+  { r: 434, z: 302, lobe: 0 }, //      rear bore lip
+  { r: 400, z: 250, lobe: 0 },
+  { r: 400, z: -84, lobe: 0 }, //      throat: the narrowest part of the hole
+  { r: 446, z: -424, lobe: 0 }, //     funnel wall, opening toward the pilot
+  { r: 520, z: -650, lobe: 0 }, //     closes on the first station
+];
+
+/** The rear deck, radius-ascending, for anything that has to sit on the underside. */
+const TERMINUS_REAR: ShellStation[] = [
+  { r: 521, z: 248, lobe: 0.1 },
+  { r: 700, z: 302, lobe: 0.4 },
+  { r: 982, z: 324, lobe: 0.75 },
+  { r: 1212, z: 286, lobe: 1 },
+];
+
+/**
+ * Where a face of the shell sits at a given radius and bearing, so ridges, masts and greebles
+ * can be planted ON the terraces instead of floating in the plane the terraces used to be.
+ * `profile` must be radius-ascending.
+ */
+function surfaceOn(
+  profile: ShellStation[],
+  radius: number,
+  angle: number,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  let i = 0;
+  while (i < profile.length - 2 && profile[i + 1].r < radius) i++;
+  const a = profile[i];
+  const b = profile[i + 1];
+  const t = clamp01((radius - a.r) / (b.r - a.r));
+  const lobe = (a.lobe ?? 1) + ((b.lobe ?? 1) - (a.lobe ?? 1)) * t;
+  const r = radius * (1 + lobe * lobeRadial(angle));
+  return out.set(
+    Math.cos(angle) * r,
+    Math.sin(angle) * r,
+    a.z + (b.z - a.z) * t + lobe * lobeAxial(angle),
+  );
+}
+
 const APERTURE_BAND_FRAG = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
@@ -217,8 +379,13 @@ const APERTURE_BAND_FRAG = /* glsl */ `
     float b = smoothstep(0.86, 1.0, sin(vUv.x * 6.2831 * 24.0 + uTime * 0.7) * 0.5 + 0.5);
     // The aperture is the thing the player is aiming at from four kilometres out, so it is
     // deliberately the brightest object in the sector after the star itself.
+    // The old 4.2 was set when the collar buried all but the dim outer edge of this tube, so
+    // what shipped was an eighth of what the number says. Against the rebuilt bore the whole
+    // section is exposed, and at 4.2 it clipped to white and bloomed into a 200 px plate that
+    // erased the terraces behind it: the aperture region measured 0.70 mean against 0.27 for
+    // the version this replaces.
     float glow = 1.1 + a * 2.6 + b * 1.2;
-    gl_FragColor = vec4(uColor * core * glow * 4.2, core * min(glow, 1.0) * 0.95);
+    gl_FragColor = vec4(uColor * core * glow * 1.5, core * min(glow, 1.0) * 0.95);
   }
 `;
 
@@ -269,87 +436,162 @@ export class Terminus {
     });
 
     const inner = this.apertureRadius;
-    const outer = 1180;
-    const ringMid = (inner + outer) * 0.5;
-    const ringHalf = (outer - inner) * 0.5;
-
-    // --- primary ring -----------------------------------------------------------------
-    const ringGeo = buildRingHull(ringMid, ringHalf, 190, 128, 16, 5.0);
-    this.geometries.push(ringGeo);
-    this.spinner.add(new THREE.Mesh(ringGeo, this.hullMat));
-
-    // --- aperture collar --------------------------------------------------------------
-    const collarGeo = buildRingHull(inner - 26, 46, 250, 96, 12, 4.0);
-    this.geometries.push(collarGeo);
-    this.spinner.add(new THREE.Mesh(collarGeo, this.hullMat));
-
-    // --- outer rim rail ---------------------------------------------------------------
-    const railGeo = buildRingHull(outer + 34, 40, 78, 128, 10, 3.0);
-    this.geometries.push(railGeo);
-    this.spinner.add(new THREE.Mesh(railGeo, this.hullMat));
-
-    // --- radial ribs across the ring face ---------------------------------------------
-    const ribGeo = new THREE.BoxGeometry(outer - inner + 60, 96, 430);
-    this.geometries.push(ribGeo);
-    const ribCount = 16;
-    const ribs = new THREE.InstancedMesh(ribGeo, this.hullMat, ribCount);
+    const rim = TERMINUS_FRONT[TERMINUS_FRONT.length - 1].r;
     const matrix = new THREE.Matrix4();
     const quat = new THREE.Quaternion();
     const pos = new THREE.Vector3();
     const scale = new THREE.Vector3(1, 1, 1);
-    // Perfect rotational symmetry with uniform element size is the loudest procedural tell
-    // there is — the eye clocks it in under a second. Ribs are jittered off their ideal spacing,
-    // vary in girth, and two are missing entirely: damage reads as history.
-    const ribStep = (Math.PI * 2) / ribCount;
-    const missing = new Set([rng.int(0, ribCount), rng.int(0, ribCount)]);
-    for (let i = 0; i < ribCount; i++) {
-      const a = i * ribStep + rng.signed(ribStep * 0.4);
-      const broken = missing.has(i);
-      pos.set(Math.cos(a) * ringMid, Math.sin(a) * ringMid, rng.signed(18));
-      quat.setFromEuler(new THREE.Euler(rng.signed(0.05), rng.signed(0.05), a));
-      // A broken rib is collapsed rather than removed, so the ring still reads as continuous
-      // structure with pieces torn out of it.
-      scale.set(broken ? rng.range(0.18, 0.34) : rng.range(0.78, 1.25), rng.range(0.7, 1.4), 1);
-      matrix.compose(pos, quat, scale);
-      ribs.setMatrixAt(i, matrix);
-    }
-    ribs.instanceMatrix.needsUpdate = true;
-    this.spinner.add(ribs);
+    const basis = new THREE.Matrix4();
+    const scratch = new THREE.Vector3();
 
-    // --- docking spires: the vertical elements that give the ring a top and a bottom ----
-    const spireProfile: LoftStation[] = [
+    // --- primary shell ----------------------------------------------------------------
+    // One revolved surface for the whole massing: terraced approach face, thick outer flank,
+    // shadowed underside, flared bore. Previously this was three concentric tubes lying in
+    // one plane, which is a disc however much greeble you put on it.
+    const shellGeo = revolveShell([...TERMINUS_FRONT, ...TERMINUS_BACK], 176);
+    this.geometries.push(shellGeo);
+    this.spinner.add(new THREE.Mesh(shellGeo, this.hullMat));
+
+    // --- throat collar ----------------------------------------------------------------
+    // A raised lip standing proud of the bore. It does two jobs: it gives the central well an
+    // edge for the occlusion pass to darken under, and it is what the aperture band hides
+    // behind. Without something in front of it, an additive torus at the throat is seen head
+    // on down an open tube and blooms into a plate.
+    const collarGeo = buildRingHull(430, 48, 205, 96, 12, 4.0);
+    this.geometries.push(collarGeo);
+    const collar = new THREE.Mesh(collarGeo, this.hullMat);
+    collar.position.z = -190;
+    this.spinner.add(collar);
+
+    // --- radial ridges ----------------------------------------------------------------
+    // Rounded spines climbing the terraces from the collar to the rim. Rounded, not boxed,
+    // and that is the point: a box sitting on a face-on disc presents either a square face
+    // (which is unlit, being square to the approach) or a square flank (which is invisible,
+    // being edge-on). A rounded ridge sweeps its normal through every in-plane direction, so
+    // whatever the bearing of the star, one flank of every ridge is lit and the other is not.
+    const ridgeCount = 12;
+    const ridgeStep = (Math.PI * 2) / ridgeCount;
+    for (let i = 0; i < ridgeCount; i++) {
+      const angle = i * ridgeStep + rng.signed(ridgeStep * 0.34);
+      // Two ridges in twelve stop short: a ring of twelve identical spokes is the loudest
+      // procedural tell there is, and damage reads as history.
+      const stunted = rng.next() < 0.18;
+      const overhangs = rng.next() < 0.55;
+      const reach = stunted
+        ? rng.range(940, 1090)
+        : overhangs
+          ? rim + rng.range(50, 150)
+          : rim - rng.range(10, 70);
+      const girth = rng.range(0.78, 1.32);
+      const stations: LoftStation[] = [];
+      const steps = 11;
+      for (let s = 0; s <= steps; s++) {
+        const r = 700 + (reach - 700) * (s / steps);
+        surfaceOn(TERMINUS_FRONT, Math.min(r, rim), angle, scratch);
+        // Fat in the middle, tapering at both ends, and thinning fast once it overhangs the
+        // rim so the overhang reads as a spar rather than as a stub.
+        const t = s / steps;
+        const swell = Math.sin(Math.PI * Math.pow(t, 0.72));
+        const past = r > rim ? clamp01(1 - (r - rim) / Math.max(reach - rim, 1)) : 1;
+        stations.push({
+          z: r,
+          width: (26 + 62 * swell) * girth * (0.35 + 0.65 * past),
+          height: (34 + 58 * swell) * girth * (0.35 + 0.65 * past),
+          squareness: 2.4,
+          offsetY: scratch.z + (r > rim ? (r - rim) * 0.28 : 0),
+        });
+      }
+      const ridgeGeo = loft({ stations, radialSegments: 12, capStart: true, capEnd: true });
+      this.geometries.push(ridgeGeo);
+      const ridge = new THREE.Mesh(ridgeGeo, this.hullMat);
+      // Local Z outward along the radius, local Y along the station's own axis, so `offsetY`
+      // walks the section up and down the terraces.
+      basis.makeBasis(
+        new THREE.Vector3(-Math.sin(angle), Math.cos(angle), 0),
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0),
+      );
+      ridge.quaternion.setFromRotationMatrix(basis);
+      this.spinner.add(ridge);
+    }
+
+    // --- docking masts ----------------------------------------------------------------
+    // These lean OUT rather than standing square to the approach face. A mast pointing at the
+    // pilot is a foreshortened stub that adds nothing to the outline; a mast leaning outboard
+    // puts a hard, irregular spike through the silhouette, which is what stops a two-kilometre
+    // ring reading as a drawn circle.
+    const mastProfile: LoftStation[] = [
       { z: 0, width: 60, height: 60, squareness: 5 },
       { z: 240, width: 96, height: 96, squareness: 6 },
       { z: 430, width: 62, height: 62, squareness: 5 },
       { z: 520, width: 20, height: 20, squareness: 4 },
     ];
-    const spireGeo = loft({ stations: spireProfile, radialSegments: 10, capStart: true, capEnd: true });
-    this.geometries.push(spireGeo);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4 + rng.signed(0.22);
-      for (const face of [1, -1]) {
-        const spire = new THREE.Mesh(spireGeo, this.hullMat);
-        spire.position.set(Math.cos(a) * ringMid, Math.sin(a) * ringMid, face * 150);
-        spire.rotation.x = face > 0 ? 0 : Math.PI;
-        this.spinner.add(spire);
-      }
+    const mastGeo = loft({ stations: mastProfile, radialSegments: 10, capStart: true, capEnd: true });
+    this.geometries.push(mastGeo);
+    const forward = new THREE.Vector3(0, 0, 1);
+    for (let i = 0; i < 7; i++) {
+      const angle = (i / 7) * Math.PI * 2 + rng.signed(0.4);
+      const rear = i >= 5;
+      const radius = rng.range(940, 1180);
+      const lean = rear ? rng.range(0.35, 0.8) : rng.range(0.75, 1.15);
+      const mast = new THREE.Mesh(mastGeo, this.hullMat);
+      surfaceOn(rear ? TERMINUS_REAR : TERMINUS_FRONT, radius, angle, mast.position);
+      // Out along the radius by sin(lean), and away from the shell face by cos(lean).
+      scratch.set(
+        Math.cos(angle) * Math.sin(lean),
+        Math.sin(angle) * Math.sin(lean),
+        (rear ? 1 : -1) * Math.cos(lean),
+      );
+      mast.quaternion.setFromUnitVectors(forward, scratch);
+      mast.scale.setScalar(rng.range(0.62, 1.12));
+      this.spinner.add(mast);
     }
 
-    // --- greebles: fewer and much larger than the first pass ---------------------------
-    const greebleGeo = new THREE.BoxGeometry(1, 1, 1);
+    // --- greebles ---------------------------------------------------------------------
+    // Rounded blocks standing off the terraces, not flat plates lying in the face. Real
+    // thickness is what the screen-space occlusion pass has to work with, and a bevelled top
+    // is what turns one module into a lit face and a shadowed one.
+    const greebleGeo = loft({
+      stations: [
+        { z: -0.5, width: 0.42, height: 0.42, squareness: 4.5 },
+        { z: -0.42, width: 0.5, height: 0.5, squareness: 6.0 },
+        { z: 0.4, width: 0.5, height: 0.5, squareness: 6.0 },
+        { z: 0.5, width: 0.4, height: 0.4, squareness: 4.0 },
+      ],
+      radialSegments: 12,
+      capStart: true,
+      capEnd: true,
+    });
     this.geometries.push(greebleGeo);
-    const greebleCount = 240;
+    const greebleCount = 260;
     const greebles = new THREE.InstancedMesh(greebleGeo, this.hullMat, greebleCount);
     for (let i = 0; i < greebleCount; i++) {
-      const a = rng.range(0, Math.PI * 2);
-      const r = rng.range(inner + 120, outer - 90);
-      const face = rng.bool() ? 1 : -1;
-      pos.set(Math.cos(a) * r, Math.sin(a) * r, face * rng.range(160, 205));
-      quat.setFromEuler(new THREE.Euler(0, 0, a + rng.signed(0.25)));
+      const angle = rng.range(0, Math.PI * 2);
+      // A quarter of them dress the underside, so the rim still reads as inhabited from
+      // behind without spending detail where nobody is looking.
+      const onRear = rng.next() < 0.25;
+      const radius = onRear ? rng.range(560, 1150) : rng.range(inner + 200, rim - 40);
+      surfaceOn(onRear ? TERMINUS_REAR : TERMINUS_FRONT, radius, angle, pos);
       // Power-law over a 4:1 range: a few large modules, many small fittings. Uniformly
       // sized greebles are detail at one frequency, which is noise rather than design.
       const g = 46 * Math.pow(4.4, Math.pow(rng.next(), 2.1));
-      scale.set(g * rng.range(0.9, 2.0), g * rng.range(0.6, 1.3), g * rng.range(0.4, 0.9));
+      const stand = g * rng.range(0.5, 1.15);
+      basis.makeBasis(
+        new THREE.Vector3(-Math.sin(angle), Math.cos(angle), 0),
+        new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0),
+        new THREE.Vector3(0, 0, onRear ? 1 : -1),
+      );
+      quat.setFromRotationMatrix(basis);
+      // A small random lean off the deck normal. Perfectly upright modules give the whole
+      // field one shared normal, which is the flatness this rebuild exists to remove; too
+      // much lean and a hull fitting reads as something that grew there.
+      quat.multiply(
+        new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(rng.signed(0.17), rng.signed(0.17), rng.range(0, Math.PI * 2)),
+        ),
+      );
+      pos.z += (onRear ? 1 : -1) * stand * 0.3;
+      scale.set(g * rng.range(0.9, 2.0), g * rng.range(0.6, 1.3), stand);
       matrix.compose(pos, quat, scale);
       greebles.setMatrixAt(i, matrix);
     }
@@ -375,8 +617,19 @@ export class Terminus {
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
-    for (const z of [-215, 215]) {
-      const bandGeo = new THREE.TorusGeometry(inner + 6, 16, 6, 160);
+    // Both bands sit INSIDE the funnel — one at the throat, one at the far lip — so the hole
+    // reads as a tube with a near end and a far end. Ringing the mouth instead put a 500 m
+    // additive torus across the widest part of the object, and its bloom washed out the entire
+    // terrace stack the rest of this rebuild exists to make visible.
+    // The front band is centred on the collar's inner wall, so half the tube is buried in the
+    // lip and what survives is a thin bright ring deep in the well. Fully exposed, an additive
+    // torus at this radius blooms into a 200 px cyan plate that erases the terrace stack
+    // behind it — which is what the old collar was quietly preventing.
+    for (const [bandRadius, z] of [
+      [383, -300],
+      [428, 302],
+    ]) {
+      const bandGeo = new THREE.TorusGeometry(bandRadius, 12, 6, 160);
       this.geometries.push(bandGeo);
       const band = new THREE.Mesh(bandGeo, this.bandMat);
       band.position.z = z;
@@ -385,14 +638,16 @@ export class Terminus {
     }
 
     // --- approach strobes --------------------------------------------------------------
+    // Set back inside the funnel mouth and slightly proud of its wall: the chase now runs
+    // down the throat toward the pilot instead of sitting on a flat annulus.
     const lightCount = 48;
     const lp = new Float32Array(lightCount * 3);
     const lo = new Float32Array(lightCount);
     for (let i = 0; i < lightCount; i++) {
       const a = (i / lightCount) * Math.PI * 2;
-      lp[i * 3] = Math.cos(a) * (inner + 78);
-      lp[i * 3 + 1] = Math.sin(a) * (inner + 78);
-      lp[i * 3 + 2] = -235;
+      lp[i * 3] = Math.cos(a) * 486;
+      lp[i * 3 + 1] = Math.sin(a) * 486;
+      lp[i * 3 + 2] = -540;
       lo[i] = i;
     }
     const lightGeo = new THREE.BufferGeometry();
