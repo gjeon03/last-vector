@@ -72,7 +72,7 @@ async function runScreenshotMatrix({ report, session, options }) {
       'vantage succeeds through __LV, one fixed simulation frame is presented, simulation is frozen, '
       + 'the vantage subject projects on screen, and the decoded PNG has the requested dimensions, at '
       + 'least 12 distinct luminance levels, a midtone shelf of at least 12% in 0.18-0.45, under 86% '
-      + 'shadow, and measurable chroma. Subject BOUNDS are reported but not asserted: a luminance '
+      + 'shadow, and measurable chroma. The HUD fade is settled before capture. Subject BOUNDS are reported but not asserted: a luminance '
       + 'threshold cannot isolate a hull against a nebula brighter than it is.',
         }, async () => captureCell(page, options, { position, vantage, path, subject }));
         cellOutcomes.push(outcome);
@@ -179,6 +179,14 @@ async function captureCell(page, options, cell) {
   await callHarness(page, 'seekCourse', [cell.position]);
   await callHarness(page, 'vantage', [cell.vantage]);
   await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  // Let the HUD finish fading in before photographing it.
+  //
+  // `.lv-hud` drives its own opacity from a `--a` custom property that starts at 0 and ramps.
+  // One simulation frame is nowhere near enough: the committed stills were captured at roughly a
+  // sixth of settled opacity, with the speed readout and the entire right cluster barely visible.
+  // Art reviewers scoring composition were scoring a HUD state no player ever sees — the same
+  // class of defect as the 30%-opacity results frame that was once published as evidence.
+  const hudAlpha = await settleHud(page, options);
   await callHarness(page, 'present', [], options.timeoutMs);
   await callHarness(page, 'setPaused', [true]);
   const telemetry = await callHarness(page, 'telemetry');
@@ -201,10 +209,16 @@ async function captureCell(page, options, cell) {
     vantage: cell.vantage,
     viewport: options.viewport,
     telemetry: compactTelemetry(telemetry),
+    hudAlpha,
     image: stats,
   };
 
   verify(bytes.length > 1_024, 'Screenshot PNG is unexpectedly small.', evidence);
+  verify(
+    hudAlpha === null || hudAlpha >= 0.98,
+    `HUD captured mid-fade at alpha ${hudAlpha} — this frame shows a state no player sees.`,
+    evidence,
+  );
   verify(
     stats.width === options.viewport.width && stats.height === options.viewport.height,
     'Screenshot dimensions do not match the requested viewport.',
@@ -253,6 +267,23 @@ async function captureCell(page, options, cell) {
   // would fail good frames, and a wrong assertion is worse than no assertion. The numbers are in
   // the evidence for a human to read.
   return evidence;
+}
+
+/** Steps until the HUD's own fade has settled, and reports the alpha it reached. */
+async function settleHud(page, options) {
+  const read = () => page.evaluate(() => {
+    const hud = document.querySelector('.lv-hud');
+    if (!hud) return null;
+    const raw = getComputedStyle(hud).getPropertyValue('--a').trim();
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) ? value : null;
+  });
+  let alpha = await read();
+  for (let i = 0; i < 40 && alpha !== null && alpha < 0.98; i++) {
+    await callHarness(page, 'step', [6, 1 / 60], options.timeoutMs);
+    alpha = await read();
+  }
+  return alpha;
 }
 
 async function stepUntilFlying(page, timeoutMs) {

@@ -501,7 +501,12 @@ export class Game {
   private buildVantages(): void {
     this.vantages.push(
       { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 3.0 },
-      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-11, 2.6, 15), lookAhead: 10, fov: 42, exposureBias: 2.4 },
+      // Pulled back and re-aimed. At a 15 m standoff on a 42 degree lens the airframe overran the
+      // frame: the art review measured the subject severed at x=1599 with the tail under the
+      // NEXT MARKER cluster, and the 2.4 bias — fitted while the vantage camera was still being
+      // thrown off aim — blew the hull out on top of that. Now framed left-of-centre, clear of
+      // the right-hand HUD column.
+      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-26, 5.5, 38), lookAhead: 26, fov: 40, exposureBias: 1.45 },
       { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.5 },
       { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
       { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },

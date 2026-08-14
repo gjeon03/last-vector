@@ -2512,7 +2512,13 @@ kbd {
  * one of them is guaranteed: pointer lock is always refused there, so every authored still
  * carried a MOUSE CAPTURE UNAVAILABLE banner across its middle. A still is a picture of the game,
  * not of the harness's environment.
+ *
+ * The KEYBOARD FLIGHT chip goes with them for the same reason. It is persistent rather than
+ * transient, so it is correct on screen for a real player whose browser refused capture — but in
+ * headless that refusal is universal, and an authored still should not advertise a limitation of
+ * the driver that photographed it.
  */
+html[data-lv-capture] .lv-inputmode,
 html[data-lv-capture] .lv-callout,
 html[data-lv-capture] .lv-feed,
 html[data-lv-capture] .lv-comms {
