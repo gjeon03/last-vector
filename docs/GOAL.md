@@ -52,6 +52,21 @@ Concretely, the build is only "excellent" when all of these hold:
 5. Network capture asserts zero external requests.
 6. Fresh `FINAL_REVIEW` challenge before claiming COMPLETE.
 
+### Two rules about evidence, both learned the hard way
+
+**Build the artefact from a clean tree, and name the commit.** `dist/` is built from whatever is
+on disk, so a green build and a good screenshot can both be true of code that is not in the commit
+under review. Before any capture that will be used as evidence, `git status --porcelain` must
+return empty, and the commit SHA goes in the report. This is the same failure mode as a capture
+harness photographing a 30%-opacity transition and shipping it as a settled screen: the artefact
+and the thing you believe you are testing diverge silently, and nothing in the pipeline objects.
+
+**Every claim about state names the commit it was measured at** — "verified at 7de86ce", never
+"verified". Several reports in this project were true when written and false when read, because
+two authors were exchanging claims about a mutable tree with a round-trip longer than the interval
+at which either of them changed it. A stamped report is visibly stale rather than silently wrong,
+and it is checkable with one `git show`.
+
 ## Verification limits — what this build's evidence does NOT cover
 
 Recorded honestly, because an unstated gap reads as coverage.
