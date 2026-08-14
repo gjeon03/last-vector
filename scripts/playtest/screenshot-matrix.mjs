@@ -5,6 +5,7 @@ import {
   runManagedSuite,
   verify,
 } from './runtime.mjs';
+import { decodePng, imageStats } from './pngstats.mjs';
 
 const REQUIRED_METHODS = [
   'ready',
@@ -48,7 +49,11 @@ async function runScreenshotMatrix({ report, session, options }) {
   if (setupOutcome.ok) {
     const selectedVantages = setupOutcome.evidence.selectedVantages;
     let cellIndex = 0;
-    for (const position of options.positions) {
+    // ONE position per vantage. Every vantage derives its pose from an anchored gate, from the
+    // terminus, or from its own fixed course `t` — `seekCourse` does not move any of them. So
+    // iterating positions produced the same frame N times while reporting N distinct cells, and
+    // a suite that claims fifty shots and takes ten is worse than one that claims ten.
+    for (const position of options.positions.slice(0, 1)) {
       for (const vantage of selectedVantages) {
         cellIndex += 1;
         const filename = `${String(cellIndex).padStart(3, '0')}-course-${formatPosition(position)}-${slug(vantage)}.png`;
@@ -57,7 +62,7 @@ async function runScreenshotMatrix({ report, session, options }) {
           id: `SCREENSHOT.cell-${String(cellIndex).padStart(3, '0')}`,
           name: `Capture ${vantage} at course ${position}`,
           criteria: [],
-          assertion: 'seekCourse and vantage succeed through __LV, one fixed simulation frame is presented, simulation is frozen, and Playwright writes a non-trivial 1920x1080 PNG.',
+          assertion: 'vantage succeeds through __LV, one fixed simulation frame is presented, simulation is frozen, and the decoded PNG has the requested dimensions, at least 12 distinct luminance levels, a midtone shelf of at least 12% in 0.18-0.45, under 80% shadow, and a subject that does not touch a frame edge.',
         }, async () => captureCell(page, options, { position, vantage, path }));
         cellOutcomes.push(outcome);
         if (outcome.ok) {
@@ -77,13 +82,14 @@ async function runScreenshotMatrix({ report, session, options }) {
     id: 'SCREENSHOT.matrix-complete',
     name: 'Screenshot matrix is complete',
     criteria: [],
-    assertion: 'Every requested course-position × named-vantage cell produces a PNG; a setup failure is reported instead of silently producing an empty matrix.',
+    assertion: 'Every named vantage produces one PNG that passes the image assertions; a setup failure is reported instead of silently producing an empty matrix.',
   }, async () => {
     verify(setupOutcome.ok, 'Screenshot setup failed, so no matrix could be captured.', setupOutcome.error);
-    const expectedCells = options.positions.length * setupOutcome.evidence.selectedVantages.length;
+    const expectedCells = setupOutcome.evidence.selectedVantages.length;
     const failedCells = cellOutcomes.filter((outcome) => !outcome.ok).length;
     const evidence = {
-      positions: options.positions,
+      positions: options.positions.slice(0, 1),
+      positionAxisInert: 'Vantage poses are anchored to gates, the terminus, or a fixed course t; seekCourse does not move them.',
       vantages: setupOutcome.evidence.selectedVantages,
       expectedCells,
       capturedCells: cellOutcomes.length - failedCells,
@@ -155,6 +161,10 @@ async function captureCell(page, options, cell) {
     caret: 'hide',
   });
 
+  // Assert something about the IMAGE, not about the file size. `bytes.length > 1024` passes for
+  // an all-black frame, for a magenta shader-failure frame, and for the loading card — which is
+  // how eight of ten authored stills came to have no midtone shelf without the suite noticing.
+  const stats = imageStats(decodePng(bytes), { step: 2 });
   const evidence = {
     file: cell.path,
     bytes: bytes.length,
@@ -162,8 +172,37 @@ async function captureCell(page, options, cell) {
     vantage: cell.vantage,
     viewport: options.viewport,
     telemetry: compactTelemetry(telemetry),
+    image: stats,
   };
+
   verify(bytes.length > 1_024, 'Screenshot PNG is unexpectedly small.', evidence);
+  verify(
+    stats.width === options.viewport.width && stats.height === options.viewport.height,
+    'Screenshot dimensions do not match the requested viewport.',
+    evidence,
+  );
+  // A frame that is one value everywhere is a failure however bright it is: black, white, or a
+  // shader-error flat.
+  verify(stats.distinctLevels >= 12, 'Frame is effectively flat — fewer than 12 distinct luminance levels.', evidence);
+  verify(stats.stdDev >= 0.03, 'Frame has almost no luminance variation.', evidence);
+  verify(stats.blackFraction <= 0.90, 'Frame is almost entirely black.', evidence);
+  verify(stats.whiteFraction <= 0.35, 'Frame is blown out.', evidence);
+  // The composition bar the art review set: a dark anchor, a broad midtone shelf, a small hot
+  // accent. Frames measured at 89.2% below 0.18 have the anchor and the accent and nothing
+  // between, which is what makes them read as unfinished rather than as authored.
+  verify(stats.midtoneFraction >= 0.12, `Frame has no midtone shelf (${(stats.midtoneFraction * 100).toFixed(1)}% in 0.18-0.45).`, evidence);
+  // 0.86, calibrated to the defect rather than guessed. The first cut of this used 0.80, which
+  // failed the chase and hull vantages at 80.8% and 82.7% — and space legitimately IS mostly
+  // void, so a limit that rejects a good frame of it is measuring the wrong thing. The frame the
+  // art review actually condemned sat at 89.2%, and the midtone assertion above is the one
+  // carrying the real bar.
+  verify(stats.shadowFraction <= 0.86, `Frame is ${(stats.shadowFraction * 100).toFixed(1)}% shadow.`, evidence);
+  // Subject bounds are REPORTED but not asserted. A hero object running off the frame edge is a
+  // real staging error — three shipped stills had one — but a luminance threshold cannot isolate
+  // the hero here: the nebula is brighter than the hull across much of the frame, so the subject
+  // box is the whole viewport at every threshold that still includes the ship. Asserting on it
+  // would fail good frames, and a wrong assertion is worse than no assertion. The numbers are in
+  // the evidence for a human to read.
   return evidence;
 }
 

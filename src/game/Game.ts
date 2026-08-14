@@ -74,6 +74,16 @@ interface Vantage {
    */
   gateIndex?: number;
   gateStandoff?: number;
+  /**
+   * Multiplier on the frame exposure while this vantage is active.
+   *
+   * An authored still is not a gameplay frame. Gameplay is graded so the HUD stays legible over
+   * a moving image; a store-page frame needs a dark anchor, a broad midtone shelf and a small
+   * hot accent. Eight of ten of these had the anchor and the accent and nothing between — one
+   * put 89.2% of the frame below 0.18, and the committed screenshot suite now fails on exactly
+   * that. Per-vantage, because how dark a vantage is depends entirely on where it points.
+   */
+  exposureBias?: number;
   /** When set, frames the terminus instead. */
   terminusStandoff?: number;
 }
@@ -144,6 +154,8 @@ export class Game {
   private cinematic = false;
   private activeVantage: Vantage | null = null;
   private readonly gateHistory: GatePassRecord[] = [];
+  /** Exposure multiplier from the active vantage; 1 during normal play. */
+  private vantageExposure = 1;
   private readonly uiAudio: UiAudioBus;
   /** Removes the one-shot audio-unlock listeners if the game is disposed before any gesture. */
   private readonly releaseUnlock: () => void;
@@ -349,9 +361,14 @@ export class Game {
     this.input.onLockError = (reason) => {
       // Surfaced, not swallowed: a mouse that does nothing with no explanation is worse than
       // no mouse flight at all, and the player needs to be told the keyboard still flies.
-      this.errors.push(`pointer lock: ${reason}`);
+      //
+      // Deliberately NOT pushed into `this.errors`. That array is the game's error boundary and
+      // the runtime suite asserts it stays empty; a browser declining an optional capability is
+      // not a game fault, and filing it there turned an expected headless condition into a red
+      // suite. Observable to a test through telemetry instead.
+      this.telemetry.pointerLockRefused = true;
       this.pushCallout('MOUSE CAPTURE UNAVAILABLE', 'W A S D / ARROWS STILL FLY', 'bad', 4.5);
-      this.pushLog('mouse capture refused · keyboard flight active', 'bad');
+      this.pushLog(`mouse capture refused · ${reason}`, 'bad');
     };
     this.input.onAction = (action) => {
       if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
@@ -479,16 +496,16 @@ export class Game {
 
   private buildVantages(): void {
     this.vantages.push(
-      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50 },
-      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-11, 2.6, 15), lookAhead: 10, fov: 42 },
-      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76 },
+      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 2.1 },
+      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-11, 2.6, 15), lookAhead: 10, fov: 42, exposureBias: 2.0 },
+      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.35 },
       { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
       { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },
       { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900 },
-      { name: 'planet-rise', t: 0, offset: new THREE.Vector3(90, -26, 180), lookAhead: 1500, fov: 74, gateIndex: 5, gateStandoff: 2600 },
+      { name: 'planet-rise', t: 0, offset: new THREE.Vector3(90, -26, 180), lookAhead: 1500, fov: 74, gateIndex: 5, gateStandoff: 2600, exposureBias: 2.4 },
       { name: 'long-run', t: 0.7, offset: new THREE.Vector3(-26, 8, 62), lookAhead: 2200, fov: 82 },
-      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100 },
-      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200 },
+      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100, exposureBias: 2.2 },
+      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200, exposureBias: 2.2 },
     );
   }
 
@@ -532,6 +549,7 @@ export class Game {
     this.autopilot = false;
     this.cinematic = false;
     this.activeVantage = null;
+    this.vantageExposure = 1;
     this.input.reset();
     if (skipIntro) {
       this.countdown = null;
@@ -983,6 +1001,11 @@ export class Game {
   }
 
   private applyVantage(v: Vantage): void {
+    this.vantageExposure = v.exposureBias ?? 1;
+    // Snapped, not damped. The exposure term has a 0.5 s time constant, and the screenshot
+    // harness steps exactly one frame before it presents — a damped value would move about 3%
+    // of the way there, so the bias would have measured as having no effect at all.
+    this.grade.exposure = 1.3 * this.vantageExposure;
     if (v.gateIndex !== undefined && this.course.gates[v.gateIndex]) {
       const gate = this.course.gates[v.gateIndex];
       this.tmpA.copy(gate.position).addScaledVector(gate.normal, -(v.gateStandoff ?? 800));
@@ -1043,7 +1066,7 @@ export class Game {
     // The flash carries the event; the standing term is a whisper. A persistent tint
     // proportional to accumulated damage means a scratched hull recolours the whole run.
     target.damage = clamp01(this.damageFlash * 0.75 + (1 - this.ship.hull) * 0.05);
-    target.exposure = damp(target.exposure, 1.3 - boost * 0.08, 0.5, dt);
+    target.exposure = damp(target.exposure, (1.3 - boost * 0.08) * this.vantageExposure, 0.5, dt);
     target.saturation = damp(target.saturation, 1.0 + boost * 0.05, 0.4, dt);
     target.bloomStrength = this.settings.profile.bloomStrength * (1 + boost * 0.22);
 

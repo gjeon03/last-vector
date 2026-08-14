@@ -93,6 +93,12 @@ export interface Telemetry {
    * contact that costs no hull, and misfires on any frame the value is re-clamped.
    */
   impactFlash: number;
+  /**
+   * Set once the browser has refused mouse capture, so a test can see a condition that used to
+   * be invisible from outside. Optional, so adding it cannot break an out-of-repo consumer of
+   * this interface — that has already happened twice this session.
+   */
+  pointerLockRefused?: boolean;
   fps: number;
 }
 
