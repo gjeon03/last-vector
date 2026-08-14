@@ -260,6 +260,20 @@ export interface AudioBus {
    * graph, so interface cues fired from a menu schedule into a frozen timeline and never sound.
    */
   menuMix(on: boolean): void;
+  /**
+   * Context state and both duck gains, or null before the graph exists.
+   *
+   * Exposed because the last two audio blockers were both invisible to offline measurement by
+   * construction: an OfflineAudioContext is never suspended and has no mix state machine, so no
+   * number of checks added to the offline gate could ever have caught either one.
+   */
+  debugMixState(): {
+    contextState: string;
+    engineDuck: number;
+    musicDuck: number;
+    menuEngineFloor: number;
+    menuMusicFloor: number;
+  } | null;
   /** Called when the tab loses focus. A hidden tab should cost nothing, so this really stops. */
   suspend(): void;
   resume(): void;

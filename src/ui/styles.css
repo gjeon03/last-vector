@@ -44,7 +44,10 @@
   position: fixed;
   inset: 0;
   z-index: 40;
-  overflow: hidden;
+  /* `clip` rather than `hidden`: hidden makes this a scroll container, which is a latent
+     scroll-offset bug on an overlay that must never scroll. `contain: strict` below already
+     provides the paint containment that `hidden` was carrying. */
+  overflow: clip;
   pointer-events: none;
   color: var(--c-ink);
   font-family: var(--f-display);

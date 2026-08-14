@@ -226,6 +226,17 @@ export class AudioEngine implements AudioBus {
   private failed = false;
 
   private readonly seed: number;
+  /**
+   * Static trims held by `menuMix`, and the value every transient duck must return TO.
+   *
+   * A momentary duck that releases to unity silently cancels whatever static trim was underneath
+   * it. That is not a quirk of one helper: both `duckEngine` and `duck` released to a hardcoded 1,
+   * so a UI click un-ducked the drive for the rest of the menu, and a `finish` or `gatePass` on a
+   * results screen did the same to the score. Tracking the floor here fixes the class rather than
+   * the reported instance.
+   */
+  private menuEngineFloor = 1;
+  private menuMusicFloor = 1;
   private masterVolume = 0.8;
   private musicVolume = 0.65;
   private pendingIntensity = 0;
@@ -320,11 +331,15 @@ export class AudioEngine implements AudioBus {
    * `ctx.suspend()` remains correct for `visibilitychange` — a hidden tab should cost nothing.
    */
   menuMix(on: boolean): void {
+    // Recorded before the graph check so a call made before `unlock()` is not lost: `build()`
+    // applies these as the initial values.
+    this.menuEngineFloor = on ? MENU_DUCK_DEPTH : 1;
+    this.menuMusicFloor = on ? MENU_MUSIC_DEPTH : 1;
     const g = this.graph;
     if (!g) return;
     const now = g.ctx.currentTime;
-    rampTo(g.engineDuck.gain, on ? MENU_DUCK_DEPTH : 1, 0.12, now);
-    rampTo(g.musicDuck.gain, on ? MENU_MUSIC_DEPTH : 1, 0.12, now);
+    rampTo(g.engineDuck.gain, this.menuEngineFloor, 0.12, now);
+    rampTo(g.musicDuck.gain, this.menuMusicFloor, 0.12, now);
   }
 
   suspend(): void {
@@ -374,6 +389,29 @@ export class AudioEngine implements AudioBus {
     return this.graph ? this.graph.ledger.count() : 0;
   }
 
+  /**
+   * Live mix state, for assertions the offline probe is structurally incapable of making: it has
+   * no model of a suspended context and no model of this state machine. Reading AudioParam
+   * `.value` returns the computed value at the current instant, so this reflects automation.
+   */
+  debugMixState(): {
+    contextState: string;
+    engineDuck: number;
+    musicDuck: number;
+    menuEngineFloor: number;
+    menuMusicFloor: number;
+  } | null {
+    const g = this.graph;
+    if (!g) return null;
+    return {
+      contextState: g.ctx.state,
+      engineDuck: g.engineDuck.gain.value,
+      musicDuck: g.musicDuck.gain.value,
+      menuEngineFloor: this.menuEngineFloor,
+      menuMusicFloor: this.menuMusicFloor,
+    };
+  }
+
   /** Permanent (non-one-shot) portion of the node count. */
   debugPermanentNodeCount(): number {
     return this.graph ? this.graph.ledger.permanentCount() : 0;
@@ -406,6 +444,8 @@ export class AudioEngine implements AudioBus {
       graph.music.setIntensity(this.pendingIntensity);
       graph.master.gain.value = this.masterVolume * 0.9;
       graph.musicVolume.gain.value = this.musicVolume;
+      graph.engineDuck.gain.value = this.menuEngineFloor;
+      graph.musicDuck.gain.value = this.menuMusicFloor;
 
       this.graph = graph;
       this.startTicker();
@@ -442,8 +482,11 @@ export class AudioEngine implements AudioBus {
     const g = this.graph;
     if (!g) return;
     const param = g.engineDuck.gain;
-    param.setTargetAtTime(UI_DUCK_DEPTH, when, 0.012);
-    param.setTargetAtTime(1, when + 0.16, 0.1);
+    // Cancel first so a menuMix ramp still in flight cannot be half-inherited, then duck to
+    // whichever is lower and release back to the menu floor rather than to unity.
+    param.cancelScheduledValues(when);
+    param.setTargetAtTime(Math.min(UI_DUCK_DEPTH, this.menuEngineFloor), when, 0.012);
+    param.setTargetAtTime(this.menuEngineFloor, when + 0.16, 0.1);
   }
 
   /** Momentary dip of the music bus so a transient reads as loud without being mixed louder. */
@@ -451,7 +494,8 @@ export class AudioEngine implements AudioBus {
     const g = this.graph;
     if (!g) return;
     const param = g.musicDuck.gain;
-    param.setTargetAtTime(depth, when, 0.02);
-    param.setTargetAtTime(1, when + 0.22, 0.42);
+    param.cancelScheduledValues(when);
+    param.setTargetAtTime(Math.min(depth, this.menuMusicFloor), when, 0.02);
+    param.setTargetAtTime(this.menuMusicFloor, when + 0.22, 0.42);
   }
 }

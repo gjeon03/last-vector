@@ -19,6 +19,10 @@ const suites = [
   // --require-clean: everything this suite produces is quoted as evidence, and a green run
   // against an uncommitted tree describes no commit at all.
   { name: 'audio-probe', script: 'audio-probe.mjs', args: ['--require-clean'] },
+  // A real AudioContext in a real browser. The offline probe is blind to suspension and to the
+  // mix state machine BY CONSTRUCTION — an OfflineAudioContext is never suspended — and both
+  // round-4 audio blockers lived in that gap, one of them surviving a 23/23-green gate.
+  { name: 'audio-live', script: 'audio-live.mjs', args: ['--require-clean'] },
 ];
 const results = [];
 

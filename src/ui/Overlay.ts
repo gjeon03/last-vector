@@ -189,8 +189,8 @@ export class Overlay {
     if (locked === this.pointerLocked) return;
     this.pointerLocked = locked;
     this.root.dataset['locked'] = locked ? '1' : '0';
-    /* Losing the pointer mid-flight is the universal "I need a menu" gesture. */
-    if (!locked && this.phase === 'flying' && !this.paused) {
+    /* Losing the pointer mid-run is the universal "I need a menu" gesture. */
+    if (!locked && this.inRun() && !this.paused) {
       this.paused = true;
       this.applyView();
       this.host.pause();
@@ -209,6 +209,18 @@ export class Overlay {
     this.root.remove();
   }
 
+  /**
+   * Phases in which the player is committed to a run and the pointer is captured. `beginRun`
+   * takes the lock during `countdown`, so gating recovery on `flying` alone left a ~3 s window
+   * where Esc and losing focus did nothing and the run went live and timed with a dead mouse.
+   * It is also a predicate the shipped copy depends on: CONTROLS states "ESC releases it and
+   * holds the flight" and lists ESC -> Pause unconditionally, and during the countdown that
+   * was simply false. One predicate for all three call sites so a fourth cannot drift.
+   */
+  private inRun(): boolean {
+    return this.phase === 'flying' || this.phase === 'countdown';
+  }
+
   /* -------------------------------------------------------------- view logic */
 
   /**
@@ -221,7 +233,7 @@ export class Overlay {
   }
 
   private viewForState(): ScreenView {
-    if (this.paused && this.phase === 'flying') return 'pause';
+    if (this.paused && this.inRun()) return 'pause';
     switch (this.phase) {
       case 'title':
         return 'title';
@@ -288,7 +300,7 @@ export class Overlay {
     if (ev.key === 'Escape') {
       const view = this.screens.current();
       if (view === 'none') {
-        if (this.phase === 'flying') {
+        if (this.inRun()) {
           ev.preventDefault();
           this.paused = true;
           this.applyView();

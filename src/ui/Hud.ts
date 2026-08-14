@@ -980,7 +980,17 @@ export class Hud {
   /* ----------------------------------------------------------- canvas layer */
 
   private paint(t: Telemetry, dt: number, alpha: number): void {
-    this.resize();
+    /*
+     * No per-frame layout read. `resize()` calls getBoundingClientRect *before* its own
+     * early-out, so calling it every frame forced a style and layout flush on a dirty tree —
+     * profiled at 220.7 us a frame, 16% of the CPU budget and 5x the largest three.js entry,
+     * for a value that almost never changes. Size changes already arrive through the window
+     * resize listener and the ResizeObserver in Overlay. The one thing neither catches is a
+     * density change with no size change — dragging the window to a different display — and
+     * reading devicePixelRatio costs nothing because it forces no layout.
+     */
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 2.5);
+    if (dpr !== this.dpr) this.resize();
     const ctx = this.ctx;
     const w = this.cw;
     const h = this.ch;

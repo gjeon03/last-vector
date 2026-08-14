@@ -197,6 +197,20 @@ export interface HarnessApi {
    * processes need both to render the same frame.
    */
   setFixedTimestep(dt: number | null): void;
+  /**
+   * Live audio state: context state and both duck gains.
+   *
+   * The offline probe cannot see a suspended context or a mix state machine, and both of the
+   * round-4 audio blockers lived in exactly that gap — one of them survived a 23/23-green gate.
+   * Returns null before the first user gesture, because the context does not exist until then.
+   */
+  audioState(): {
+    contextState: string;
+    engineDuck: number;
+    musicDuck: number;
+    menuEngineFloor: number;
+    menuMusicFloor: number;
+  } | null;
   /** Errors captured by the game's own error boundary. */
   errors(): string[];
 }

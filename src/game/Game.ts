@@ -1709,6 +1709,10 @@ export class Game {
     return this.gateHistory.slice();
   }
 
+  getAudioState(): ReturnType<AudioBus['debugMixState']> {
+    return this.audio.debugMixState();
+  }
+
   getErrors(): string[] {
     return this.errors.slice();
   }

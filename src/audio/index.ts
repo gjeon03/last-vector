@@ -5,7 +5,13 @@
  * measurement harness can render the production graph without a parallel implementation.
  */
 
-export { AudioEngine, createAudioGraph, UI_DUCK_DEPTH } from './AudioEngine.ts';
+export {
+  AudioEngine,
+  createAudioGraph,
+  MENU_DUCK_DEPTH,
+  MENU_MUSIC_DEPTH,
+  UI_DUCK_DEPTH,
+} from './AudioEngine.ts';
 export type { AudioEngineOptions, AudioGraph } from './AudioEngine.ts';
 
 export { EngineLayer } from './engineLayer.ts';
