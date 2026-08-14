@@ -69,6 +69,13 @@ export interface AudioGraph {
  */
 export const UI_DUCK_DEPTH = 0.28;
 
+/**
+ * Drive and score trims while a menu is showing. Exported so the offline harness models the same
+ * numbers rather than keeping a second copy of them, the way UI_DUCK_DEPTH already is.
+ */
+export const MENU_DUCK_DEPTH = 0.12;
+export const MENU_MUSIC_DEPTH = 0.55;
+
 /** Events loud enough that the pad should step out of their way for a moment. */
 const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
   'gatePass',
@@ -295,6 +302,29 @@ export class AudioEngine implements AudioBus {
     const g = this.graph;
     if (!g) return;
     rampTo(g.musicVolume.gain, this.musicVolume, 0.05, g.ctx.currentTime);
+  }
+
+  /**
+   * Menu mix: steps the drive and the score back without stopping the graph.
+   *
+   * `pause()` used to call `ctx.suspend()`, which freezes `currentTime` for the WHOLE graph
+   * including `sfxBus` — so every UI cue fired from the pause screen scheduled at
+   * `frozen + 0.012` and never synthesised. Measured: zero rendered frames over multiple 1.5 s
+   * windows for every cue on the pause, settings and controls screens, including the MASTER
+   * VOLUME slider, whose entire purpose is to let you hear the level you are setting. It also
+   * gave every cue emitted during the pause one identical timestamp, so they collapsed into a
+   * single instant on resume.
+   *
+   * The offline probe could not see any of this: it has no model of a suspended context.
+   *
+   * `ctx.suspend()` remains correct for `visibilitychange` — a hidden tab should cost nothing.
+   */
+  menuMix(on: boolean): void {
+    const g = this.graph;
+    if (!g) return;
+    const now = g.ctx.currentTime;
+    rampTo(g.engineDuck.gain, on ? MENU_DUCK_DEPTH : 1, 0.12, now);
+    rampTo(g.musicDuck.gain, on ? MENU_MUSIC_DEPTH : 1, 0.12, now);
   }
 
   suspend(): void {

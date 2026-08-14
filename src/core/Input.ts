@@ -262,7 +262,13 @@ export class Input {
     if (e.code === 'KeyT') this.onAction?.('match');
     if (e.code === 'KeyV') this.onAction?.('view');
     if (e.code === 'KeyN') this.onAction?.('restart');
-    if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
+    // Tab is only ours while the ship is being flown. Swallowing it unconditionally, on a window
+    // listener, combined with the interface layer correctly letting its range widgets own their
+    // own keys, left Tab and Shift+Tab dead on all five settings sliders — 5 of 13 settings rows
+    // trapped keyboard focus. Neither half was wrong alone; this is the second time in this
+    // project that two independently correct changes have combined into a defect.
+    if (e.code === 'Space') e.preventDefault();
+    if (e.code === 'Tab' && this.locked) e.preventDefault();
     this.keys.add(KEY_ALIASES[e.code] ?? e.code);
   };
 

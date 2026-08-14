@@ -253,7 +253,14 @@ export interface AudioBus {
   setIntensity(value: number): void;
   setMasterVolume(value: number): void;
   setMusicVolume(value: number): void;
-  /** Called when the tab loses focus. */
+  /**
+   * Steps the drive and score back while a menu is showing, WITHOUT stopping the graph.
+   *
+   * Distinct from suspend/resume on purpose: suspending freezes the context clock for the whole
+   * graph, so interface cues fired from a menu schedule into a frozen timeline and never sound.
+   */
+  menuMix(on: boolean): void;
+  /** Called when the tab loses focus. A hidden tab should cost nothing, so this really stops. */
   suspend(): void;
   resume(): void;
   dispose(): void;

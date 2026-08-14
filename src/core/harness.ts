@@ -93,7 +93,12 @@ export interface HarnessApi {
   readonly seed: number;
   /** Resolves once the first frame has been presented. */
   ready(): Promise<void>;
-  /** Skip menus and begin a run immediately. */
+  /**
+   * Begin a run immediately, skipping the title and briefing.
+   *
+   * `skipIntro` additionally skips the countdown. Every suite entry point passes it; an earlier
+   * docstring claimed the interface never does, which was never true of anything.
+   */
   startRun(options?: { skipIntro?: boolean }): void;
   /** Latest telemetry snapshot. */
   telemetry(): Telemetry;
@@ -105,6 +110,11 @@ export interface HarnessApi {
   /**
    * Fly a perfect racing line automatically. Used for unattended playthroughs and
    * for parking the camera at scripted vantage points.
+   */
+  /**
+   * `skill` scales the controller's GAIN, not stick travel: at `skill: 0.25` the autopilot can
+   * still emit 0.65 of stick. It is not a stick cap, and using it as one to measure control
+   * authority gives a wrong answer.
    */
   setAutopilot(enabled: boolean, options?: { skill?: number }): void;
   /** Jump the ship to a normalised position along the course, 0..1. */
@@ -125,6 +135,10 @@ export interface HarnessApi {
    * Takes frame pacing away from requestAnimationFrame so the caller drives the simulation.
    * While driven, the rAF loop renders nothing and advances nothing.
    */
+  /**
+   * Takes the frame loop from rAF. Zeroes the world clock on the transition into driven mode,
+   * so animated shaders start from the same phase in every process.
+   */
   setDriven(driven: boolean): void;
   /**
    * Advance the simulation by exactly `frames` steps of `dt`. Implies `setDriven(true)` and
@@ -132,7 +146,14 @@ export interface HarnessApi {
    * more. Call `setDriven(false)` to hand pacing back.
    */
   step(frames: number, dt?: number): Promise<void>;
-  /** Renders one frame and resolves after it has been presented. */
+  /**
+   * Waits for the compositor to show what has already been rendered. Does NOT render.
+   *
+   * While driven, the rAF loop advances nothing, so a frame only exists after `step()`. Calling
+   * `present()` alone therefore shows the PREVIOUS frame — which is how a capture of the start
+   * line was published as a picture of the destination. The old docstring said "renders one
+   * frame" and that was never true in either mode.
+   */
   present(): Promise<void>;
   /** Physical state of the ship this frame. */
   pose(): HarnessPose;
@@ -141,8 +162,13 @@ export interface HarnessApi {
   /** Every gate crossing so far, in order. Survives until the next `startRun`. */
   gateHistory(): GatePassRecord[];
   /**
-   * How much room the racing line actually has. Sampled along start -> every gate -> terminus
-   * against the rocks that are currently DRAWN, which is the same set that collides.
+   * How much room the racing line actually has, sampled against the rocks currently DRAWN —
+   * which is the same set that collides.
+   *
+   * Two limits, because quoting these digits without them has produced three different answers
+   * for one property. It lerps STRAIGHT CHORDS between gate centres, not the curve the ship
+   * flies, so it overstates room around the real racing line by up to 4.3x. And it is sample-count
+   * sensitive: state your `samples` alongside any figure or the figure is not reproducible.
    *
    * This exists because two defects were invisible without it. The course had a 320 m clear
    * tube from end to end, so no obstacle could ever be on the flown line; and the collision set
@@ -164,7 +190,12 @@ export interface HarnessApi {
   setSettings(patch: Partial<Settings>): void;
   /** Freeze/unfreeze simulation without pausing rendering. */
   setPaused(paused: boolean): void;
-  /** Deterministic time control: fixes dt so playthroughs are reproducible. */
+  /**
+   * Deterministic time control: fixes dt so playthroughs are reproducible.
+   *
+   * This fixes the STEP. `setDriven(true)` zeroes the world clock, which fixes the ORIGIN. Two
+   * processes need both to render the same frame.
+   */
   setFixedTimestep(dt: number | null): void;
   /** Errors captured by the game's own error boundary. */
   errors(): string[];

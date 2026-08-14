@@ -119,7 +119,9 @@ async function runScreenshotMatrix({ report, session, options }) {
 async function prepareMatrix(page, options) {
   verify(page, 'Browser page is unavailable.');
   await callHarness(page, 'ready', [], options.timeoutMs);
-  await callHarness(page, 'setSettings', [{ quality: options.quality, renderScale: 1, showFps: false }]);
+  // Film grain is uncorrelated between processes at +/-4/255, so with it on these PNGs differ
+  // byte-wise between runs and the suite cannot serve as a pixel baseline for anyone.
+  await callHarness(page, 'setSettings', [{ quality: options.quality, renderScale: 1, showFps: false, filmGrain: false }]);
   const settings = await callHarness(page, 'settings');
   verify(settings?.quality === options.quality && settings?.renderScale === 1, 'Screenshot quality settings did not apply.', {
     requested: { quality: options.quality, renderScale: 1 },

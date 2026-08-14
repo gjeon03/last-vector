@@ -148,6 +148,36 @@ async function runPlaytest({ report, session, options }) {
     return { atLoad, reachedBriefing: true, verbsNamed: ['MOUSE', 'SHIFT', 'SPACE'], reachedFlying: true };
   });
 
+  // hazard() and channelExcursion() were added to the harness with docstrings naming the exact
+  // defects they catch, and then no suite called either one — the quality-invariance property
+  // was instrumented and unasserted, which is the original failure mode verbatim.
+  await report.check({
+    id: 'M3.hazard-invariance',
+    name: 'The course is identical at every quality level',
+    criteria: [criterion('M3', 'full', 'Asserts the collision/draw parity property directly rather than leaving it instrumented and unchecked.')],
+    assertion:
+      'hazard() reports the same clearance profile at low, medium, high and ultra while the drawn '
+      + 'population changes, and the reference autopilot stays inside the debris-free channel.',
+  }, async () => {
+    const byQuality = {};
+    for (const quality of ['low', 'medium', 'high', 'ultra']) {
+      await callHarness(page, 'setSettings', [{ quality }]);
+      // Sample count is pinned: hazard() is sample-count sensitive, and three reviewers quoting
+      // its digits without stating theirs produced three different answers for one property.
+      byQuality[quality] = await callHarness(page, 'hazard', [900]);
+    }
+    const profile = (h) => `${h.minClearance}/${h.p05Clearance}/${h.medianClearance}/${h.tightFraction}`;
+    const first = profile(byQuality.low);
+    for (const [quality, h] of Object.entries(byQuality)) {
+      verify(profile(h) === first, `Clearance profile changes at quality "${quality}".`, { byQuality });
+    }
+    const gameplay = new Set(Object.values(byQuality).map((h) => h.gameplayRocks));
+    verify(gameplay.size === 1, 'Gameplay rock count changes with quality.', { byQuality });
+    const drawn = Object.values(byQuality).map((h) => h.activeRocks);
+    verify(drawn[0] < drawn[drawn.length - 1], 'Quality no longer changes the drawn population at all.', { byQuality });
+    return { samples: 900, byQuality };
+  });
+
   const boostOutcome = await report.check({
     id: 'FEEL.boost-latch',
     name: 'Overdrive latches cleanly instead of stuttering',

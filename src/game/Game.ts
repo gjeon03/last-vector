@@ -591,13 +591,16 @@ export class Game {
     if (this.paused || this.phase !== 'flying') return;
     this.paused = true;
     this.input.releaseLock();
-    this.audio.suspend();
+    // Duck, do not suspend. Suspending freezes the context clock for the whole graph, so every
+    // interface cue fired from a menu — including the master-volume slider's own feedback —
+    // scheduled into a frozen timeline and never sounded.
+    this.audio.menuMix(true);
   }
 
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
-    this.audio.resume();
+    this.audio.menuMix(false);
     if (this.phase === 'flying') this.input.requestLock();
   }
 
@@ -1459,7 +1462,25 @@ export class Game {
 
   /** Hands frame pacing to the caller. Used by `__LV.step`. */
   setDriven(driven: boolean): void {
+    const wasDriven = this.driven;
     this.driven = driven;
+    if (driven && !wasDriven) {
+      // Zero the world clock on taking control.
+      //
+      // Every animated shader reads `this.clock`, which accumulates from the moment the page
+      // loads — and the title screen runs free rAF frames before `startRun`, for however long
+      // the driver took to get there. So two harness processes stepping the identical sequence
+      // rendered different frames: mean drift 0.33/255, but single bright features moving up to
+      // 89/255. That invalidated every cross-process screenshot comparison in the project, and
+      // it is the mechanism behind two rounds of mismatched capture pairs — including one
+      // reviewer's blocker whose 336 changed pixels were reproduced, 206 of them, by a null
+      // control of two identical unpatched runs.
+      //
+      // `setFixedTimestep` fixes the STEP; this fixes the ORIGIN. Both are needed for two
+      // processes to render the same frame.
+      this.clock = 0;
+      this.grade.time = 0;
+    }
   }
 
   ready(): Promise<void> {

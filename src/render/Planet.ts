@@ -37,6 +37,7 @@ const PLANET_VERT = /* glsl */ `
 const PLANET_FRAG = /* glsl */ `
   precision highp float;
   varying vec3 vNormal;
+  varying vec3 vWorldNormal;
   varying vec3 vPos;
 
   uniform vec3 uSunDir;
@@ -107,6 +108,7 @@ const ATMO_VERT = /* glsl */ `
 const ATMO_FRAG = /* glsl */ `
   precision highp float;
   varying vec3 vNormal;
+  varying vec3 vWorldNormal;
   varying vec3 vView;
   uniform vec3 uSunDir;
   uniform vec3 uColor;

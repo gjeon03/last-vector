@@ -46,7 +46,10 @@ interface Leg {
    * leg. Measured on the reviewed build, a whole lap held the stick under 0.086 for 90% of its
    * frames and asked for more than a quarter stick in 5.1% of them.
    *
-   * Rock in the line is what converts a wide-open arc into continuous work.
+   * Rock CLOSE TO the line is what converts a wide-open arc into continuous work. Not rock IN
+   * it: hazard placement is strictly outside the corridor by construction, at
+   * `seg.radius + collisionRadius` and beyond, so a pilot flying the authored line never meets
+   * one. What narrowing buys is that deviation costs, and that the corridor reads as a corridor.
    *
    * Sized against the reference pilot's MEASURED overshoot, not against an authored ideal. A
    * proportional follower swings wide in proportion to how hard the leg turns — 110 m outside
