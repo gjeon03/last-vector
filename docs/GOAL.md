@@ -120,6 +120,28 @@ reads `git rev-parse HEAD` and `git status --porcelain` and stamps its own summa
 describe no commit. `--require-clean` refuses outright and exits 2, which is the flag for any run
 whose output will be quoted as evidence.
 
+| the countdown froze — or did it | which build the static server was handing out |
+| planet relit — or vanished | whether the shader linked at all |
+| the perf gate was green for four rounds | `deviceScaleFactor`, hard-asserted at 1 |
+
+Three later ones, all after the two checks above were written down. The first was aimed at
+someone else's work: a stale `dist` returned `countdown expired` where the fix says `frozen`,
+which reads as a defect in the lead's reasoning rather than as a stale server. A plausible wrong
+answer pointed at another person is the most expensive form this takes, because the correct
+conclusion — *my apparatus is stale* — is the one nobody reaches while reading somebody else's
+code.
+
+So the artefact rule needs its sharper form. **The question is not "did I build" but "is the
+thing being served the thing I changed".** Chaining the build and the serve into one command
+answers it; running them separately does not, and leaves no trace when it goes wrong.
+
+And the fourth row is the widest: for four review rounds the performance gate hard-asserted
+`deviceScaleFactor === 1`, so every frame-time figure in the project described a configuration
+the game does not ship in on any Retina or 4K display — 2.07 Mpx measured against 8.29 Mpx
+allocated. An apparatus can be blind by *assertion*, not only by parameter, and an assertion that
+pins a variable is indistinguishable from one that tests it until someone asks what it excludes.
+
+
 ## Verification limits — what this build's evidence does NOT cover
 
 Recorded honestly, because an unstated gap reads as coverage.
