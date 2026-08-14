@@ -110,6 +110,44 @@ async function runPlaytest({ report, session, options }) {
   // for a fraction of a second every two seconds at a 20% re-arm level, and before that it
   // re-lit for a single frame whenever regeneration crossed a hair above empty. Both read as a
   // fault rather than a resource, and neither is visible in a screenshot or a completion time.
+  // Every other check in this file starts a run through `window.__LV.startRun`, which is why the
+  // briefing screen could be built, rendered, mapped, and completely unreachable for the entire
+  // project without a single test noticing — and why, when it was finally routed, its own ENGAGE
+  // button was still wired to the handler that opened it, making the screen a dead end. Nothing
+  // that bypasses the interface can catch a defect in the interface's wiring.
+  await report.check({
+    id: 'UX.screen-flow',
+    name: 'A player can reach a run by clicking the real buttons',
+    criteria: [criterion('M6', 'full', 'Drives the title -> briefing -> countdown -> flying path through the DOM, which no harness-driven check exercises.')],
+    assertion:
+      'From a cold load the phase is title; clicking BEGIN RUN reaches the briefing; the briefing '
+      + 'names the mouse, SHIFT and SPACE; clicking ENGAGE reaches the countdown and then flying.',
+  }, async () => {
+    await reloadHarness(page, options);
+    const atLoad = await callHarness(page, 'phase');
+    verify(atLoad === 'title', `Cold load should present the title, got "${atLoad}".`, { atLoad });
+
+    const click = async (label) => {
+      const button = page.locator(`button:has-text("${label}"), [role=button]:has-text("${label}")`).first();
+      await button.waitFor({ state: 'visible', timeout: options.timeoutMs });
+      await button.click();
+    };
+
+    await click('BEGIN RUN');
+    await page.waitForFunction(() => window.__LV?.phase() === 'briefing', null, { timeout: options.timeoutMs });
+
+    // The one screen whose entire job is to teach the verbs has to name them.
+    const briefingText = await page.evaluate(() => document.body.innerText.toUpperCase());
+    const missingVerbs = ['MOUSE', 'SHIFT', 'SPACE'].filter((verb) => !briefingText.includes(verb));
+    verify(missingVerbs.length === 0, `Briefing does not name: ${missingVerbs.join(', ')}.`, { missingVerbs });
+
+    await click('ENGAGE');
+    await page.waitForFunction(() => ['countdown', 'flying'].includes(window.__LV?.phase()), null, { timeout: options.timeoutMs });
+    await page.waitForFunction(() => window.__LV?.phase() === 'flying', null, { timeout: options.timeoutMs });
+
+    return { atLoad, reachedBriefing: true, verbsNamed: ['MOUSE', 'SHIFT', 'SPACE'], reachedFlying: true };
+  });
+
   const boostOutcome = await report.check({
     id: 'FEEL.boost-latch',
     name: 'Overdrive latches cleanly instead of stuttering',
