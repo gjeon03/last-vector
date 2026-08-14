@@ -17,14 +17,15 @@ import { Input, type FlightCommand } from '../core/Input.ts';
 import {
   SettingsStore,
   qualityProfile,
+  readBestSplits,
   readBestTime,
   writeBestTime,
   type QualityProfile,
 } from '../core/Settings.ts';
-import { AudioEngine } from '../audio/index.ts';
+import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
 import { FICTION, FLIGHT, SCALE } from '../core/art.ts';
-import { clamp, clamp01, damp, lerp, smoothstep } from '../core/mathx.ts';
+import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
 import type {
   AudioBus,
@@ -34,8 +35,9 @@ import type {
   RunResult,
   Settings,
   Telemetry,
+  UiAudioBus,
 } from '../core/contracts.ts';
-import type { GatePassRecord, HarnessInput, HarnessPose, PerfSample } from '../core/harness.ts';
+import type { GatePassRecord, HarnessInput, HarnessPose, HazardReport, PerfSample } from '../core/harness.ts';
 
 /**
  * The game. Owns the render graph, the simulation, the phase machine and the automation
@@ -142,6 +144,9 @@ export class Game {
   private cinematic = false;
   private activeVantage: Vantage | null = null;
   private readonly gateHistory: GatePassRecord[] = [];
+  private readonly uiAudio: UiAudioBus;
+  /** Removes the one-shot audio-unlock listeners if the game is disposed before any gesture. */
+  private readonly releaseUnlock: () => void;
   private readonly errors: string[] = [];
 
   private frameTimes: number[] = [];
@@ -262,22 +267,18 @@ export class Game {
       spread: SCALE.asteroidFieldRadius * 0.55,
       // Absolute metres, deliberately not a multiple of the aperture: shrinking the gate
       // for difficulty must not silently shrink the flyable channel as well.
-      corridor: 300,
+      // The debris shell used to start 300 m from the spine, which put the inner wall of the
+      // field outside the racing line everywhere. The channel is now cut per leg instead.
+      corridor: 84,
       minRadius: 9,
       maxRadius: 160,
-      // The flown line: start -> every gate in order -> the terminus.
-      keepClearSegments: (() => {
-        const nodes = [
-          this.course.startPosition.clone(),
-          ...this.course.gates.map((g) => g.position.clone()),
-          this.course.terminusPosition.clone(),
-        ];
-        const segments = [];
-        for (let i = 0; i < nodes.length - 1; i++) {
-          segments.push({ a: nodes[i], b: nodes[i + 1], radius: 320 });
-        }
-        return segments;
-      })(),
+      hazardCount: 460,
+      // Narrow: rock packed against the channel wall reads as a corridor. Spread wide it just
+      // raises the field density and the line stays visually open.
+      hazardBand: 120,
+      // The flown volume: the curved spine the ship follows AND the chords a fast pilot cuts
+      // to, each at its own leg's clearance. Built by Course, which is what knows the legs.
+      keepClearSegments: this.course.clearChannel,
       keepClear: [
         // The spawn point, generously: the very first thing a player sees must not be a
         // collision. And every aperture, so threading a cairn is never blocked by a boulder
@@ -350,11 +351,26 @@ export class Game {
     };
 
     this.audio = new AudioEngine();
+    this.uiAudio = createUiAudio(this.audio);
+    // Unlock on the first gesture anywhere, not behind START. The whole front end was silent on
+    // first load — title, attract flight, briefing, every settings interaction — because the
+    // only unlock call site was inside beginRun, and four synths were unreachable as a result.
+    // Capture phase, so it runs before anything can stop propagation.
+    const unlock = (): void => {
+      this.uiAudio.unlock();
+      window.removeEventListener('pointerdown', unlock, true);
+      window.removeEventListener('keydown', unlock, true);
+    };
+    window.addEventListener('pointerdown', unlock, true);
+    window.addEventListener('keydown', unlock, true);
+    this.releaseUnlock = unlock;
+
     this.overlay = new Overlay(options.root, {
       // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
       // its control primer were fully built and mapped but nothing ever routed to them, so the
       // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
       // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
+      audio: this.uiAudio,
       start: () => this.toBriefing(),
       engage: () => this.beginRun(),
       restart: () => this.restart(),
@@ -443,6 +459,7 @@ export class Game {
       elapsed: 0,
       splits: [],
       bestTime: readBestTime(this.course.id),
+      bestSplits: readBestSplits(this.course.id),
       sectorName: FICTION.sectorName,
       destinationName: FICTION.destinationName,
       callout: null,
@@ -504,6 +521,7 @@ export class Game {
     this.result = null;
     this.telemetry.splits = [];
     this.telemetry.bestTime = readBestTime(this.course.id);
+    this.telemetry.bestSplits = readBestSplits(this.course.id);
     this.autopilot = false;
     this.cinematic = false;
     this.activeVantage = null;
@@ -749,7 +767,7 @@ export class Game {
     void dt;
     const shipRadius = this.ship.radius;
     let nearest = Infinity;
-    for (const rock of this.asteroids.instances) {
+    for (const rock of this.asteroids.activeInstances) {
       const dx = rock.position.x - this.ship.position.x;
       const dy = rock.position.y - this.ship.position.y;
       const dz = rock.position.z - this.ship.position.z;
@@ -762,6 +780,9 @@ export class Game {
 
       const overlap = rock.radius + shipRadius - dist;
       if (overlap > 0 && dist > 1e-3) {
+        // A graze that barely breaks the surface is a scrape, not a strike. `scrape` was
+        // synthesised but never called from anywhere, so sliding along a rock was silent.
+        if (overlap < shipRadius * 0.6) this.audio.play('scrape', clamp01(overlap / (shipRadius * 0.6)));
         this.tmpA.set(-dx / dist, -dy / dist, -dz / dist);
         const severity = this.ship.applyImpact(this.tmpA, overlap);
         if (severity > 0.02) {
@@ -802,7 +823,10 @@ export class Game {
     const splits = this.course.passes.map((p) => p.time);
     const best = readBestTime(this.course.id);
     const isNewBest = best === null || this.elapsed < best;
-    if (isNewBest) writeBestTime(this.course.id, this.elapsed);
+    // Read the previous best's splits BEFORE overwriting, so the results screen compares this
+    // run against the run it beat rather than against itself.
+    const bestSplits = readBestSplits(this.course.id);
+    if (isNewBest) writeBestTime(this.course.id, this.elapsed, splits);
 
     const par = (this.course.totalLength / FLIGHT.cruiseSpeed) * 1.06;
     const ratio = this.elapsed / par;
@@ -817,6 +841,7 @@ export class Game {
       totalTime: this.elapsed,
       splits,
       bestTime: best,
+      bestSplits,
       isNewBest,
       gatesCleared: this.course.passes.length,
       gatesTotal: this.course.gates.length,
@@ -937,7 +962,7 @@ export class Game {
   private clearVantageOfObstacles(point: THREE.Vector3): void {
     for (let pass = 0; pass < 4; pass++) {
       let moved = false;
-      for (const rock of this.asteroids.instances) {
+      for (const rock of this.asteroids.activeInstances) {
         const clearance = rock.radius + this.ship.radius + 220;
         const dSq = rock.position.distanceToSquared(point);
         if (dSq >= clearance * clearance) continue;
@@ -1493,6 +1518,54 @@ export class Game {
     };
   }
 
+  /** See `HazardReport`. Walks the flown line and measures the room around it. */
+  getHazard(samples = 900): HazardReport {
+    const nodes = [
+      this.course.startPosition.clone(),
+      ...this.course.gates.map((g) => g.position.clone()),
+      this.course.terminusPosition.clone(),
+    ];
+    const rocks = this.asteroids.activeInstances;
+    const point = new THREE.Vector3();
+    const clearances: number[] = [];
+    const perSegment = Math.max(2, Math.floor(samples / (nodes.length - 1)));
+
+    for (let i = 0; i < nodes.length - 1; i++) {
+      for (let s = 0; s < perSegment; s++) {
+        point.lerpVectors(nodes[i], nodes[i + 1], s / (perSegment - 1));
+        let nearest = Infinity;
+        for (const rock of rocks) {
+          const d = point.distanceTo(rock.position) - rock.radius;
+          if (d < nearest) nearest = d;
+        }
+        clearances.push(nearest);
+      }
+    }
+
+    const sorted = [...clearances].sort((a, b) => a - b);
+    const at = (f: number): number => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
+    return {
+      activeRocks: rocks.length,
+      gameplayRocks: this.asteroids.instances.filter((r) => r.gameplay).length,
+      totalRocks: this.asteroids.instances.length,
+      minClearance: +sorted[0].toFixed(1),
+      p05Clearance: +at(0.05).toFixed(1),
+      medianClearance: +at(0.5).toFixed(1),
+      tightFraction: +(clearances.filter((c) => c < 200).length / clearances.length).toFixed(3),
+    };
+  }
+
+  /** See `channelExcursion`. Positive metres are outside the protected volume. */
+  getChannelExcursion(): number {
+    const pos = this.ship.position;
+    let best = Infinity;
+    for (const seg of this.course.clearChannel) {
+      const d = distanceToSegment(pos, seg.a, seg.b) - seg.radius;
+      if (d < best) best = d;
+    }
+    return +best.toFixed(1);
+  }
+
   getGateHistory(): GatePassRecord[] {
     return this.gateHistory.slice();
   }
@@ -1533,6 +1606,7 @@ export class Game {
 
   dispose(): void {
     this.disposed = true;
+    this.releaseUnlock();
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('error', this.handleError);
     window.removeEventListener('unhandledrejection', this.handleRejection);

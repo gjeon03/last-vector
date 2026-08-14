@@ -36,6 +36,24 @@ interface Leg {
   length: number;
   /** Roll of the gate aperture about the flight axis, in radians. */
   bank: number;
+  /**
+   * Half-width in metres of the debris-free channel along the leg's racing line.
+   *
+   * This is the lever that decides whether a leg asks anything of the pilot. Turn angle over
+   * leg length cannot: at a 288 m minimum turn radius, even the tightest leg here needs a
+   * radius of about 3.2 km, an order of magnitude inside the ship's capability, and shortening
+   * legs enough to close that gap would collapse a nine-gate course to a few hundred metres a
+   * leg. Measured on the reviewed build, a whole lap held the stick under 0.086 for 90% of its
+   * frames and asked for more than a quarter stick in 5.1% of them.
+   *
+   * Rock in the line is what converts a wide-open arc into continuous work.
+   *
+   * Sized against the reference pilot's MEASURED overshoot, not against an authored ideal. A
+   * proportional follower swings wide in proportion to how hard the leg turns — 110 m outside
+   * the channel on the 1.02 rad leg — so the channel has to carry that or the course is unfair
+   * to anything that is not a perfect path follower.
+   */
+  clearance: number;
   label: string;
 }
 
@@ -54,15 +72,19 @@ interface Leg {
  * came down too: 210 m across is still forgiving at 420 m/s, but it is no longer a barn door.
  */
 const LEGS: Leg[] = [
-  { turn: 0.1, climb: -0.04, length: 1.0, bank: 0.0, label: 'open' },
-  { turn: -0.62, climb: 0.14, length: 0.95, bank: 0.5, label: 'first bend' },
-  { turn: 0.52, climb: -0.4, length: 0.6, bank: -0.35, label: 'the dive' },
-  { turn: 1.02, climb: 0.06, length: 0.78, bank: 0.85, label: 'hard right' },
-  { turn: -0.5, climb: 0.34, length: 1.05, bank: -0.6, label: 'climb out' },
-  { turn: -0.92, climb: -0.16, length: 0.56, bank: -0.9, label: 'the shelf cut' },
-  { turn: 0.2, climb: -0.14, length: 1.4, bank: 0.2, label: 'the long run' },
-  { turn: 0.78, climb: 0.2, length: 0.52, bank: 0.7, label: 'the pinch' },
-  { turn: -0.3, climb: -0.08, length: 1.0, bank: -0.2, label: 'terminus approach' },
+  // Wide on purpose: the opening leg is where a first-time pilot learns that the stick has
+  // inertia behind it, and learning that against a rock is not teaching.
+  { turn: 0.1, climb: -0.04, length: 1.0, bank: 0.0, clearance: 320, label: 'open' },
+  { turn: -0.62, climb: 0.14, length: 0.95, bank: 0.5, clearance: 240, label: 'first bend' },
+  { turn: 0.52, climb: -0.4, length: 0.6, bank: -0.35, clearance: 150, label: 'the dive' },
+  { turn: 1.02, climb: 0.06, length: 0.78, bank: 0.85, clearance: 275, label: 'hard right' },
+  { turn: -0.5, climb: 0.34, length: 1.05, bank: -0.6, clearance: 210, label: 'climb out' },
+  { turn: -0.92, climb: -0.16, length: 0.56, bank: -0.9, clearance: 145, label: 'the shelf cut' },
+  // The long run is the rest bar: it is where the reserve refills and where a player can look
+  // up at the sky. Taking that away would make the course relentless rather than paced.
+  { turn: 0.2, climb: -0.14, length: 1.4, bank: 0.2, clearance: 300, label: 'the long run' },
+  { turn: 0.78, climb: 0.2, length: 0.52, bank: 0.7, clearance: 175, label: 'the pinch' },
+  { turn: -0.3, climb: -0.08, length: 1.0, bank: -0.2, clearance: 260, label: 'terminus approach' },
 ];
 
 export class Course {
@@ -75,6 +97,20 @@ export class Course {
   readonly terminusPosition = new THREE.Vector3();
   readonly terminusNormal = new THREE.Vector3();
   readonly totalLength: number;
+  /**
+   * Half-width of the debris-free channel for each racing-line segment, in order:
+   * start->gate0, gate0->gate1, ... , lastGate->terminus.
+   */
+  readonly legClearance: number[] = [];
+  /**
+   * The volume that must stay free of debris: the union of the curved spine the ship actually
+   * flies and the gate-to-gate chords a fast pilot cuts to.
+   *
+   * Protecting only the chords put a rock inside the arc on the tightest leg — the flown path
+   * bulges outside a straight chord, and at 100 m of clearance that bulge is larger than the
+   * channel. The autopilot took a hull strike at gate 5 flying the line exactly as authored.
+   */
+  readonly clearChannel: { a: THREE.Vector3; b: THREE.Vector3; radius: number }[] = [];
   readonly id: string;
 
   /** Index of the gate the player must clear next; equals `gates.length` once all are done. */
@@ -132,7 +168,13 @@ export class Course {
         tangent: forward.clone().normalize(),
         bank: leg.bank,
       });
+      // One entry per segment ENTERING this gate, so the channel narrows on the approach to
+      // the gate that terminates the leg rather than after it.
+      this.legClearance.push(leg.clearance);
     }
+
+    // The run-out to the terminus inherits the last leg's channel.
+    this.legClearance.push(LEGS[LEGS.length - 1].clearance);
 
     // Run-out past the final gate, where the terminus sits.
     for (let s = 0; s < 4; s++) {
@@ -148,6 +190,29 @@ export class Course {
     const sampleCount = 220;
     for (let i = 0; i <= sampleCount; i++) {
       this.spine.push(this.curve.getPointAt(i / sampleCount));
+    }
+
+    // Chords first: start -> each gate -> terminus, at that leg's clearance.
+    const chordNodes = [this.startPosition.clone(), ...gateAnchors.map((a) => a.position.clone())];
+    chordNodes.push(this.terminusPosition.clone());
+    for (let i = 0; i < chordNodes.length - 1; i++) {
+      this.clearChannel.push({
+        a: chordNodes[i],
+        b: chordNodes[i + 1],
+        radius: this.legClearance[i] ?? 320,
+      });
+    }
+    // Then the curve itself, at the clearance of whichever leg each sample falls in.
+    for (let i = 0; i < this.spine.length - 1; i++) {
+      const legIndex = Math.min(
+        this.legClearance.length - 1,
+        Math.floor((i / (this.spine.length - 1)) * this.legClearance.length),
+      );
+      this.clearChannel.push({
+        a: this.spine[i],
+        b: this.spine[i + 1],
+        radius: this.legClearance[legIndex],
+      });
     }
 
     for (let i = 0; i < gateAnchors.length; i++) {
@@ -280,6 +345,16 @@ export class Course {
   /**
    * A racing line target for the autopilot: aim at the next gate, but bias toward the gate
    * *after* it once close, so the AI carves through rather than stopping at each aperture.
+   */
+  /**
+   * Where the autopilot should point.
+   *
+   * Pure pursuit against the next gate. A spine-lookahead follower was tried instead, on the
+   * theory that a waypoint jumping the instant a gate clears is what makes the path bulge
+   * outside the turn — it was worse on every measure: the run did not finish and the excursion
+   * outside the debris-free channel went from 110 m to 732 m, because aiming at a point far
+   * ahead on the curve while the ship is off the curve cuts the corner instead of rejoining it.
+   * Left as pure pursuit, and the corridor is sized against its MEASURED overshoot instead.
    */
   autopilotTarget(position: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
     const gate = this.nextGate;

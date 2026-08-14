@@ -120,6 +120,24 @@ export interface HarnessApi {
   activeInput(): Required<HarnessInput>;
   /** Every gate crossing so far, in order. Survives until the next `startRun`. */
   gateHistory(): GatePassRecord[];
+  /**
+   * How much room the racing line actually has. Sampled along start -> every gate -> terminus
+   * against the rocks that are currently DRAWN, which is the same set that collides.
+   *
+   * This exists because two defects were invisible without it. The course had a 320 m clear
+   * tube from end to end, so no obstacle could ever be on the flown line; and the collision set
+   * was the full field while the drawn set followed the quality profile, so a third of the
+   * rocks a player could hit were never rendered. Both produced bit-identical traces.
+   */
+  hazard(samples?: number): HazardReport;
+  /**
+   * Metres the ship is currently OUTSIDE the debris-free channel. Negative means inside it.
+   *
+   * The channel is authored, but what a pilot flies is a controller's output, and on the
+   * sharpest leg the two are not the same: a proportional follower swings wide of both the
+   * curve and the chord. This measures that gap instead of guessing at it.
+   */
+  channelExcursion(): number;
   /** Collect a perf sample over `seconds` of real time. */
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;
@@ -130,6 +148,22 @@ export interface HarnessApi {
   setFixedTimestep(dt: number | null): void;
   /** Errors captured by the game's own error boundary. */
   errors(): string[];
+}
+
+export interface HazardReport {
+  /** Rocks drawn, and therefore collidable, right now. */
+  activeRocks: number;
+  /** Rocks classed as course rather than scenery. Must not change with quality. */
+  gameplayRocks: number;
+  /** Every rock that exists, drawn or not. */
+  totalRocks: number;
+  /** Metres from the line to the nearest rock SURFACE, at the tightest point of the course. */
+  minClearance: number;
+  /** 5th percentile and median clearance across the sampled line. */
+  p05Clearance: number;
+  medianClearance: number;
+  /** Fraction of the line with less than 200 m of room either side. */
+  tightFraction: number;
 }
 
 declare global {

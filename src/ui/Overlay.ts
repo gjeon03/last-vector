@@ -93,9 +93,18 @@ export class Overlay {
   private proxyHost(): HudHost {
     const host = this.host;
     return {
+      // Pass-through only. The call sites — hover, click, back on the actual widgets — are the
+      // real work and are not done here.
+      audio: host.audio,
       start: () => {
         this.paused = false;
         host.start();
+      },
+      /* `start` opens the briefing; `engage` is what actually launches the run. Routing the
+         briefing's own button through `start` would send it back to itself. */
+      engage: () => {
+        this.paused = false;
+        host.engage();
       },
       restart: () => {
         /* Close the pause screen before handing off, so the menu never lingers over a run

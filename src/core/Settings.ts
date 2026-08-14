@@ -160,17 +160,43 @@ export class SettingsStore {
   }
 }
 
-export function readBestTime(courseId: string): number | null {
-  const all = readJson<Record<string, number>>(BEST_KEY) ?? {};
-  const v = all[courseId];
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+interface BestRun {
+  time: number;
+  /** Cumulative elapsed time at each gate on the best run. */
+  splits: number[];
 }
 
-export function writeBestTime(courseId: string, seconds: number): void {
-  const all = readJson<Record<string, number>>(BEST_KEY) ?? {};
-  const prev = all[courseId];
-  if (typeof prev === 'number' && prev <= seconds) return;
-  all[courseId] = seconds;
+/** Older saves stored a bare number; read both shapes so a personal best survives the upgrade. */
+function readBestRun(courseId: string): BestRun | null {
+  const all = readJson<Record<string, number | BestRun>>(BEST_KEY) ?? {};
+  const v = all[courseId];
+  if (typeof v === 'number') return Number.isFinite(v) ? { time: v, splits: [] } : null;
+  if (v && typeof v.time === 'number' && Number.isFinite(v.time)) {
+    return { time: v.time, splits: Array.isArray(v.splits) ? v.splits : [] };
+  }
+  return null;
+}
+
+export function readBestTime(courseId: string): number | null {
+  return readBestRun(courseId)?.time ?? null;
+}
+
+/**
+ * The per-gate splits of the best run.
+ *
+ * The results screen wants a true delta against the player's own best, and a scalar best time
+ * cannot support one — which is how a column headed with a comparison ended up being filled
+ * with a comparison against the current run's own fastest leg.
+ */
+export function readBestSplits(courseId: string): number[] {
+  return readBestRun(courseId)?.splits ?? [];
+}
+
+export function writeBestTime(courseId: string, seconds: number, splits: number[] = []): void {
+  const all = readJson<Record<string, number | BestRun>>(BEST_KEY) ?? {};
+  const prev = readBestRun(courseId);
+  if (prev && prev.time <= seconds) return;
+  all[courseId] = { time: seconds, splits: splits.slice() };
   writeJson(BEST_KEY, all);
 }
 

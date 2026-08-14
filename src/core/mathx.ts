@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 /** Small numeric helpers shared across the simulation. Kept dependency-free and inlineable. */
 
 /**
@@ -41,4 +43,18 @@ export const deadzone = (v: number, dz: number): number => {
 export const expo = (v: number, amount: number): number => {
   const a = clamp01(amount);
   return v * (a * v * v + (1 - a));
+};
+
+const segScratch = new THREE.Vector3();
+const segScratchB = new THREE.Vector3();
+
+/** Shortest distance from a point to the line segment a-b. */
+export const distanceToSegment = (point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number => {
+  segScratch.subVectors(b, a);
+  const lenSq = segScratch.lengthSq();
+  if (lenSq < 1e-6) return point.distanceTo(a);
+  segScratchB.subVectors(point, a);
+  const t = clamp01(segScratchB.dot(segScratch) / lenSq);
+  segScratchB.copy(a).addScaledVector(segScratch, t);
+  return point.distanceTo(segScratchB);
 };

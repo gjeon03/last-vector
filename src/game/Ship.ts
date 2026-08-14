@@ -47,6 +47,22 @@ const MAX_RATE = {
   roll: 2.7,
 };
 
+/** Three uncorrelated values in [0,1) from three floats. Dave Hoskins' hash33, fract-based. */
+const hashScratch = { x: 0, y: 0, z: 0 };
+function hash3(a: number, b: number, c: number): { x: number; y: number; z: number } {
+  let x = (a * 0.1031) % 1;
+  let y = (b * 0.1030) % 1;
+  let z = (c * 0.0973) % 1;
+  const d = x * (y + 33.33) + y * (z + 33.33) + z * (x + 33.33);
+  x = ((x + d) * (y + d)) % 1;
+  y = ((y + d) * (z + d)) % 1;
+  z = ((z + d) * (x + d)) % 1;
+  hashScratch.x = x < 0 ? x + 1 : x;
+  hashScratch.y = y < 0 ? y + 1 : y;
+  hashScratch.z = z < 0 ? z + 1 : z;
+  return hashScratch;
+}
+
 export class Ship {
   readonly position = new THREE.Vector3();
   readonly quaternion = new THREE.Quaternion();
@@ -294,6 +310,9 @@ export class Ship {
   }
 
   /** Applies a collision response and returns the severity, 0..1. */
+  /** Contacts so far this run, so two identical hits at the same place still differ. */
+  private impacts = 0;
+
   applyImpact(normal: THREE.Vector3, penetration: number): number {
     const closing = Math.max(0, -this.velocity.dot(normal));
     const severity = clamp01(closing / 520);
@@ -304,9 +323,15 @@ export class Ship {
     this.velocity.multiplyScalar(1 - 0.35 * severity);
     this.position.addScaledVector(normal, penetration + 0.5);
 
-    this.angularVelocity.x += (Math.random() - 0.5) * severity * 2.4;
-    this.angularVelocity.y += (Math.random() - 0.5) * severity * 2.4;
-    this.angularVelocity.z += (Math.random() - 0.5) * severity * 3.2;
+    // Deterministic. `Math.random` here made every run that touched a rock unreproducible, so
+    // a collision bug could never be re-flown from the same seed — and collisions are now
+    // reachable by design rather than by accident. The tumble still has to look arbitrary, so
+    // it is hashed from the contact itself: the same hit always produces the same spin.
+    const h = hash3(this.position.x + this.impacts, this.position.z - severity, closing);
+    this.impacts++;
+    this.angularVelocity.x += (h.x - 0.5) * severity * 2.4;
+    this.angularVelocity.y += (h.y - 0.5) * severity * 2.4;
+    this.angularVelocity.z += (h.z - 0.5) * severity * 3.2;
 
     this.hull = clamp01(this.hull - severity * 0.22);
     this.shakeImpulse = Math.min(1, this.shakeImpulse + severity * 1.2 + 0.15);

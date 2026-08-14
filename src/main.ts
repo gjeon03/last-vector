@@ -153,6 +153,8 @@ function installHarness(game: Game): void {
     pose: () => game.getPose(),
     activeInput: () => game.getActiveInput(),
     gateHistory: () => game.getGateHistory(),
+    hazard: (samples?: number) => game.getHazard(samples),
+    channelExcursion: () => game.getChannelExcursion(),
     profile: async (seconds: number): Promise<PerfSample> => {
       game.setDriven(false);
       game.setFixedTimestep(null);

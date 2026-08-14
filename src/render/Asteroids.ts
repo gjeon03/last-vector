@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Rng, fbm3 } from '../core/rng.ts';
 import { GLSL_NOISE } from './glslNoise.ts';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { distanceToSegment } from '../core/mathx.ts';
 import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.ts';
 import { PALETTE } from '../core/art.ts';
 
@@ -178,6 +179,11 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
 
 export interface AsteroidInstance {
   position: THREE.Vector3;
+  /**
+   * Close enough to the racing line to be part of the course. Gameplay rock is always drawn
+   * and always collides, at every quality level, so difficulty does not follow the settings.
+   */
+  gameplay: boolean;
   /** Collision radius in metres, i.e. scale * the variant's displaced bound. */
   radius: number;
   /** Uniform scale applied to the unit variant geometry. */
@@ -188,19 +194,14 @@ export interface AsteroidInstance {
   quaternion: THREE.Quaternion;
 }
 
-const segScratch = new THREE.Vector3();
-const segScratchB = new THREE.Vector3();
 
-/** Shortest distance from a point to a line segment. */
-function distanceToSegment(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
-  segScratch.subVectors(b, a);
-  const lenSq = segScratch.lengthSq();
-  if (lenSq < 1e-6) return point.distanceTo(a);
-  segScratchB.subVectors(point, a);
-  const t = Math.max(0, Math.min(1, segScratchB.dot(segScratch) / lenSq));
-  segScratchB.copy(a).addScaledVector(segScratch, t);
-  return point.distanceTo(segScratchB);
-}
+
+/**
+ * Metres from the racing line inside which a rock is part of the course rather than scenery.
+ * Comfortably wider than any line a player will actually fly, so nothing a pilot can reach is
+ * ever classified as decoration.
+ */
+const GAMEPLAY_BAND = 900;
 
 interface AsteroidBatch {
   mesh: THREE.InstancedMesh;
@@ -212,6 +213,14 @@ export interface AsteroidFieldOptions {
   lighting: LightingUniforms;
   /** Points the field is scattered around; typically the course spine. */
   spine: THREE.Vector3[];
+  /**
+   * How many of `count` are placed against the RACING LINE rather than the spine, hugging each
+   * leg's own clearance. Scattering around the spine alone left the median clearance at 448 m
+   * with 1.9% of the line under 200 m — the field was everywhere except where it was flown.
+   */
+  hazardCount?: number;
+  /** Metres of radial band the hazard rocks occupy, outward from each leg's clearance. */
+  hazardBand?: number;
   /** Metres either side of the spine. */
   spread: number;
   /** Metres of clear space kept around the spine so the course is always flyable. */
@@ -236,7 +245,17 @@ export interface AsteroidFieldOptions {
 
 export class AsteroidField {
   readonly object = new THREE.Group();
+  /**
+   * Every rock that exists. NOT the collision set — use `activeInstances` for that.
+   *
+   * Collision used to run over this list while the drawn count followed the quality profile,
+   * so at the default quality 37% of the rocks a player could hit were never rendered, and at
+   * the lowest quality 72% were. That is an invisible wall, and it was invisible to the test
+   * suite too because both traces were bit-identical.
+   */
   readonly instances: AsteroidInstance[] = [];
+  /** The rocks currently drawn. This is the collision set, by construction. */
+  readonly activeInstances: AsteroidInstance[] = [];
 
   private readonly batches: AsteroidBatch[] = [];
   private readonly material: THREE.ShaderMaterial;
@@ -323,8 +342,16 @@ export class AsteroidField {
       }
       if (blocked) continue;
 
+      // Anything close enough to the flown line to matter to a pilot is GAMEPLAY, and gameplay
+      // rock is never removed by a quality setting.
+      let nearestLine = Infinity;
+      for (const seg of options.keepClearSegments ?? []) {
+        nearestLine = Math.min(nearestLine, distanceToSegment(candidate, seg.a, seg.b) - collisionRadius);
+      }
+
       const instance: AsteroidInstance = {
         position: candidate,
+        gameplay: nearestLine <= GAMEPLAY_BAND,
         radius: collisionRadius,
         scale,
         spinAxis: new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
@@ -338,10 +365,86 @@ export class AsteroidField {
       perVariant[variant].push(instance);
     }
 
+    // ---------------------------------------------------------------- hazard placement
+    // Placed against the flown line, weighted toward the legs with the least room, so the
+    // demanding legs are the ones that actually have rock in them.
+    const segs = options.keepClearSegments ?? [];
+    const hazardCount = Math.min(options.hazardCount ?? 0, segs.length * 90);
+    if (segs.length > 0 && hazardCount > 0) {
+      const weights = segs.map((seg) => 1 / Math.max(seg.radius, 40));
+      const total = weights.reduce((a, b) => a + b, 0);
+      const band = options.hazardBand ?? 260;
+      const axis = new THREE.Vector3();
+      const perp = new THREE.Vector3();
+      const perp2 = new THREE.Vector3();
+      const along = new THREE.Vector3();
+
+      for (let n = 0; n < hazardCount; n++) {
+        // Pick a leg by inverse clearance, so a 100 m leg gets roughly three times the rock of
+        // a 300 m one.
+        let pick = rng.next() * total;
+        let si = 0;
+        while (si < weights.length - 1 && pick > weights[si]) { pick -= weights[si]; si++; }
+        const seg = segs[si];
+
+        axis.subVectors(seg.b, seg.a);
+        const legLength = axis.length();
+        if (legLength < 1) continue;
+        axis.multiplyScalar(1 / legLength);
+        perp.set(-axis.z, 0, axis.x);
+        if (perp.lengthSq() < 1e-4) perp.set(1, 0, 0);
+        perp.normalize();
+        perp2.crossVectors(axis, perp).normalize();
+
+        const spread01 = Math.pow(rng.next(), 2.4);
+        const scale = options.minRadius * Math.pow(options.maxRadius / options.minRadius, spread01);
+        const size01 = Math.min(1, (scale - options.minRadius) / (options.maxRadius - options.minRadius));
+        const variant = size01 > 0.55 ? rng.int(0, 4) : size01 > 0.22 ? rng.int(4, 9) : rng.int(9, VARIANTS);
+        const collisionRadius = scale * this.variantGeometries[variant].boundRadius;
+
+        // Kept away from the leg's ends so a rock never lands on top of a gate aperture.
+        const t = rng.range(0.12, 0.88);
+        along.copy(seg.a).addScaledVector(axis, legLength * t);
+        const angle = rng.range(0, Math.PI * 2);
+        const dist = seg.radius + collisionRadius + Math.pow(rng.next(), 1.5) * band;
+        const candidate = along.clone()
+          .addScaledVector(perp, Math.cos(angle) * dist)
+          .addScaledVector(perp2, Math.sin(angle) * dist);
+
+        let blocked = false;
+        for (const zone of options.keepClear ?? []) {
+          if (candidate.distanceTo(zone.center) < zone.radius + collisionRadius) { blocked = true; break; }
+        }
+        if (!blocked) {
+          for (const other of segs) {
+            if (distanceToSegment(candidate, other.a, other.b) < other.radius + collisionRadius) { blocked = true; break; }
+          }
+        }
+        if (blocked) continue;
+
+        const instance: AsteroidInstance = {
+          position: candidate,
+          gameplay: true,
+          radius: collisionRadius,
+          scale,
+          spinAxis: new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
+          spinRate: rng.signed(0.09),
+          quaternion: new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
+            rng.range(0, Math.PI * 2),
+          ),
+        };
+        this.instances.push(instance);
+        perVariant[variant].push(instance);
+      }
+    }
+
     const tint = new THREE.Color();
     for (let v = 0; v < VARIANTS; v++) {
       const list = perVariant[v];
       if (list.length === 0) continue;
+      // Gameplay rock first, so truncating the drawn count can only ever remove scenery.
+      list.sort((a, b) => Number(b.gameplay) - Number(a.gameplay));
       const mesh = new THREE.InstancedMesh(this.variantGeometries[v].geometry, this.material, list.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -358,6 +461,7 @@ export class AsteroidField {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.batches.push({ mesh, instances: list });
       this.object.add(mesh);
+      for (const inst of list) this.activeInstances.push(inst);
     }
   }
 
@@ -392,11 +496,20 @@ export class AsteroidField {
    * Quality scales the *drawn* population rather than rebuilding the field. Instances are
    * always allocated at the highest count, so switching quality in the menu takes effect on
    * the very next frame instead of silently doing nothing until reload.
+   *
+   * Two invariants hold here and both matter:
+   *   - the course is identical at every quality level, because gameplay rock is never cut;
+   *   - the collision set is exactly the drawn set, because it is rebuilt from the same count.
    */
   setVisibleFraction(fraction: number): void {
     const f = Math.max(0, Math.min(1, fraction));
+    this.activeInstances.length = 0;
     for (const batch of this.batches) {
-      batch.mesh.count = Math.max(1, Math.round(batch.instances.length * f));
+      let gameplay = 0;
+      while (gameplay < batch.instances.length && batch.instances[gameplay].gameplay) gameplay++;
+      const count = Math.max(gameplay, Math.min(batch.instances.length, Math.round(batch.instances.length * f)));
+      batch.mesh.count = Math.max(1, count);
+      for (let i = 0; i < batch.mesh.count; i++) this.activeInstances.push(batch.instances[i]);
     }
   }
 

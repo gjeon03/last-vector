@@ -72,6 +72,13 @@ export interface Telemetry {
   /** Per-gate split times, seconds. */
   splits: number[];
   bestTime: number | null;
+  /**
+   * Per-gate splits of the player's best run, or empty when there is no best yet.
+   *
+   * Present so the results screen can show a real delta. Anything derived from the CURRENT
+   * run's own legs is dominated by leg length, not by how the leg was flown.
+   */
+  bestSplits: number[];
   sectorName: string;
   destinationName: string;
   /** Transient centre-screen callout. */
@@ -111,6 +118,13 @@ export interface RunResult {
   totalTime: number;
   splits: number[];
   bestTime: number | null;
+  /**
+   * Per-gate splits of the player's best run, or empty when there is no best yet.
+   *
+   * Present so the results screen can show a real delta. Anything derived from the CURRENT
+   * run's own legs is dominated by leg length, not by how the leg was flown.
+   */
+  bestSplits: number[];
   isNewBest: boolean;
   gatesCleared: number;
   gatesTotal: number;
@@ -121,7 +135,27 @@ export interface RunResult {
 }
 
 /** Everything the HUD layer is allowed to ask the game to do. */
+/**
+ * Interface sounds, as the interface layer sees them.
+ *
+ * Declared here rather than imported from the audio module because this file is deliberately
+ * dependency-free — it is the contract, not a participant. The audio module's implementation
+ * satisfies it structurally.
+ */
+export interface UiAudioBus {
+  /** Safe to call repeatedly; the first user gesture on any screen is the one that counts. */
+  unlock(): void;
+  hover(): void;
+  click(): void;
+  back(): void;
+}
+
 export interface HudHost {
+  /**
+   * Interface sounds. Named verbs rather than an event passthrough, so the interface layer
+   * cannot fire a gameplay cue. Every method is safe before the audio context exists.
+   */
+  readonly audio: UiAudioBus;
   /** Opens the briefing. The run itself begins from `engage`. */
   start(): void;
   /** Leaves the briefing and starts the countdown. */
