@@ -2137,7 +2137,7 @@ kbd {
   align-items: flex-end;
   justify-content: space-between;
   gap: clamp(16px, 3vmin, 48px);
-  padding-bottom: clamp(14px, 2vmin, 26px);
+  padding-bottom: clamp(18px, 2.7vmin, 36px);
   border-bottom: 1px solid var(--c-hairline);
 }
 
@@ -2155,7 +2155,7 @@ kbd {
   display: grid;
   grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   gap: clamp(20px, 4vmin, 64px);
-  margin-top: clamp(16px, 2.4vmin, 32px);
+  margin-top: clamp(22px, 3.4vmin, 48px);
 }
 
 @media (max-aspect-ratio: 5 / 4) {
@@ -2167,7 +2167,7 @@ kbd {
 .lv-res-left {
   display: flex;
   flex-direction: column;
-  gap: clamp(16px, 2.6vmin, 38px);
+  gap: clamp(22px, 3.6vmin, 52px);
 }
 
 .lv-res-k {
@@ -2180,7 +2180,7 @@ kbd {
 .lv-res-time {
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
-  font-size: clamp(40px, 7.2vmin, 118px);
+  font-size: clamp(44px, 8.8vmin, 136px);
   font-weight: 200;
   line-height: 1;
   letter-spacing: -0.01em;
@@ -2275,7 +2275,7 @@ kbd {
   align-items: baseline;
   justify-content: space-between;
   gap: 1em;
-  padding: 0.5em 0;
+  padding: 0.72em 0;
   border-bottom: 1px solid rgba(185, 204, 221, 0.08);
 }
 
@@ -2303,7 +2303,7 @@ kbd {
   grid-template-columns: 5em 5.4em minmax(0, 1fr) 6.2em 5.2em;
   align-items: center;
   gap: 0.9em;
-  padding: 0.36em 0;
+  padding: 0.54em 0;
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-small);
@@ -2377,9 +2377,13 @@ kbd {
   color: var(--c-good);
 }
 
+/* Pulled up: the two columns end at different heights, so the divider lands below the taller
+   one and the default margin stacked on top of that gap left the buttons stranded. */
 .lv-actions--res {
   border-top: 1px solid var(--c-hairline);
   gap: clamp(14px, 2.4vmin, 40px);
+  margin-top: clamp(12px, 1.7vmin, 26px);
+  padding-top: clamp(12px, 1.7vmin, 24px);
 }
 
 .lv-actions--res .lv-btn {
