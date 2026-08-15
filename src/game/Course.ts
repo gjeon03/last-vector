@@ -39,22 +39,18 @@ interface Leg {
   /**
    * Half-width in metres of the debris-free channel along the leg's racing line.
    *
-   * This is the lever that decides whether a leg asks anything of the pilot. Turn angle over
-   * leg length cannot: at a 288 m minimum turn radius, even the tightest leg here needs a
-   * radius of about 3.2 km, an order of magnitude inside the ship's capability, and shortening
-   * legs enough to close that gap would collapse a nine-gate course to a few hundred metres a
-   * leg. Measured on the reviewed build, a whole lap held the stick under 0.086 for 90% of its
-   * frames and asked for more than a quarter stick in 5.1% of them.
+   * This is the lever that decides whether a leg asks anything of the pilot.
    *
-   * Rock CLOSE TO the line is what converts a wide-open arc into continuous work. Not rock IN
-   * it: hazard placement is strictly outside the corridor by construction, at
-   * `seg.radius + collisionRadius` and beyond, so a pilot flying the authored line never meets
-   * one. What narrowing buys is that deviation costs, and that the corridor reads as a corridor.
+   * CORRECTION, and the sentence that used to be here was the load-bearing one. It read "the fix
+   * is not more turn — it is less room. `length` now varies from 0.52 to 1.4". `git show f3aea92`
+   * proves every leg's turn, climb, length and bank is BYTE-IDENTICAL across that commit. Only
+   * `clearance` was added. The sentence described the pre-existing status quo as though it were
+   * the remedy — the same species of error as the round-1 headline regression, written into a new
+   * file, and it survived five rounds of review because a comment is not a claim anyone measures.
    *
-   * Sized against the reference pilot's MEASURED overshoot, not against an authored ideal. A
-   * proportional follower swings wide in proportion to how hard the leg turns — 110 m outside
-   * the channel on the 1.02 rad leg — so the channel has to carry that or the course is unfair
-   * to anything that is not a perfect path follower.
+   * What is true: at a 288 m minimum turn radius the tightest leg still needs a radius an order of
+   * magnitude larger, so leg geometry cannot demand the vehicle at this course scale, and the
+   * lengths were never changed to try. Clearance is the only lever that was actually pulled.
    */
   clearance: number;
   label: string;

@@ -687,23 +687,22 @@ export class Hud {
     if (gq !== this.pGload) {
       this.pGload = gq;
       this.nGload.textContent = `${(gq / 10).toFixed(1)} G`;
-      // 35 G, not 5.5, and not a rounder number.
+      // 35 G, not 5.5, and not a rounder number: it is a measured p90.
       //
-      // The 5.5 threshold was tuned against a value that had been divided by g twice, so it was
-      // reading roughly a tenth of the real load. Correcting the physics (Ship stores m/s^2, as
-      // the contract always claimed) made this readout truthful and the old threshold worse than
-      // mistuned: at 5.5 it lit for 75.4% of a measured lap. A warning that is on three quarters
-      // of the time is not a mistuned warning, it is inverted — the eye stops seeing it, and the
-      // rare unlit moments become the signal.
+      // The 5.5 threshold was tuned against a value that had been divided by g twice, so it read
+      // about a tenth of the real load. Correcting the physics made this readout truthful and made
+      // the old threshold meaningless: at 5.5 it lit for roughly three quarters of a lap. That is
+      // not mistuned, it is inverted — a warning on most of the time becomes the background, and
+      // the rare unlit moments become the signal. 35 lights for about a tenth of a lap.
       //
-      // 35 is where it sits because that is the measured p90, not because it is tidy. Two
-      // distributions exist: 1749 samples over a full autopilot lap on seed 7 after the spine
-      // leg-index fix give median 9.9, p90 34.7, max 133.2, and 10.5% lit; the pre-fix numbers
-      // were median 9.0, p90 25.4, max 91.6, 8% lit. 35 reads as "notable" under both, which is
-      // the property worth having — a threshold tuned to a single distribution is not robust,
-      // and this one has already moved once under a course-geometry change.
+      // CORRECTION: two distributions were previously quoted here as "pre-fix" and "post-fix"
+      // either side of the spine leg-index change. They were not. Both reproduce on a single
+      // commit with no code change between them, so the difference was run-to-run variation, and
+      // the explanation attached to it — that the geometry fix had moved the racing line — was
+      // invented to fit two numbers that needed no explaining. 35 survives under both samples and
+      // that part stands; the causal story did not.
       //
-      // Re-tune from a fresh lap, not from taste, and record which build the lap came from.
+      // If you re-tune: take a fresh lap, and record which commit the lap came from.
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 

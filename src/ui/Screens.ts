@@ -186,7 +186,9 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         key: 'renderScale',
         label: 'Render scale',
         hint: 'Internal resolution. Drop it before you drop quality.',
-        min: 0.5,
+        // 0.6, not 0.5: the sanitiser clamps to the adaptive controller's own floor of 0.58, so
+        // everything below that was travel the player could move and the game could not honour.
+        min: 0.6,
         max: 1,
         step: 0.05,
         fmt: pct,

@@ -126,8 +126,29 @@ export class SettingsStore {
   private readonly listeners = new Set<(s: Settings) => void>();
 
   constructor() {
-    this.current = sanitise({ quality: detectQuality(), ...readJson<Partial<Settings>>(STORAGE_KEY) });
-    this.current.renderScale = qualityProfile(this.current.quality).renderScale;
+    const stored = readJson<Partial<Settings>>(STORAGE_KEY);
+    this.current = sanitise({ quality: detectQuality(), ...stored });
+    // Only derive render scale from the quality profile when the player has NEVER set it.
+    //
+    // This line used to run unconditionally, so a stored render scale was loaded, sanitised, and
+    // then overwritten on every boot. Reproduced in rendered pixels: three cold boots with
+    // pre-seeded storage produced a byte-identical 1690x950 renderer whether the player had saved
+    // 0.58 or never touched the control — asked for ~700 kpx, got 2.3x that.
+    //
+    // Two consequences beyond the obvious one. `set`/`patch` serialise the whole in-memory object,
+    // so the next settings change of ANY kind writes the overwritten value back and destroys the
+    // saved one permanently — one unrelated FOV edit is enough. And because this value is the
+    // adaptive controller's CEILING, every launch started at maximum and had to re-descend, which
+    // is about four seconds of over-budget frames per session on a marginal machine. The row's own
+    // hint reads "Internal resolution. Drop it before you drop quality."
+    //
+    // Deleting the line outright is the wrong fix and was proposed: a first run on an
+    // auto-detected low machine yields {quality: low, renderScale: 0.72}, while
+    // DEFAULT_SETTINGS.renderScale is 1, so a bare delete regresses exactly the machines the
+    // detection exists to protect.
+    if (stored?.renderScale === undefined) {
+      this.current.renderScale = qualityProfile(this.current.quality).renderScale;
+    }
   }
 
   get value(): Settings {

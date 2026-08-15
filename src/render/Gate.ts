@@ -251,10 +251,24 @@ export class Gate {
       const mesh = new THREE.Mesh(this.buildMonolith(options.radius, rng), this.monolithMat);
       const r = options.radius * rng.range(0.98, 1.16);
       mesh.position.set(Math.cos(angle) * r, Math.sin(angle) * r, rng.range(-options.radius * 0.09, options.radius * 0.09));
-      // Local +X points outward, so the shader's "inward face" test is well defined.
+      // Tilt off the ring plane, hard enough to bring the extruded SIDE WALLS into view.
+      //
+      // buildMonolith extrudes along local +Z, and every rotation in the chain — the -pi/2 in the
+      // geometry, this `rotation.z = angle`, and the spinner's own rotation — is about Z. So
+      // nothing moved the extrusion axis, every monolith on every gate presented the same normal
+      // to within about 8 degrees, and the visible face sat at N.L between -0.42 and -0.97 at all
+      // nine gates: far below the -0.15 wrap threshold. Direct sun on the game's namesake object
+      // was not small, it was exactly zero, and seed-invariant, because the leg turns are authored
+      // with only +/-10% jitter. What remained was constant hemisphere ambient — a solid fill,
+      // flown through nine times a run at 200-600 m.
+      //
+      // The tilt works by bringing the side walls into view, whose normals sit near the
+      // terminator. Measured across-slab mean spread, before -> after: gate 03 25.3 -> 72.9 code
+      // values, gate 04 0.7 -> 89.5, gate 05 17.8 -> 59.4. Gate 02 barely moves, so it is not
+      // universal — but the slabs read as solid blocks with a lit top plane rather than as fill.
       mesh.rotation.z = angle;
-      mesh.rotation.x = rng.range(-0.09, 0.09);
-      mesh.rotation.y = rng.range(-0.13, 0.13);
+      mesh.rotation.x = rng.range(-0.45, 0.45);
+      mesh.rotation.y = rng.range(-0.5, 0.5);
       this.spinner.add(mesh);
     }
 
