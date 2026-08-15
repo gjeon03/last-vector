@@ -149,8 +149,15 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         key: 'fov',
         label: 'Field of view',
         hint: 'Wider reads faster, narrower reads further.',
+        /* 100, not 110: `Settings.ts` sanitises fov to [60, 100] and `commit -> syncSettings ->
+           apply()` rewrites input.value from the sanitised store on every input event, so the
+           thumb was actively driven back down and the top 20% of the track was dead. `.lv-slider-in`
+           is opacity 0, so there is no native thumb underneath to show it — the control simply
+           froze. Both the row max and the clamp date to the same initial commit, so neither is
+           newer; the clamp wins because no player has ever seen fov above 100 and widening it
+           would ship a range nothing has tested. */
         min: 60,
-        max: 110,
+        max: 100,
         step: 1,
         fmt: deg,
       },
@@ -159,8 +166,10 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         key: 'cameraShake',
         label: 'Camera shake',
         hint: '',
+        /* 1, not 2: `Settings.ts` sanitises cameraShake with clamp01. Same defect as fov above —
+           half this track was dead travel. */
         min: 0,
-        max: 2,
+        max: 1,
         step: 0.05,
         fmt: mult,
       },
@@ -190,7 +199,16 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         // everything below that was travel the player could move and the game could not honour.
         min: 0.6,
         max: 1,
-        step: 0.05,
+        /* 0.02, not 0.05, so every quality profile's renderScale is a REACHABLE stop:
+           0.6 + 6*0.02 = 0.72 (low), + 13*0.02 = 0.86 (medium), + 20*0.02 = 1.00 (high/ultra).
+           On the old 0.05 grid 0.72 and 0.86 were not stops at all — the browser snapped the thumb
+           to 0.70 and 0.85 while the readout showed the stored value, so thumb and readout
+           disagreed on two of four profiles. That is also what broke `renderScaleForQuality`: a
+           net-zero drag committed the snapped value, permanently flipping the player out of the
+           "never touched it" state, after which selecting ultra rendered at 0.70 instead of 1
+           forever, persisted, with no visible cause. Fixing the grid removes the artefact rather
+           than teaching the heuristic to tolerate it. */
+        step: 0.02,
         fmt: pct,
       },
       { kind: 'bool', key: 'showFps', label: 'Frame counter', hint: '' },

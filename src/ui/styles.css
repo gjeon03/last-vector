@@ -1232,7 +1232,14 @@
   gap: 0 0.5em;
   white-space: nowrap;
   margin-top: clamp(12px, 1.8vmin, 28px);
-  font-size: var(--fs-huge);
+  /* min(), because three independent floors multiply to exactly 375 CSS px and clip the wordmark
+     below it: --fs-huge bottoms out at a fixed 34px, this element is nowrap with no min-width: 0
+     so its intrinsic width floors at 335px, and .lv-title's left margin floors at 40px.
+     40 + 335 = 375. Measured right edge is 374.89px at every width from 430 down to 280, and
+     .lv-root is overflow: clip + contain: strict so the overflow is painted away rather than
+     scrollable — at 320 the title reads "LAST VECTO". 8.6vw gives 27.5px at 320 (9px of margin)
+     and exceeds the 96px cap from 1117px up, so every desktop layout is byte-identical. */
+  font-size: min(var(--fs-huge), 8.6vw);
   font-weight: 200;
   line-height: 1;
   letter-spacing: 0.17em;
@@ -1529,8 +1536,20 @@
   padding: clamp(24px, 3.6vmin, 58px) clamp(26px, 4vmin, 64px);
 }
 
+/* The viewport-height guard .lv-settings already has. Without it ENGAGE leaves the screen and
+   nothing scrolls: 1280x720 fails at 175% and 200% browser zoom, 1366x768 at 200% — four Ctrl+=
+   presses on a mainstream laptop, and a WCAG 1.4.4 (AA) failure, loss of function at 200% zoom,
+   on the only button the screen exists to present.
+   CORRECTION to an earlier version of this comment, which said "three of five panels had this;
+   two did not". It was two and three: .lv-settings and .lv-results had a guard, while .lv-brief,
+   .lv-controls AND .lv-pause did not. Miscounting it left .lv-pause unguarded on the first pass —
+   at 640x360 that panel measures 380.9px against a 360px viewport and clips its bottom padding,
+   which stays short of a 1.4.4 failure only because all five buttons remain in view at <=200%. */
 .lv-brief {
   width: min(94vw, 1180px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
   background:
     linear-gradient(to bottom, rgba(127, 232, 255, 0.055), rgba(127, 232, 255, 0) 22%),
     linear-gradient(to bottom, rgba(5, 10, 19, 0.8), rgba(5, 10, 19, 0.42));
@@ -1568,6 +1587,14 @@
   margin-top: clamp(20px, 3vmin, 46px);
   padding-top: clamp(18px, 2.6vmin, 40px);
   border-top: 1px solid var(--c-hairline);
+  /* No min-height: 0 here, and the earlier version of this comment calling it "load-bearing" was
+     wrong. Per CSS Flexbox 4.5 the automatic minimum size does not apply to a scroll container,
+     and `overflow-y: auto` already makes this one — so `min-height: auto` computes to 0 by itself.
+     Measured: forcing `min-height: auto` moves clientHeight by 0px at every size tested. It was a
+     true observation (the panel scrolls) with a false cause attached. `.lv-settings`, the pattern
+     this copies, correctly omits it. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-aspect-ratio: 5 / 4) {
@@ -1800,10 +1827,23 @@ kbd {
 
 /* ----------------------------------------------------------------- pause --- */
 
+/* The third panel that lacked the guard. Sub-threshold today — at 640x360 the panel measures
+   380.9px against a 360px viewport and clips its bottom padding and frame brackets while all five
+   buttons, ABORT RUN included, stay in view — so it is not a 1.4.4 failure at <=200%. It becomes
+   one past that, and it was missed on the first pass only because the comment above miscounted
+   which panels already had a guard. */
 .lv-pause {
   width: min(90vw, 680px);
   text-align: left;
   padding: clamp(34px, 5vmin, 76px) clamp(34px, 5vmin, 76px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.lv-pause .lv-menu {
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .lv-pause-title {
@@ -2090,6 +2130,9 @@ kbd {
 
 .lv-controls {
   width: min(92vw, 720px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .lv-keys {
@@ -2110,6 +2153,9 @@ kbd {
   /* Gap lives in the first cell's padding, not column-gap: a real gap would punch a visible
      break through every row separator. */
   column-gap: 0;
+  /* See .lv-brief-cols on why min-height: 0 is not here. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .lv-key {

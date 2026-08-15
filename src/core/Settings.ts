@@ -93,6 +93,26 @@ export function qualityProfile(level: QualityLevel): QualityProfile {
   return PROFILES[level];
 }
 
+/**
+ * Render scale to use when the player changes quality.
+ *
+ * Taking the new profile unconditionally threw away the one setting round 6 made durable. A player
+ * who lowers render scale — as this row's own hint tells them to, "Drop it before you drop
+ * quality" — and then lowers quality had 0.60 raised to 0.72: +44% pixels, and their explicit
+ * choice destroyed, permanently, because the result is written straight back to storage. Never
+ * taking it would pin a player who has never touched the slider to a scale their new quality level
+ * does not want, which is the reading that cleared this as correct-as-shipped.
+ *
+ * Both readings are right about different players, so the condition has to distinguish them:
+ * follow the profile only while the current value still IS the profile's. That is the same
+ * question the constructor asks of storage — has the player ever expressed a preference — answered
+ * without a second piece of state that could drift out of step with the first.
+ */
+function renderScaleForQuality(current: Settings, nextQuality: QualityLevel): number {
+  const untouched = current.renderScale === qualityProfile(current.quality).renderScale;
+  return untouched ? qualityProfile(nextQuality).renderScale : current.renderScale;
+}
+
 /** Guesses a sensible starting quality so the first frame a player sees is a good one. */
 export function detectQuality(): QualityLevel {
   const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
@@ -162,7 +182,7 @@ export class SettingsStore {
   set<K extends keyof Settings>(key: K, value: Settings[K]): void {
     if (this.current[key] === value) return;
     const next = { ...this.current, [key]: value };
-    if (key === 'quality') next.renderScale = qualityProfile(next.quality).renderScale;
+    if (key === 'quality') next.renderScale = renderScaleForQuality(this.current, next.quality);
     this.current = sanitise(next);
     writeJson(STORAGE_KEY, this.current);
     for (const fn of this.listeners) fn(this.current);
@@ -171,7 +191,7 @@ export class SettingsStore {
   patch(patch: Partial<Settings>): void {
     const next = sanitise({ ...this.current, ...patch });
     if (patch.quality && patch.renderScale === undefined) {
-      next.renderScale = qualityProfile(next.quality).renderScale;
+      next.renderScale = renderScaleForQuality(this.current, next.quality);
     }
     this.current = next;
     writeJson(STORAGE_KEY, this.current);

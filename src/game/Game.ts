@@ -641,7 +641,16 @@ export class Game {
   }
 
   toTitle(): void {
-    this.paused = false;
+    /* clearPause(), not `paused = false`. The pause menu sets sticky mix floors via
+       audio.menuMix(true), and only clearPause() and resume() release them — so clearing the flag
+       directly left ABORT RUN playing the title screen 13.6 dB down (drive 17.9 dB down),
+       indefinitely, until BEGIN RUN jumped it back up. This is the third instance of the class:
+       RESTART and N were fixed and the comment above clearPause() claimed ABORT was too. */
+    this.clearPause();
+    /* Pre-existing, and separate from the duck: aborting a pause taken DURING the countdown left
+       the countdown element open over the title screen, because nothing here cleared it. */
+    this.countdown = null;
+    this.overlay.setCountdown(null);
     this.course.reset();
     this.resetShipToStart();
     this.chase.snapTo(this.ship);

@@ -68,7 +68,14 @@ const MONOLITH_FRAG = /* glsl */ `
     float band = abs(fract(vLocal.y * 0.09 + 0.5) - 0.5);
     float glyph = smoothstep(0.075, 0.03, band);
     float rib = smoothstep(0.6, 0.95, fbm(vec3(vLocal.y * 0.4, vLocal.x * 0.2, 3.0), 3) * 0.5 + 0.5);
-    float inward = smoothstep(0.1, 0.7, -normalize(vLocal).x);
+    // -Z, not -X: the geometry now carries an extra rotateY, so the slab's height runs along Z and
+    // the face that points at the ring centre is the -Z one. Gating on X after that rotation put
+    // the glyph channel on the broad face that looks across the aperture rather than at the pilot.
+    // Currently moot either way — the rib term below suppresses this channel to ~0 in both
+    // orientations, because fbm's amplitude cannot reach the smoothstep(0.6, 0.95) knee, so it is
+    // 0.00% of pixels today. Fixed now so that whoever repairs rib inherits the right surface
+    // rather than rediscovering this.
+    float inward = smoothstep(0.1, 0.7, -normalize(vLocal).z);
     float channel = glyph * rib * inward;
 
     float pulse = 0.62 + 0.38 * sin(uTime * 2.1 - vLocal.y * 0.16);
@@ -467,6 +474,16 @@ export class Gate {
     geometry.translate(0, 0, -depth * 0.5);
     // Extrusion builds in XY; rotate so local +X is radially outward and +Y runs along it.
     geometry.rotateZ(-Math.PI / 2);
+    /* Then turn the slab so its BROAD faces point around the ring instead of along the gate
+       normal. Without this every monolith presents the same face direction — the extrusion axis
+       was local +Z and every rotation in the placement chain is about Z — so all five slabs on
+       all nine gates showed the camera a face at N.L between -0.42 and -0.97, below the -0.15
+       wrap threshold, and 93.7% of the cairn's stone rendered as hemisphere ambient alone with
+       every material term multiplied by zero. Widening the per-slab tilt did not fix that: those
+       ranges are symmetric about zero, so the mean normal does not move.
+       Now the five slabs' faces are spread through the ring plane and roughly half meet the sun
+       at any course heading, seed-independently, without touching the shared lighting model. */
+    geometry.rotateY(Math.PI / 2);
     geometry.computeVertexNormals();
     return geometry;
   }

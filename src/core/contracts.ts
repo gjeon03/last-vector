@@ -252,6 +252,18 @@ export interface EngineAudioState {
 
 /** Procedural audio backend. No sample files: everything is synthesised. */
 export interface AudioBus {
+  /**
+   * Builds the graph WITHOUT resuming it. Safe outside a user gesture, and called once at boot so
+   * the ~970,000 samples of synchronous DSP land behind the loading screen instead of inside the
+   * player's first interaction.
+   *
+   * It must never resume. `resume()` on a context the browser has not authorised leaves its
+   * promise unsettled — the spec appends it to [[pending resume promises]] and aborts — so a
+   * `.catch()` cannot catch it and an await on the boot path hangs forever on any autoplay-gated
+   * browser. Resuming here would also start the score before the player has interacted at all,
+   * wherever autoplay is permitted.
+   */
+  prewarm(): Promise<void>;
   /** Must be called from inside a user gesture. Idempotent. */
   unlock(): Promise<void>;
   readonly ready: boolean;

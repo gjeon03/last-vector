@@ -93,6 +93,36 @@ async function boot(): Promise<void> {
   loader.setProgress(0.8, 'lighting the cairns');
   await nextPaint();
 
+  /* Build the audio graph HERE, behind the loader, not on the player's first gesture.
+     `AudioEngine.build()` is declared async but has no await before its work: it generates a
+     3.6 s stereo reverb impulse, a 4 s pink buffer and a 2.5 s white buffer — roughly 970,000
+     samples of JS DSP with exp and pow per sample — synchronously in the caller's task. The
+     unlock listener is a capture-phase window pointerdown/keydown, so that ran inside the very
+     first interaction with the page and froze the main thread for 0.07-0.43 s, measured, scaling
+     linearly with CPU throttle to 433.9 ms at 6x. Worst on exactly the machines the low profile
+     exists for.
+     `unlock()` stays the resume-only path: it finds `building` already resolved and does nothing
+     but resume a suspended context, which it already handles. Creating a context outside a
+     gesture is allowed — it starts suspended; only resuming needs the gesture. */
+  loader.setProgress(0.88, 'spinning up the drive');
+  await nextPaint();
+  /* `prewarm()`, NOT `unlock()`, and raced against a timeout.
+     The first draft of this awaited `unlock()`, which resumes as well as builds. On an
+     autoplay-gated browser the context is suspended at boot, and `resume()` on a context the
+     browser has not authorised leaves its promise UNSETTLED — the spec appends it to
+     [[pending resume promises]] and aborts — so `.catch()` cannot catch it and the loader hangs
+     on this line forever. It would also have started the score before the player touched
+     anything, wherever autoplay is permitted. Nothing on the boot critical path may await an
+     unbounded promise, hence the race as well as the narrower call. */
+  await Promise.race([
+    game.audio.prewarm().catch(() => {
+      /* Audio is a garnish. A browser that refuses us here must not stop the game from booting. */
+    }),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 2000);
+    }),
+  ]);
+
   game.start();
   await game.ready();
   loader.setProgress(1, 'ready');

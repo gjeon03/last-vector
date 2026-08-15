@@ -251,8 +251,27 @@ export class AudioEngine implements AudioBus {
   }
 
   /**
-   * Safe to call on every user gesture. The context is created lazily because browsers refuse
-   * to start one outside a gesture; repeat calls just make sure it is running again.
+   * Build only. See `AudioBus.prewarm` for why this must not resume.
+   *
+   * `build()` is declared async but has no await before its work, so the expensive part — a 3.6 s
+   * stereo reverb impulse with exp and pow per sample, a 4 s pink buffer, a 2.5 s white buffer —
+   * runs synchronously in the caller's task. That is the point: called at boot it runs behind the
+   * loading screen, and the later `unlock()` finds `building` already settled.
+   */
+  async prewarm(): Promise<void> {
+    if (this.disposed || this.failed) return;
+    if (!this.building) this.building = this.build();
+    await this.building;
+  }
+
+  /**
+   * Safe to call on every user gesture. By boot time `prewarm()` has usually already built the
+   * graph, so this is the resume-only path.
+   *
+   * CORRECTION: this used to say the context is created lazily "because browsers refuse to start
+   * one outside a gesture". They do not. A context may be constructed at any time; it simply
+   * begins `suspended`, and only `resume()` requires the gesture. The false premise is what put
+   * ~970,000 samples of synchronous JS DSP inside a capture-phase pointerdown handler.
    */
   async unlock(): Promise<void> {
     if (this.disposed || this.failed) return;
