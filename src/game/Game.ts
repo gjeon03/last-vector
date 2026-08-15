@@ -187,6 +187,20 @@ export class Game {
   private adaptCooldown = 0;
   private adaptLongFrames = 0;
   private adaptSettle = 0;
+  /**
+   * Recent clean window means, newest last — the estimate of the display's paced interval is
+   * their minimum. A rolling window rather than a session minimum, because a session minimum can
+   * only fall: drag the window from a 60 Hz monitor to a 50 Hz one and a permanent 16.7 estimate
+   * re-pins the controller at the floor on the new display, which is the exact defect this
+   * estimator exists to fix. Only windows with zero long frames and a plausible mean feed it, so
+   * a boot clock skew or a tab-return hitch cannot poison the estimate.
+   */
+  private adaptRecentMs: number[] = [];
+  /** Long-frame threshold in ms, refresh-relative; starts lenient until a clean window lands. */
+  private adaptLongMs = 25.7;
+  private adaptWinMinMs = Infinity;
+  private adaptWinMaxMs = 0;
+  private adaptWindowCount = 0;
   private lastRenderScaleCeiling = 1;
 
   private readonly telemetry: Telemetry;
@@ -713,15 +727,21 @@ export class Game {
     }
     this.adaptAccumulator += rawDt;
     this.adaptFrames++;
-    if (rawDt > 0.0205) this.adaptLongFrames++;
+    if (rawDt * 1000 > this.adaptLongMs) this.adaptLongFrames++;
+    this.adaptWinMinMs = Math.min(this.adaptWinMinMs, rawDt * 1000);
+    this.adaptWinMaxMs = Math.max(this.adaptWinMaxMs, rawDt * 1000);
     this.adaptCooldown -= rawDt;
     if (this.adaptFrames < 20 || this.adaptCooldown > 0) return;
 
     const meanMs = (this.adaptAccumulator / this.adaptFrames) * 1000;
     const missed = this.adaptLongFrames;
+    const spreadMs = this.adaptWinMaxMs - this.adaptWinMinMs;
     this.adaptAccumulator = 0;
     this.adaptFrames = 0;
     this.adaptLongFrames = 0;
+    this.adaptWinMinMs = Infinity;
+    this.adaptWinMaxMs = 0;
+    this.adaptWindowCount++;
 
     const ceiling = this.settings.value.renderScale;
     const floor = 0.58;
@@ -734,10 +754,44 @@ export class Game {
     //
     // The signal that actually distinguishes "comfortable" from "just barely making it" is
     // whether any frame in the window *missed*. None missed means there is room to climb.
-    if (meanMs > 18.5) {
-      this.dynamicScale = Math.max(floor, this.dynamicScale - (meanMs > 26 ? 0.12 : 0.06));
+    //
+    // Every threshold below is RELATIVE TO THE DISPLAY'S OWN PACE, not to 60 Hz. The fixed
+    // constants this replaces (drop > 18.5, climb < 17.6, long > 20.5) all assumed a 16.7 ms
+    // refresh, and on any display pacing slower than ~54 Hz the drop condition was permanently
+    // true while the climb condition was permanently false: measured on an exact 50 Hz grid,
+    // the controller walked to the 0.580 floor and HELD it for the whole 32 s sample — 66.4% of
+    // pixels discarded for a measured 0.05 ms of a 19.9 ms frame — because rawDt is presentation
+    // cadence, and below budget-miss the cadence belongs to the display, not the GPU.
+    //
+    // The pace estimate is the minimum of the last twelve CLEAN window means, clamped to
+    // [16.0, 20.9] ms: the lower clamp keeps a 120 Hz display from demanding 120 fps, and the
+    // upper clamp keeps a machine that has been GPU-bound since boot (33 ms means, never a fast
+    // window) from teaching itself that 30 fps is the display's pace and never dropping. A window
+    // is clean when it had no long frames and a mean a real display could produce — the first
+    // window after boot can carry a clock skew that would otherwise poison the estimate through
+    // the lower clamp and re-pin a 50 Hz display at the floor, which was measured, not imagined.
+    // At 60 Hz the ratios reproduce the previous constants exactly: 18.5 / 26.0 / 17.6 / 20.5 ms.
+    // The estimator's acceptance test must be INDEPENDENT of the pace estimate, or it deadlocks:
+    // the first version gated acceptance on `missed === 0`, whose threshold derives from the
+    // pace — so one polluted boot window (mean 9.98 ms, measured) dragged the pace to the 16.0
+    // clamp, which put the long-frame threshold at 19.7 ms, which marked every exact 20 ms frame
+    // as long, which starved the estimator forever, which held the poisoned pace. A display-paced
+    // window identifies itself without reference to any threshold: its frame times cluster (small
+    // spread) around a rate a real display could run (4-30 ms). The first two windows are skipped
+    // outright — boot noise wears every disguise — and the rolling twelve mean one bad acceptance
+    // ages out instead of lasting the session.
+    if (this.adaptWindowCount > 2 && meanMs >= 4 && meanMs <= 30 && spreadMs <= Math.max(2, meanMs * 0.25)) {
+      this.adaptRecentMs.push(meanMs);
+      if (this.adaptRecentMs.length > 12) this.adaptRecentMs.shift();
+    }
+    const paceMs = this.adaptRecentMs.length
+      ? Math.min(Math.max(Math.min(...this.adaptRecentMs), 16.0), 20.9)
+      : 20.9;
+    this.adaptLongMs = paceMs * 1.23;
+    if (meanMs > paceMs * 1.11) {
+      this.dynamicScale = Math.max(floor, this.dynamicScale - (meanMs > paceMs * 1.56 ? 0.12 : 0.06));
       this.adaptCooldown = 0.35;
-    } else if (missed === 0 && meanMs < 17.6 && this.dynamicScale < ceiling) {
+    } else if (missed === 0 && meanMs < paceMs * 1.055 && this.dynamicScale < ceiling) {
       this.dynamicScale = Math.min(ceiling, this.dynamicScale + 0.03);
       this.adaptCooldown = 0.8;
     }
