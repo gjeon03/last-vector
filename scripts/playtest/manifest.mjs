@@ -49,6 +49,11 @@ const REQUIRED_CHECKS = {
     'LIVE.event-duck-fires-and-releases',
     'GAME.score-slider-reaches-the-mix',
     'GAME.visibility-roundtrip-while-paused',
+    // The regression check for 6d4162f. Listed with its anti-vacuity partner deliberately: on its
+    // own, `silent-on-title` is satisfied by a game that makes no sound at all, so deleting the
+    // partner would leave a check that cannot fail for the reason it exists.
+    'GAME.silent-on-title-until-gesture',
+    'GAME.title-gesture-starts-audio',
   ],
 };
 

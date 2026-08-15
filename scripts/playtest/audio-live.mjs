@@ -40,6 +40,13 @@ const SETTLE_MS = 900;
 /** Linear-gain tolerance. Generous enough for exponential approach, tight enough to catch unity. */
 const TOL = 0.03;
 
+/**
+ * Idle time on the title screen before judging pre-gesture silence. The defect this guards fired
+ * on attract-autopilot boost ignition, so the window has to span several ignitions — a short idle
+ * could land between two and pass on timing rather than on correctness.
+ */
+const TITLE_IDLE_MS = 15000;
+
 /* eslint-disable */
 async function runInPage(config) {
   const { bundleUrl, settleMs, tol } = config;
@@ -762,6 +769,126 @@ async function serveDir(dir, stubHtml = null) {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
+/**
+ * Nothing may be scheduled into the context before the player has touched anything.
+ *
+ * `LIVE.silent-until-first-gesture` asserts a NEARBY BUT WEAKER property: that an `AudioEngine`
+ * constructed directly starts no sources of its own. That is true and was true throughout the
+ * defect this phase exists for — 27 voices queued on the title screen with no input, because the
+ * attract autopilot boosts, `play()` had no `unlockedFlag` guard, and a suspended context's clock
+ * is frozen, so every `.start(when)` landed in the past and they all fired together on the first
+ * click. The engine started nothing on its own; the GAME started 27 things through it.
+ *
+ * So the predicate here is not "how many sources started" but "what was the context's state when
+ * each one did". Starts after the gesture are the point of the program; starts into a frozen clock
+ * are the bug.
+ *
+ * Two environmental requirements, both load-bearing:
+ *
+ * - DEFAULT autoplay policy. The other checks in this file deliberately pass
+ *   `--autoplay-policy=no-user-gesture-required`, because that is the setting under which the
+ *   `build()` suspend guard is load-bearing rather than decorative. This phase must instead see
+ *   what a player sees. Different environment, different property: folding the two into one launch
+ *   would leave neither honest.
+ * - The prototype patch is installed via `addInitScript`, so it is in place before `main.ts` runs.
+ *   Patched after boot, `prewarm()` and the whole attract sequence have already happened and the
+ *   check would pass by arriving late — the vacuous pass this suite has been caught by before.
+ */
+async function runTitleSilencePhase(playwright, distDir) {
+  const checks = [];
+  const add = (id, passed, detail) => checks.push({ id, passed, detail });
+  const served = await serveDir(distDir);
+  // Same GPU flags as the phase above, deliberately WITHOUT the autoplay override.
+  const browser = await playwright.chromium.launch({
+    args: [
+      ...(process.platform === 'darwin'
+        ? ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+        : []),
+    ],
+  });
+  const page = await (await browser.newContext()).newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  try {
+    await page.addInitScript(() => {
+      window.__lvStarts = [];
+      for (const name of ['AudioBufferSourceNode', 'OscillatorNode', 'ConstantSourceNode']) {
+        const Ctor = window[name];
+        if (!Ctor || typeof Ctor.prototype.start !== 'function') continue;
+        const original = Ctor.prototype.start;
+        Ctor.prototype.start = function instrumented(...args) {
+          try {
+            window.__lvStarts.push({
+              name,
+              state: this.context.state,
+              when: typeof args[0] === 'number' ? args[0] : null,
+              now: this.context.currentTime,
+            });
+          } catch { /* never let instrumentation break the run it is measuring */ }
+          return original.apply(this, args);
+        };
+      }
+    });
+    await page.goto(`${served.origin}/`, { waitUntil: 'load' });
+    const booted = await page
+      .waitForFunction(() => Boolean(window.__LV), null, { timeout: 45000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!booted) {
+      add('GAME.silent-on-title-until-gesture', false,
+        `window.__LV never appeared within 45 s; served from ${distDir}. ` +
+        (errors.length ? `page errors: ${errors.slice(0, 3).join(' ; ')}` : 'no page errors'));
+      return checks;
+    }
+    await page.evaluate(() => window.__LV.ready());
+
+    // Sit on the title with ZERO input. Long enough to clear several attract boost cycles: the
+    // defect fired on autopilot ignition, so a short idle could miss it by landing between two.
+    await page.waitForTimeout(TITLE_IDLE_MS);
+
+    const beforeGesture = await page.evaluate(() => window.__lvStarts.slice());
+    const suspendedStarts = beforeGesture.filter((s) => s.state === 'suspended');
+
+    // The gesture, then a moment for the resumed graph to schedule.
+    await page.mouse.click(400, 400);
+    await page.waitForTimeout(1200);
+    const afterGesture = await page.evaluate(() => window.__lvStarts.slice());
+    const runningStarts = afterGesture.filter((s) => s.state === 'running');
+
+    const sample = suspendedStarts.slice(0, 3)
+      .map((s) => `${s.name} when=${s.when} now=${s.now}`)
+      .join(' | ');
+    add(
+      // Verified by ab-mutations P10a at 9b9129d: deleting the unlockedFlag guard on play(), the sfx
+      // entry point makes this check fail, while GAME.title-gesture-starts-audio and
+      // LIVE.silent-until-first-gesture stay green.
+      // Verified by ab-mutations P10b at 9b9129d: deleting the unlockedFlag guard on update(), the
+      // engine-layer entry point makes this check fail, while GAME.title-gesture-starts-audio and
+      // LIVE.silent-until-first-gesture stay green.
+      // The pair matters more than either line: it proves this check distinguishes the two entry
+      // points, so neither guard can be deleted as redundant with the gate still green.
+      'GAME.silent-on-title-until-gesture',
+      suspendedStarts.length === 0,
+      `${TITLE_IDLE_MS} ms idle on the title under the default autoplay policy: ` +
+        `${beforeGesture.length} source starts, ${suspendedStarts.length} of them into a SUSPENDED ` +
+        `context (want 0)${sample ? `. First offenders: ${sample} — note when <= now, so these fire ` +
+        'the instant anything resumes the context' : ''}`,
+    );
+    // Absolute count, for the reason ab-mutations P9b established: a delta would couple this to the
+    // check above, and one defect showing as two failures reads as two defects.
+    add(
+      'GAME.title-gesture-starts-audio',
+      runningStarts.length > 0,
+      `after one click: ${runningStarts.length} sources started with the context RUNNING (want > 0). ` +
+        'Without this, a game that never makes any sound satisfies the check above',
+    );
+  } finally {
+    await browser.close().catch(() => {});
+    await new Promise((r) => served.server.close(r));
+  }
+  return checks;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const workDir = resolve(tmpdir(), `lv-audio-live-${process.pid}`);
@@ -810,6 +937,9 @@ async function main() {
     } else try {
       distInfo = await ensureDist(options.artifactLocked);
       gameChecks = await runGamePhase(playwright, distInfo.dist);
+      // Separate launch: this one must run under the default autoplay policy, and the phase above
+      // must not. Same dist, so no extra build.
+      gameChecks = gameChecks.concat(await runTitleSilencePhase(playwright, distInfo.dist));
     } catch (error) {
       if (error instanceof ArtifactLockedError) {
         console.error(
