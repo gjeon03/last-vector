@@ -1520,7 +1520,11 @@ export class Game {
     // and score ducked, so this returns to a running-but-ducked graph: exactly what a pause menu
     // needs. Fixing it inside resume() instead would leave the pause screen silent between
     // tab-return and the RESUME click, which is the state 874d6d9 existed to fix.
-    else this.audio.resume();
+    // ...but only once a gesture has reached the engine. That caveat is new and load-bearing: the
+    // graph now exists from boot, so before this gate a tab-focus event was enough to un-suspend a
+    // context the player had never authorised and start the mix on the title screen. The reasoning
+    // above was written when no context existed before the first gesture.
+    else if (this.audio.unlocked) this.audio.resume();
   };
 
   // ---------------------------------------------------------------------------------

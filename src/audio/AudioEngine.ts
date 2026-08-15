@@ -225,6 +225,9 @@ export class AudioEngine implements AudioBus {
   private ticker: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private failed = false;
+  /** Set by the first `unlock()`. Distinct from `sourcesStarted`, which is set after the graph exists. */
+  private unlockedFlag = false;
+  private sourcesStarted = false;
 
   private readonly seed: number;
   /**
@@ -248,6 +251,11 @@ export class AudioEngine implements AudioBus {
 
   get ready(): boolean {
     return !this.disposed && this.graph !== null;
+  }
+
+  /** Whether a user gesture has ever reached the engine. Gates anything that may start sound. */
+  get unlocked(): boolean {
+    return this.unlockedFlag;
   }
 
   /**
@@ -275,6 +283,7 @@ export class AudioEngine implements AudioBus {
    */
   async unlock(): Promise<void> {
     if (this.disposed || this.failed) return;
+    this.unlockedFlag = true;
     if (!this.building) this.building = this.build();
     await this.building;
     const g = this.graph;
@@ -286,6 +295,22 @@ export class AudioEngine implements AudioBus {
         /* a browser that refuses to resume leaves us silent, not broken */
       }
     }
+    this.startSources();
+  }
+
+  /**
+   * Starts the drive and the score. Split out of `build()` because `build()` now runs at boot:
+   * the expensive part — the reverb impulse and the noise buffers — belongs behind the loading
+   * screen, but the two `.start()` sweeps must wait for a real gesture or the game sounds before
+   * anyone has touched it wherever autoplay is permitted.
+   */
+  private startSources(): void {
+    const g = this.graph;
+    if (!g || this.sourcesStarted) return;
+    this.sourcesStarted = true;
+    const start = g.ctx.currentTime + 0.05;
+    g.engine.start(start);
+    g.music.start(start);
   }
 
   update(dt: number, engine: EngineAudioState): void {
@@ -486,9 +511,12 @@ export class AudioEngine implements AudioBus {
         return;
       }
 
-      const start = ctx.currentTime + 0.05;
-      graph.engine.start(start);
-      graph.music.start(start);
+      /* The sources are NOT started here — see `startSources()`, called from `unlock()`.
+         `build()` now runs at boot, and a context constructed where autoplay is permitted begins
+         `running` rather than `suspended`, so starting the drive and score here played the full
+         mix on the title screen with zero user interaction. Declining to call `resume()` prevents
+         nothing: the gesture is required to resume a SUSPENDED context, never to keep a running
+         one running. */
       graph.music.setIntensity(this.pendingIntensity);
       graph.master.gain.value = this.masterVolume * 0.9;
       graph.musicVolume.gain.value = this.musicVolume;
@@ -498,6 +526,11 @@ export class AudioEngine implements AudioBus {
       graph.music.sendTrim.gain.value = this.menuMusicFloor;
 
       this.graph = graph;
+      /* Belt and braces to the unstarted sources above: if the browser handed us a context that
+         is already running and the player has not yet interacted, put it back to sleep. `suspend()`
+         never requires authorisation, so this cannot hang the way `resume()` can and cannot reject
+         in a way this catch would miss. */
+      if (ctx.state === 'running' && !this.unlocked) void ctx.suspend();
       this.startTicker();
     } catch {
       // Autoplay policy, no output device, exhausted context quota — all the same to us.

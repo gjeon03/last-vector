@@ -277,8 +277,16 @@ export interface AudioBus {
    * wherever autoplay is permitted.
    */
   prewarm(): Promise<void>;
-  /** Must be called from inside a user gesture. Idempotent. */
+  /** Must be called from inside a user gesture. Idempotent. Starts the drive and score. */
   unlock(): Promise<void>;
+  /**
+   * Whether a user gesture has ever reached the engine.
+   *
+   * Anything that could make the graph audible must consult this now that the graph exists from
+   * boot. A context constructed where autoplay is permitted begins `running`, so "we never called
+   * resume()" is not a guarantee of silence.
+   */
+  readonly unlocked: boolean;
   readonly ready: boolean;
   update(dt: number, engine: EngineAudioState): void;
   play(event: SfxEvent, intensity?: number): void;
