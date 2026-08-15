@@ -201,13 +201,22 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         max: 1,
         /* 0.02, not 0.05, so every quality profile's renderScale is a REACHABLE stop:
            0.6 + 6*0.02 = 0.72 (low), + 13*0.02 = 0.86 (medium), + 20*0.02 = 1.00 (high/ultra).
-           On the old 0.05 grid 0.72 and 0.86 were not stops at all — the browser snapped the thumb
-           to 0.70 and 0.85 while the readout showed the stored value, so thumb and readout
-           disagreed on two of four profiles. That is also what broke `renderScaleForQuality`: a
-           net-zero drag committed the snapped value, permanently flipping the player out of the
-           "never touched it" state, after which selecting ultra rendered at 0.70 instead of 1
-           forever, persisted, with no visible cause. Fixing the grid removes the artefact rather
-           than teaching the heuristic to tolerate it. */
+           Those three are bit-exact against the profile constants in binary64, not merely close.
+
+           On the old 0.05 grid 0.72 and 0.86 were not stops, so the input element held "0.7" and
+           "0.85" while the store held the profile value — `Number(input.value) === store` was
+           false at two of four profiles, and survived a reload.
+
+           Two claims an earlier version of this comment made that did NOT reproduce, recorded so
+           nobody re-derives them: a net-zero *pointer* drag commits nothing on either grid, and
+           the visible thumb is the JS-driven fill rather than the native one (`.lv-slider-in` is
+           opacity 0), so "thumb and readout disagreed" was the wrong description of a real
+           mismatch between input value and store. The net-zero *keyboard* gesture does still flip
+           state at high and ultra, but through endpoint clamping rather than the grid.
+
+           Note this change alone made `renderScaleForQuality`'s old value-equality test unsound —
+           see the correction on that function. Reachability was the property that test depended
+           on. */
         step: 0.02,
         fmt: pct,
       },

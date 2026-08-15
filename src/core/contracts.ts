@@ -192,6 +192,18 @@ export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
 export interface Settings {
   quality: QualityLevel;
   renderScale: number;
+  /**
+   * Whether the player has ever moved the render-scale slider themselves.
+   *
+   * Stored rather than inferred, because inferring it from the value is unsound. The obvious test
+   * — does `renderScale` still equal the current quality profile's — was only ever valid while the
+   * profile values 0.72 and 0.86 were unreachable slider stops: no gesture could put 0.72 into
+   * storage except never having touched the control. Putting them ON the grid (which the UI needed
+   * for its own reasons) destroys exactly that property, and turns a false negative into a silent,
+   * permanent false positive: a player who deliberately chooses 0.72 is read as never having
+   * chosen anything, and every later quality change overwrites them.
+   */
+  renderScaleTouched: boolean;
   masterVolume: number;
   musicVolume: number;
   mouseSensitivity: number;
@@ -208,6 +220,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   quality: 'high',
   renderScale: 1,
+  renderScaleTouched: false,
   masterVolume: 0.8,
   musicVolume: 0.65,
   mouseSensitivity: 1,

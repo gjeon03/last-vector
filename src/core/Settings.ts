@@ -103,14 +103,21 @@ export function qualityProfile(level: QualityLevel): QualityProfile {
  * taking it would pin a player who has never touched the slider to a scale their new quality level
  * does not want, which is the reading that cleared this as correct-as-shipped.
  *
- * Both readings are right about different players, so the condition has to distinguish them:
- * follow the profile only while the current value still IS the profile's. That is the same
- * question the constructor asks of storage — has the player ever expressed a preference — answered
- * without a second piece of state that could drift out of step with the first.
+ * Both readings are right about different players, so the condition has to distinguish them, and
+ * it reads a STORED flag rather than inferring intent from the value.
+ *
+ * CORRECTION, because the first attempt did infer it. It asked whether `renderScale` still equalled
+ * the current quality profile's, which looked like it needed no extra state. That test was sound
+ * only while 0.72 and 0.86 were unreachable slider stops — no gesture could put 0.72 into storage
+ * except never having touched the control, so equality really did imply untouched. Putting those
+ * values on the grid, which the slider needed for its own reasons, destroys precisely that
+ * property: a player who deliberately selects 0.72 at low quality is then read as never having
+ * chosen, and every later quality change overwrites them. That is a silent, permanent, persisted
+ * false positive — the exact failure this function exists to prevent, reintroduced by the fix for
+ * the adjacent one.
  */
 function renderScaleForQuality(current: Settings, nextQuality: QualityLevel): number {
-  const untouched = current.renderScale === qualityProfile(current.quality).renderScale;
-  return untouched ? qualityProfile(nextQuality).renderScale : current.renderScale;
+  return current.renderScaleTouched ? current.renderScale : qualityProfile(nextQuality).renderScale;
 }
 
 /** Guesses a sensible starting quality so the first frame a player sees is a good one. */
@@ -138,6 +145,9 @@ function sanitise(raw: Partial<Settings>): Settings {
   s.cameraShake = clamp01(s.cameraShake);
   if (!(s.quality in PROFILES)) s.quality = 'high';
   if (!['arcade', 'standard', 'raw'].includes(s.assistLevel)) s.assistLevel = 'standard';
+  /* A hand-edited or truncated blob must not leave this as a string or a number, since it decides
+     whether a later quality change overwrites the player's render scale. */
+  s.renderScaleTouched = s.renderScaleTouched === true;
   return s;
 }
 
@@ -168,6 +178,15 @@ export class SettingsStore {
     // detection exists to protect.
     if (stored?.renderScale === undefined) {
       this.current.renderScale = qualityProfile(this.current.quality).renderScale;
+    } else if (stored.renderScaleTouched === undefined) {
+      /* Migration, and the ONLY place the old value-equality inference is still used. A blob
+         written before `renderScaleTouched` existed carries no record of intent, so the best
+         available signal is whether the stored scale differs from its quality's profile. That
+         inference is unsound in general — a deliberate 0.72 at low quality reads as untouched —
+         but it is strictly better than defaulting every existing player to one answer, and it
+         runs exactly once, after which the flag is authoritative. */
+      this.current.renderScaleTouched =
+        stored.renderScale !== qualityProfile(this.current.quality).renderScale;
     }
   }
 
@@ -182,6 +201,10 @@ export class SettingsStore {
   set<K extends keyof Settings>(key: K, value: Settings[K]): void {
     if (this.current[key] === value) return;
     const next = { ...this.current, [key]: value };
+    /* Moving the slider is the only thing that marks it touched, and it is recorded here rather
+       than derived later, so the record cannot be destroyed by a value that coincides with a
+       profile default. */
+    if (key === 'renderScale') next.renderScaleTouched = true;
     if (key === 'quality') next.renderScale = renderScaleForQuality(this.current, next.quality);
     this.current = sanitise(next);
     writeJson(STORAGE_KEY, this.current);
@@ -190,6 +213,7 @@ export class SettingsStore {
 
   patch(patch: Partial<Settings>): void {
     const next = sanitise({ ...this.current, ...patch });
+    if (patch.renderScale !== undefined) next.renderScaleTouched = true;
     if (patch.quality && patch.renderScale === undefined) {
       next.renderScale = renderScaleForQuality(this.current, next.quality);
     }
