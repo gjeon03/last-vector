@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { REPO_ROOT } from './runtime.mjs';
+import { suiteFailures } from './manifest.mjs';
 
 const started = Date.now();
 const { outputRoot, forwardedArgs } = extractOutput(process.argv.slice(2));
@@ -53,6 +54,7 @@ for (const suite of suites) {
     reportPath: relativeOutput(resolve(suiteOutput, 'report.json')),
     status: report?.status ?? 'FAIL',
     summary: report?.summary ?? null,
+    checkIds: Array.isArray(report?.checks) ? report.checks.map((c) => c?.id).filter(Boolean) : [],
     reportError,
   });
 }
@@ -71,14 +73,6 @@ const finished = Date.now();
  * Found by an independent agent from a different family, on a first pass, after five rounds of
  * eight-discipline review had looked at the game and never at the aggregator.
  */
-const suiteFailures = (result) => {
-  const reasons = [];
-  if (result.status !== 'PASS') reasons.push(`reported ${result.status}`);
-  if (result.exitCode !== 0) reasons.push(`exited ${result.exitCode}`);
-  if (result.signal !== null) reasons.push(`killed by ${result.signal}`);
-  if (result.reportError !== null) reasons.push(`report unreadable: ${result.reportError}`);
-  return reasons;
-};
 for (const result of results) result.failures = suiteFailures(result);
 const status = results.every((result) => result.failures.length === 0) ? 'PASS' : 'FAIL';
 const combined = {

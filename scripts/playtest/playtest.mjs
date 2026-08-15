@@ -22,6 +22,7 @@ const REQUIRED_METHODS = [
   'setDriven',
   'setFixedTimestep',
   'setSettings',
+  'settings',
   'errors',
 ];
 
@@ -243,6 +244,37 @@ async function runPlaytest({ report, session, options }) {
     const drawn = Object.values(byQuality).map((h) => h.activeRocks);
     verify(drawn[0] < drawn[drawn.length - 1], 'Quality no longer changes the drawn population at all.', { byQuality });
     return { samples: 900, byQuality };
+  });
+
+  await report.check({
+    id: 'GAME.renderscale-intent-persists',
+    name: 'A deliberate render-scale choice survives a quality round-trip and a reload',
+    criteria: [criterion('M6', 'partial', 'Exercises the settings store through the player-facing setSettings route; the slider widget itself is DOM-covered by UX.screen-flow only.')],
+    assertion:
+      'Setting renderScale to a value that HAPPENS to equal a quality profile default, then '
+      + 'changing quality, keeps the chosen value — intent is read from the stored '
+      + 'renderScaleTouched flag, not inferred from value equality — and both survive a reload.',
+  }, async () => {
+    /* The revert this exists to catch: renderScaleForQuality once inferred "player never touched
+       the slider" from current.renderScale === the profile default. That inference was sound
+       ONLY while 0.72/0.86 were unreachable slider stops, and putting them on the grid destroyed
+       it: a deliberate 0.72 read as untouched and every later quality change overwrote it —
+       silently, permanently, persisted. Restore that inference and this check goes red; nothing
+       else in the gate would. The killing sequence is exactly the one below. */
+    const before = await callHarness(page, 'settings');
+    await callHarness(page, 'setSettings', [{ quality: 'low' }]);
+    await callHarness(page, 'setSettings', [{ renderScale: 0.72 }]); // == the low profile default, deliberately
+    await callHarness(page, 'setSettings', [{ quality: 'ultra' }]);
+    const after = await callHarness(page, 'settings');
+    verify(after.renderScaleTouched === true, 'Moving the slider did not mark renderScale as touched.', after);
+    verify(Math.abs(after.renderScale - 0.72) < 1e-9, `Quality change overwrote a deliberate 0.72 with ${after.renderScale} — intent is being inferred from value equality again.`, after);
+    await reloadHarness(page, options.timeoutMs);
+    const reloaded = await callHarness(page, 'settings');
+    verify(reloaded.renderScaleTouched === true, 'renderScaleTouched did not survive a reload.', reloaded);
+    verify(Math.abs(reloaded.renderScale - 0.72) < 1e-9, 'The chosen renderScale did not survive a reload.', reloaded);
+    /* Leave the page as this suite found it: later checks assume the boot-time quality. */
+    await callHarness(page, 'setSettings', [{ quality: before.quality, renderScale: before.renderScale }]);
+    return { chose: 0.72, afterQualityChange: after.renderScale, afterReload: reloaded.renderScale };
   });
 
   const boostOutcome = await report.check({
