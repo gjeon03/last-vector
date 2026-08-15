@@ -477,6 +477,44 @@ async function measureInPage(config) {
     gainedDb: round(menuPausedDryDuckOnly.lufsShortTerm - bedResults.menuPaused.withMusic.lufsShortTerm, 2),
   };
 
+  /**
+   * The score in isolation at a given Score-slider position, engine and sfx muted.
+   *
+   * Mirrors what `setMusicVolume` drives — both the dry bus and the reverb-send path — because a
+   * control that moves only one of them is exactly the defect this measures. Both suites pinned
+   * masterVolume/musicVolume and never moved them, so a shipped slider that changed 0.55 dB of
+   * score between default and zero passed 23/23 and 21/21 for the life of the project.
+   */
+  async function renderScoreStem(volume) {
+    const seconds = method.bedSettleSeconds + method.bedWindowSeconds + 0.2;
+    const ctx = new OfflineAudioContext(2, Math.round(seconds * SR), SR);
+    const g = newGraph(ctx);
+    g.sfxBus.gain.value = 0;
+    g.engineBus.gain.value = 0;
+    g.musicVolume.gain.value = volume;
+    g.music.sendVolume.gain.value = volume;
+    g.music.start(0);
+    g.music.setIntensity(method.musicIntensity);
+    const dt = 1 / 30;
+    for (let k = 1; k * dt < seconds - 0.1; k++) {
+      const t = k * dt;
+      ctx.suspend(t).then(() => {
+        g.music.tick(ctx.currentTime);
+        g.ledger.sweep(ctx.currentTime);
+        ctx.resume();
+      });
+    }
+    const buf = await ctx.startRendering();
+    const m = monoOf(buf, method.bedSettleSeconds, method.bedSettleSeconds + method.bedWindowSeconds);
+    let sq = 0;
+    for (let i = 0; i < m.length; i++) sq += m[i] * m[i];
+    const rms = Math.sqrt(sq / Math.max(m.length, 1));
+    return { volume, rmsDb: rms <= 1e-12 ? -Infinity : round(20 * Math.log10(rms), 2), peak: peakOf(buf) };
+  }
+
+  const scoreStem = [];
+  for (const v of [1, 0.65, 0.3, 0.05, 0]) scoreStem.push(await renderScoreStem(v));
+
   const eventResults = [];
   for (const ev of events) {
     const r = await renderEvent(ev.name, ev.intensity, ev.seconds);
@@ -637,6 +675,7 @@ async function measureInPage(config) {
     events: eventResults,
     stress,
     sustainedGraze,
+    scoreStem,
     hygiene: { permanent, peak: peakNodes, after: hg.ledger.count(), pendingVoices: hg.ledger.pendingVoices() },
   };
 }
@@ -819,6 +858,26 @@ function evaluateGate(measurement) {
       : `a continuous graze lifts the boost bed by ${sg.bestIncrementDb} dB at ${sg.bestHz} Hz ` +
         `(implied cue-over-bed ${sg.impliedSnrDb} dB; needs > 1 dB)`,
   });
+  // A volume control that does not reach silence is not a volume control.
+  const stem = measurement.scoreStem ?? [];
+  const atZero = stem.find((x) => x.volume === 0);
+  const atFull = stem.find((x) => x.volume === 1);
+  const atLow = stem.find((x) => x.volume === 0.05);
+  checks.push({
+    id: 'MUSIC.volume-zero-silences-score',
+    passed: atZero !== undefined && (atZero.rmsDb === null || atZero.rmsDb < -120),
+    detail: `score stem at slider 0 = ${atZero?.rmsDb ?? 'n/a'} dBFS RMS (must be below -120; ` +
+      `anything audible here means a player who turns the music off still hears it)`,
+  });
+  const travel = atFull && atLow && Number.isFinite(atFull.rmsDb) && Number.isFinite(atLow.rmsDb)
+    ? Number((atFull.rmsDb - atLow.rmsDb).toFixed(2))
+    : null;
+  checks.push({
+    id: 'MUSIC.volume-travel',
+    passed: travel !== null && travel >= 20,
+    detail: `score stem spans ${travel} dB between slider 1.00 and 0.05 (must be >= 20; a partially ` +
+      `inert control still reaches silence at exactly zero while doing almost nothing in between)`,
+  });
   const clipped = measurement.events.filter((e) => (e.truePeakDbTP ?? -99) > -0.5);
   checks.push({
     id: 'HEADROOM.truepeak',
@@ -851,6 +910,10 @@ function formatTable(measurement) {
       `${measurement.sustainedGraze.bestIncrementDb} dB at ${measurement.sustainedGraze.bestHz} Hz ` +
       `(implied cue-over-bed ${measurement.sustainedGraze.impliedSnrDb} dB)`,
     );
+  }
+  if (measurement.scoreStem) {
+    lines.push('');
+    lines.push('SCORE STEM vs Score slider: ' + measurement.scoreStem.map((x) => `${x.volume}=${x.rmsDb ?? '-inf'}`).join('  '));
   }
   lines.push('');
   lines.push('CUES  (SNR = cue power over bed power, best third-octave band; > 0 dB = cue wins)');

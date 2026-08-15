@@ -313,7 +313,15 @@ export class AudioEngine implements AudioBus {
     this.musicVolume = clamp01(value);
     const g = this.graph;
     if (!g) return;
-    rampTo(g.musicVolume.gain, this.musicVolume, 0.05, g.ctx.currentTime);
+    const now = g.ctx.currentTime;
+    rampTo(g.musicVolume.gain, this.musicVolume, 0.05, now);
+    // The score reaches the mix by two paths. Driving only the dry one made this control move
+    // 0.55 dB of score between default and silent — a slider that a player could set to zero and
+    // still hear the music.
+    rampTo(g.music.sendVolume.gain, this.musicVolume, 0.05, now);
+    // The score reaches the mix by two paths. Driving only the dry one made this control move
+    // 0.55 dB of score between default and silent — a slider that a player could set to zero and
+    // still hear the music.
   }
 
   /**
@@ -414,6 +422,8 @@ export class AudioEngine implements AudioBus {
     engineDuck: number;
     musicDuck: number;
     musicSendTrim: number;
+    musicVolume: number;
+    musicSendVolume: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
   } | null {
@@ -424,6 +434,8 @@ export class AudioEngine implements AudioBus {
       engineDuck: g.engineDuck.gain.value,
       musicDuck: g.musicDuck.gain.value,
       musicSendTrim: g.music.sendTrim.gain.value,
+      musicVolume: g.musicVolume.gain.value,
+      musicSendVolume: g.music.sendVolume.gain.value,
       menuEngineFloor: this.menuEngineFloor,
       menuMusicFloor: this.menuMusicFloor,
     };
@@ -461,6 +473,7 @@ export class AudioEngine implements AudioBus {
       graph.music.setIntensity(this.pendingIntensity);
       graph.master.gain.value = this.masterVolume * 0.9;
       graph.musicVolume.gain.value = this.musicVolume;
+      graph.music.sendVolume.gain.value = this.musicVolume;
       graph.engineDuck.gain.value = this.menuEngineFloor;
       graph.musicDuck.gain.value = this.menuMusicFloor;
       graph.music.sendTrim.gain.value = this.menuMusicFloor;

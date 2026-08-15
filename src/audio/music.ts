@@ -76,6 +76,8 @@ export class MusicBed {
 
   /** Trim on the reverb-send path, ducked in step with `musicDuck`. See the constructor. */
   readonly sendTrim: GainNode;
+  /** Player volume on the reverb-send path, driven in step with `musicVolume`. */
+  readonly sendVolume: GainNode;
   private readonly padGate: GainNode;
   private readonly subGate: GainNode;
   private readonly subEnv: GainNode;
@@ -98,18 +100,28 @@ export class MusicBed {
     this.rng = rng;
 
     const keep = <T extends AudioNode>(node: T): T => ledger.keep(node);
-    // Every layer's reverb send passes through this before reaching the shared bus.
+    // Every layer's reverb send passes through these two before reaching the shared bus.
     //
     // The sends tap each layer gate directly, which is upstream of `musicBus` — so they bypass
-    // `musicVolume` and `musicDuck` entirely. Measured consequence: ducking `musicDuck` by 5.2 dB
-    // moved the score's contribution to the menu bed by 0.2 dB, because only ~6.5% of its power in
-    // that band was travelling the dry path. Every music duck in the mix — gate hits, the finish
-    // chord, the menu trim — was ducking a twentieth of the score and leaving its reverb at full
-    // level. This node is what makes those ducks reach the wet path too; per-layer send amounts
-    // stay intact behind it.
+    // `musicBus`, `musicVolume` and `musicDuck` entirely, and they carry most of the score's
+    // power: measured broadband on the isolated stem, only ~10.8% of it travels the dry path.
+    //
+    // That single fact broke two separate things, and they need two separate nodes because they
+    // are driven by different callers at different rates:
+    //   `sendTrim`   follows the momentary and menu ducks, alongside `musicDuck`
+    //   `sendVolume` follows the player's Score slider, alongside `musicVolume`
+    //
+    // An earlier fix added `sendTrim` and wired it to both ducks — while this comment already
+    // named `musicVolume` as bypassed too. The result was a shipped volume control that moved
+    // 0.55 dB of score between its default and zero: turning the music off left 88% of it playing.
+    // Fixing the half the comment described and leaving the half it also described is the whole
+    // lesson; per-layer send amounts stay intact behind both nodes.
     this.sendTrim = ledger.keep(ctx.createGain());
     this.sendTrim.gain.value = 1;
-    this.sendTrim.connect(send);
+    this.sendVolume = ledger.keep(ctx.createGain());
+    this.sendVolume.gain.value = 1;
+    this.sendTrim.connect(this.sendVolume);
+    this.sendVolume.connect(send);
 
     const wet = (source: AudioNode, amount: number): void => {
       const g = keep(ctx.createGain());

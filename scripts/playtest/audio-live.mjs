@@ -77,6 +77,28 @@ async function runInPage(config) {
   await wait(120);
   add('LIVE.redundant-resume', state().contextState === 'running', `ctx.state = ${state().contextState}`);
 
+  // --- the Score slider must reach every path the score travels ---------------------------------
+  // The offline probe proves the graph CAN be silenced; this proves the shipped method drives both
+  // nodes. Splitting it that way matters: the round-5 fix made the graph duckable and left
+  // `setMusicVolume` touching only the dry path, so a graph-only assertion would still have passed.
+  engine.setMusicVolume(0);
+  await wait(400);
+  const volZero = state();
+  add(
+    'LIVE.music-volume-zero-reaches-both-paths',
+    near(volZero.musicVolume, 0) && near(volZero.musicSendVolume, 0),
+    `musicVolume ${volZero.musicVolume.toFixed(3)}, musicSendVolume ${volZero.musicSendVolume.toFixed(3)} after ` +
+      `setMusicVolume(0) — both must reach 0, or the slider silences the pad and leaves its reverb`,
+  );
+  engine.setMusicVolume(0.65);
+  await wait(400);
+  const volBack = state();
+  add(
+    'LIVE.music-volume-tracks-both-paths',
+    near(volBack.musicVolume, 0.65) && near(volBack.musicSendVolume, 0.65),
+    `musicVolume ${volBack.musicVolume.toFixed(3)}, musicSendVolume ${volBack.musicSendVolume.toFixed(3)} after setMusicVolume(0.65)`,
+  );
+
   // --- static menu trim -------------------------------------------------------------------------
   engine.menuMix(true);
   await wait(settleMs);
