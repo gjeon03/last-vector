@@ -215,7 +215,7 @@ async function runInPage(config) {
 /* eslint-enable */
 
 function parseArgs(argv) {
-  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-live'), json: false, requireClean: false, noGame: false };
+  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-live'), json: false, requireClean: false, noGame: false, artifactLocked: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') options.out = resolve(REPO_ROOT, argv[++i] ?? '.');
     else if (argv[i] === '--json') options.json = true;
@@ -224,6 +224,11 @@ function parseArgs(argv) {
     // wrong to do while someone else has an in-progress edit in src/ — you would be building and
     // testing their half-finished work and attributing the result to yours.
     else if (argv[i] === '--no-game') options.noGame = true;
+    // Refuse to regenerate dist/. For runs that happen while somebody else is reading the
+    // artefact — a review round, a panel wave — a suite that rebuilds it mid-read can hand a
+    // reviewer a torn asset, and the symptom is a failed run they will attribute to the product.
+    // I did exactly that during round 5. Locked runs fail loudly instead, before touching anything.
+    else if (argv[i] === '--artifact-locked') options.artifactLocked = true;
   }
   return options;
 }
@@ -280,10 +285,13 @@ async function readProvenance() {
  *
  * So: rebuild whenever anything under `src/` is newer than the build, and say which path was taken.
  */
-async function ensureDist() {
+class ArtifactLockedError extends Error {}
+
+async function ensureDist(locked = false) {
   const { stat, readdir } = await import('node:fs/promises');
   const dist = resolve(REPO_ROOT, 'dist');
   const rebuild = async (reason) => {
+    if (locked) throw new ArtifactLockedError(reason);
     const { build } = await import('vite');
     await build({ root: REPO_ROOT, logLevel: 'silent' });
     return { dist, built: true, reason };
@@ -607,9 +615,18 @@ async function main() {
     if (options.noGame) {
       gameChecks = [];
     } else try {
-      distInfo = await ensureDist();
+      distInfo = await ensureDist(options.artifactLocked);
       gameChecks = await runGamePhase(playwright, distInfo.dist);
     } catch (error) {
+      if (error instanceof ArtifactLockedError) {
+        console.error(
+          `Refusing to rebuild dist/ under --artifact-locked: ${error.message}.\n` +
+          `Build it once before the round, verify the served hash, then lock. Rebuilding now would ` +
+          `regenerate the artefact anyone currently reading it was handed.`,
+        );
+        process.exitCode = 2;
+        return;
+      }
       gameChecks = [{
         id: 'GAME.phase-available',
         passed: false,
@@ -633,6 +650,7 @@ async function main() {
       constants: result.constants,
       checks: result.checks,
       pageErrors,
+      artifactLocked: options.artifactLocked,
       distBuiltByThisRun: distInfo?.built ?? null,
       distDecision: distInfo?.reason ?? null,
       notCovered: [

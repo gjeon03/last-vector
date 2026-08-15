@@ -693,11 +693,15 @@ const thirdOctaveCentres = (() => {
 
 function parseArgs(argv) {
   // Default under playtest-out/, which .gitignore already covers.
-  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-probe'), json: false, requireClean: false };
+  const options = { out: resolve(REPO_ROOT, 'playtest-out/audio-probe'), json: false, requireClean: false, artifactLocked: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') options.out = resolve(REPO_ROOT, argv[++i] ?? '.');
     else if (argv[i] === '--json') options.json = true;
     else if (argv[i] === '--require-clean') options.requireClean = true;
+    // Accepted so a locked round can pass the same flag to every suite. This one builds only into
+    // a private temp directory and never writes dist/, so honouring it is a no-op — recorded in the
+    // report rather than silently ignored, so "locked" cannot be read as more than it is here.
+    else if (argv[i] === '--artifact-locked') options.artifactLocked = true;
   }
   return options;
 }
@@ -982,6 +986,8 @@ async function main() {
       summary: { passed: checks.length - failed.length, failed: failed.length, total: checks.length },
       provenance,
       method: { ...METHOD, thirdOctaveCentres },
+      artifactLocked: options.artifactLocked,
+      sharedArtefactsWritten: [],
       gameplayCritical: GAMEPLAY_CRITICAL,
       ungatedButMeasured: UNGATED_BUT_MEASURED,
       cueBed: CUE_BED,

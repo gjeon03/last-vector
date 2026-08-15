@@ -20,10 +20,10 @@ const suites = [
   // Nobody has heard this build, so the offline audio measurement IS the audio quality gate —
   // and a gate that is not run does not gate. --require-clean because everything this suite
   // produces is quoted as evidence.
-  { name: 'audio-probe', script: 'audio-probe.mjs', args: ['--require-clean'] },
+  { name: 'audio-probe', script: 'audio-probe.mjs', args: ['--require-clean', '--artifact-locked'] },
   // A real AudioContext in a real browser. The offline probe is blind to suspension and to the
   // mix state machine BY CONSTRUCTION, and both round-4 audio blockers lived in that gap.
-  { name: 'audio-live', script: 'audio-live.mjs', args: ['--require-clean'] },
+  { name: 'audio-live', script: 'audio-live.mjs', args: ['--require-clean', '--artifact-locked'] },
 ];
 
 /** Milliseconds to let the machine settle after a suite's browser has exited. */
