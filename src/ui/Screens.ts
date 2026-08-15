@@ -349,7 +349,20 @@ export class Screens {
     const n = this.navItems.length;
     this.navIndex = ((index % n) + n) % n;
     const node = this.navItems[this.navIndex]!;
+    /*
+     * Suppress the browser's own scroll, then scroll deliberately. `preventScroll` alone left a
+     * keyboard-only player focused on a control below the fold in a container that never
+     * scrolled — measured at 375x667, the Score slider sat at y 677 against a 667 viewport with
+     * the settings scroller at scrollTop 0, and ArrowRight then changed a setting the player
+     * could not see. `block: 'nearest'` moves the nearest scrollable ancestor by the minimum
+     * needed and leaves everything else alone, which is what the plain default cannot promise.
+     *
+     * This is the keyboard and programmatic path only. Pointer focus in `onPointerOver` keeps
+     * `preventScroll` with no scroll call, because hovering a control must never move the page
+     * under the pointer.
+     */
     node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (sound) this.opts.onSound('move');
   }
 
