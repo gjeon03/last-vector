@@ -189,6 +189,41 @@ agreeing measurements share before treating their agreement as weight.
   one cost correctness, because the copy did not happen and the author carried on believing two
   files were in sync.
 
+
+**Capability assertions and wiring assertions look identical in a report and fail in completely
+different circumstances.** The operational test, and it is cheap: **a capability assertion passes
+when you delete the caller.**
+
+Silence a graph and an offline check still passes; unwire the method that is supposed to silence it
+and the same check still passes. Every instrument in this project that has embarrassed us was the
+first kind sold as the second, and the test predicts each failure retroactively: delete the code
+that aims the vantage camera and the screenshot suite's histogram checks still pass — which is how
+ten stills of empty sky went green. Delete the fill-budget clamp and the performance gate still
+passes, because it was pinned to `deviceScaleFactor === 1`. An assertion that cannot tell the two
+apart should say which one it is in its own name.
+
+**A correct description of a defect is not a fix, and it reads like one.** Three instances, by two
+authors, in one week: a source comment naming both bypassed audio nodes, written by the author who
+then fixed one of them and shipped the sentence describing the other; `Course.ts` claiming leg
+lengths were the remedy when `git show` proves every leg byte-identical across that commit; and two
+G-load distributions labelled "pre-fix" and "post-fix" that both reproduce on a single commit with
+no code change between them. Comments survive review because nobody measures them.
+
+**A declared support range bounds layout, not accessibility.** Keyboard focus escaping the viewport
+was undetectable at 1280 and above, because `maxScrollTop` is 0 there and the defect cannot
+manifest. The test was correct everywhere it was allowed to look. This is the free-parameter
+failure with a spec as the parameter — and it is the nastiest variant, because holding the value
+constant was compliance rather than oversight, and nothing distinguishes *I chose not to vary this*
+from *I was told I did not have to*.
+
+**An instrument is the last thing its own users audit.** Six rounds of reviewers examined the game
+and never the aggregator — which is the thing that tells them whether the game is fine. `all.mjs`
+computed its verdict from `report.status` alone and ignored child exit codes, so `--require-clean`,
+which writes its report and exits 2, could never fail the gate it was added to. Three authors spent
+an exchange calibrating the strictness of a mechanism that was inert. It was found in one pass by
+an agent from a different family, with no stake in the apparatus, reading the aggregator instead of
+the game.
+
 ## Verification limits — what this build's evidence does NOT cover
 
 Recorded honestly, because an unstated gap reads as coverage.
