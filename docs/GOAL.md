@@ -260,11 +260,38 @@ Recorded honestly, because an unstated gap reads as coverage.
   phase within the render quantum, so a pure time shift moved a reported peak by 2.95 dB. RMS,
   band-energy and increment figures are averages and are unaffected; the conclusions rest on
   those.
-- **Pointer-locked mouse flight has never been exercised, in any driver.** This is the largest
-  evidence gap in the project: four of eight reviewers on the expert panel could not judge the
-  primary control scheme.
+- **Pointer-locked MOUSE flight has never been exercised, in any driver.** Still the largest
+  evidence gap in the project, and the reason four of eight reviewers on the expert panel could not
+  judge the primary control scheme.
 
-  The failure is environmental, and that is established rather than assumed. `requestPointerLock`
+  **CORRECTION, round 7.** An earlier version of this bullet said the failure was environmental and
+  that this "is established rather than assumed". The environmental half is true and is restated
+  below. The word *established* was not, and the error was load-bearing: it attributed the whole
+  gap to the browser and so nobody looked for a cause we controlled.
+
+  There were two gates, and pointer lock was the second. `Input.update()` returns inside its
+  override branch at `src/core/Input.ts:171`, and `__LV.setInput` — the only way any suite supplied
+  flight input — takes that branch. So the virtual stick, the expo response curves, the key
+  mapping, the throttle integrator, `mouseSensitivity`, `invertY` and the entire gamepad block were
+  executed by **no automated test at all**, and would not have been even with pointer lock granted.
+  Worse, `handleKeyDown` is a window listener whose only `locked` reference is the Tab guard, so the
+  **keyboard half was never gated on pointer lock in the first place** — it was testable throughout
+  and simply was not tested.
+
+  The claim that hid this was `M2.automation-input`, which declared `criterion('M2', 'full',
+  'Exercises every declared control')`. Proven false by mutation rather than argued: stubbing
+  `Input.held()` kills every key-derived input in the game, `INPUT.keys-drive-the-command` goes red,
+  and **M2 stays green**. Six rounds of review had read that `full` as coverage.
+
+  Now covered by `INPUT.keys-drive-the-command` and `INPUT.invertY-reaches-flight`: the key-derived
+  axes in both signs, the throttle integrator measured as a rate rather than an endpoint, and
+  `invertY` in both positions through the real settings path. Still genuinely blocked, and blocked
+  environmentally: the mouse-derived virtual stick, `mouseSensitivity`, `expo` on stick input, the
+  gamepad branch, and pointer lock itself. `mouseSensitivity`'s continued invisibility is now
+  asserted by an inverse mutation, so the day a harness reaches the mouse path this paragraph starts
+  failing a check instead of quietly going stale.
+
+  The environmental part, unchanged and still true. `requestPointerLock`
   is refused in Playwright Chromium both headless and headed, with the browser's own reason —
   "The root document of this element is not valid for pointer lock." A control experiment calling
   `document.body.requestPointerLock()` directly from a trusted click on the same page fails
@@ -276,8 +303,28 @@ Recorded honestly, because an unstated gap reads as coverage.
   callout that the keyboard still flies. Previously a browser that refused capture was
   indistinguishable from one that granted it — which is precisely why this went unnoticed.
 
-  Closing this needs a human with a mouse. Nothing else will do it.
-- **No gamepad has been connected.** The code path is read-only verified.
+  Closing the mouse half needs a human with a mouse. Nothing else will do it. Closing the rest did
+  not, and that is the lesson: for six rounds an environmental limit was cited for a gap that was
+  mostly a choice, because the sentence naming the limit could not fail.
+- **No gamepad has been connected**, and the gamepad branch sits in the region above that no
+  automated test reaches, so "the code path is read-only verified" is all that can be said for it.
+- **Eight claims in this project's own comments and documents have been disproved by measurement**,
+  five of them the author's, one of them written *in the commit that was correcting another*. The
+  pattern is not carelessness about facts — every one had its supporting facts right. It is
+  asserting a **mechanism** where a **measurement** was owed: `Course.ts` on leg lengths, `Hud.ts`
+  on G-load distributions, `audio-probe.mjs` on what it measured, `Gate.ts` on the cairn's
+  rotation chain, `PostFX.ts` on tap counts, `harness.ts` on invertY, `styles.css` on
+  `min-height: 0`, and this document on pointer lock.
+
+  Two of round 7's fixes failed the same way and had to be made three times each. In both, the
+  premise was verified and true and the inference from it was false — that declining to `resume()`
+  keeps an audio context silent (it does not, where autoplay is permitted the context starts
+  `running`), and that putting profile values on the slider grid makes a value-equality test sound
+  (it destroys the unreachability that test depended on).
+
+  The rule this yields, and the only one that has actually worked: **a claim about coverage can be
+  settled only by deleting the subject and watching what survives.** Every other form of the
+  argument is a story about the code, told by someone who has read it.
 - **The results, pause and settings screens have only synthetic-background evidence.** The
   in-flight HUD was re-verified against the real renderer; those three were not.
 - **Frame-rate headroom is unknown.** Every configuration measured is vsync-locked at 60, so the
