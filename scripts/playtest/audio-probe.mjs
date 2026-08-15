@@ -63,6 +63,12 @@ const BEDS = {
   countdown: { throttle: 0.22, speed01: 0.2, boosting: false, slip: 0 },
   cruise: { throttle: 0.55, speed01: 0.45, boosting: false, slip: 0.05 },
   full: { throttle: 1, speed01: 0.85, boosting: false, slip: 0.05 },
+  /**
+   * Identical to `full` in every field but `boosting`. That is the whole point: it isolates the
+   * boost layer, which `boost` below cannot, because `boost` also moves speed01 from 0.85 to 1.00
+   * and speed raises output on its own through `out.gain` and `turbineGain`.
+   */
+  fullBoosted: { throttle: 1, speed01: 0.85, boosting: true, slip: 0.05 },
   boost: { throttle: 1, speed01: 1, boosting: true, slip: 0.05 },
 };
 
@@ -770,6 +776,10 @@ async function buildAudioBundle(outDir) {
   await build({
     configFile: false,
     root: REPO_ROOT,
+    // The worktree's node_modules is a symlink to the primary tree's, and vite writes
+    // node_modules/.vite and .vite-temp. Without this the build writes through the symlink into a
+    // tree someone else may be reading, and two builds share one temp directory.
+    cacheDir: '.vite-cache',
     logLevel: 'silent',
     build: {
       outDir,
@@ -834,13 +844,54 @@ function evaluateGate(measurement) {
     const delta = Number((hi.snrVsOwnBed.bestSnrDb - lo.snrVsOwnBed.bestSnrDb).toFixed(1));
     checks.push({
       id: `ESCALATES.${name}`,
-      passed: delta >= -0.5,
+      passed: delta > 0,
       detail:
         `SNR vs ${hi.ownBed} bed goes ${lo.snrVsOwnBed.bestSnrDb} dB at intensity ${lo.intensity} ` +
         `-> ${hi.snrVsOwnBed.bestSnrDb} dB at intensity ${hi.intensity} (${delta >= 0 ? '+' : ''}${delta} dB; ` +
         `must not fall as the cue becomes more urgent)`,
     });
   }
+  // Ordered by ascending commanded thrust. `menu` is excluded because it ties `cruise` at 0.55, and
+  // `boost` because it moves speed01 as well as `boosting` — ordering there would confound two
+  // variables. No magnitude anywhere: the ladder asserts order only, so there is no bound fitted to
+  // today's build that could drift toward whatever looks expected.
+  const LADDER = ['idle', 'countdown', 'cruise', 'full'];
+  const rungs = LADDER.map((n) => ({ n, lufs: measurement.beds[n]?.engineOnly?.lufsShortTerm ?? null }));
+  checks.push({
+    // Verified by ab-mutations P1 at b572962: deleting the engine layer's response to
+    // EngineAudioState (early return before any param moves) makes this check fail, while
+    // MUSIC.exists stays green.
+    id: 'ENGINE.exists-and-scales-with-thrust',
+    passed: rungs.every((r) => Number.isFinite(r.lufs))
+      && rungs.every((r, i) => i === 0 || r.lufs > rungs[i - 1].lufs),
+    detail: `engine-only LUFS-S by ascending throttle: ${rungs.map((r) => `${r.n} ${r.lufs}`).join(' < ')}`,
+  });
+
+  const plain = measurement.beds.full?.engineOnly?.lufsShortTerm ?? null;
+  const boosted = measurement.beds.fullBoosted?.engineOnly?.lufsShortTerm ?? null;
+  checks.push({
+    // Verified by ab-mutations P1b at 0dc47b5: deleting the boost layer, with speed01 held equal
+    // across the pair, makes this check fail, while ENGINE.exists-and-scales-with-thrust stays green.
+    id: 'ENGINE.boost-layer-adds-energy',
+    passed: Number.isFinite(plain) && Number.isFinite(boosted) && boosted > plain,
+    detail: `full ${plain} -> fullBoosted ${boosted} LUFS-S; the two beds differ only in \`boosting\`, `
+      + 'so nothing but the boost layer can carry this',
+  });
+
+  const idleBed = measurement.beds.idle;
+  checks.push({
+    // Verified by ab-mutations P2 at b572962: deleting the score entirely (MusicBed.start stubbed,
+    // so no oscillator ever runs) makes this check fail, while
+    // ENGINE.exists-and-scales-with-thrust stays green.
+    id: 'MUSIC.exists',
+    passed: Number.isFinite(idleBed?.withMusic?.lufsShortTerm)
+      && Number.isFinite(idleBed?.engineOnly?.lufsShortTerm)
+      && idleBed.withMusic.lufsShortTerm > idleBed.engineOnly.lufsShortTerm,
+    detail: `idle bed: with music ${idleBed?.withMusic?.lufsShortTerm} vs engine only `
+      + `${idleBed?.engineOnly?.lufsShortTerm} (idle chosen because the engine is quietest there, `
+      + 'so the score\'s contribution is unambiguous)',
+  });
+
   const h = measurement.hygiene;
   checks.push({
     id: 'NODES.stable',
@@ -878,7 +929,7 @@ function evaluateGate(measurement) {
   const atFull = stem.find((x) => x.volume === 1);
   const atLow = stem.find((x) => x.volume === 0.05);
   checks.push({
-    id: 'MUSIC.volume-zero-silences-score',
+    id: 'MUSIC.graph-can-silence-score',
     passed: atZero !== undefined && (atZero.rmsDb === null || atZero.rmsDb < -120),
     detail: `score stem at slider 0 = ${atZero?.rmsDb ?? 'n/a'} dBFS RMS (must be below -120; ` +
       `anything audible here means a player who turns the music off still hears it)`,
@@ -887,7 +938,7 @@ function evaluateGate(measurement) {
     ? Number((atFull.rmsDb - atLow.rmsDb).toFixed(2))
     : null;
   checks.push({
-    id: 'MUSIC.volume-travel',
+    id: 'MUSIC.graph-volume-travel',
     passed: travel !== null && travel >= 20,
     detail: `score stem spans ${travel} dB between slider 1.00 and 0.05 (must be >= 20; a partially ` +
       `inert control still reaches silence at exactly zero while doing almost nothing in between)`,

@@ -44,7 +44,7 @@ const TOL = 0.03;
 async function runInPage(config) {
   const { bundleUrl, settleMs, tol } = config;
   const mod = await import(bundleUrl);
-  const { AudioEngine, MENU_DUCK_DEPTH, MENU_MUSIC_DEPTH } = mod;
+  const { AudioEngine, MENU_DUCK_DEPTH, MENU_MUSIC_DEPTH, UI_DUCK_DEPTH } = mod;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const checks = [];
   const near = (a, b) => Math.abs(a - b) <= tol;
@@ -63,17 +63,26 @@ async function runInPage(config) {
   add('LIVE.context-running', state().contextState === 'running', `ctx.state = ${state().contextState} after unlock()`);
 
   // --- suspend / resume round-trip ------------------------------------------------------------
+  const reach = async (want, ms = 1500) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (state().contextState === want) return true;
+      await wait(25);
+    }
+    return false;
+  };
   engine.suspend();
-  await wait(150);
-  const suspended = state().contextState;
+  const didSuspend = await reach('suspended');
   engine.resume();
-  await wait(250);
-  const resumed = state().contextState;
+  const didResume = await reach('running');
   add(
-    'LIVE.suspend-resume',
-    resumed === 'running',
-    `suspend -> ${suspended}, resume -> ${resumed} (must return to running; a context left ` +
-      `suspended is silent for the rest of the session with no route out)`,
+    // Verified by ab-mutations P3 at 8e8291d: deleting AudioEngine.suspend() makes this check fail,
+    // while GAME.score-slider-reaches-the-mix and LIVE.production-reclaims-nodes stay green.
+    'LIVE.suspend-then-resume',
+    didSuspend && didResume,
+    `suspend -> ${didSuspend ? 'suspended' : 'NEVER suspended'}, resume -> ` +
+      `${didResume ? 'running' : 'NEVER resumed'} (both halves asserted: the previous version ` +
+      'checked only the second, so a no-op suspend() passed)',
   );
 
   // Resuming a context that was never suspended must be a harmless no-op, not an error.
@@ -129,7 +138,7 @@ async function runInPage(config) {
   await wait(settleMs);
   s = state();
   add(
-    'LIVE.ui-click-preserves-menu-duck',
+    'LIVE.menu-floor-survives-a-ui-click',
     near(s.engineDuck, MENU_DUCK_DEPTH),
     `engineDuck ${s.engineDuck.toFixed(3)} after a UI click in a menu (want ${MENU_DUCK_DEPTH}; ` +
       `1.000 means the click released to unity and un-ducked the drive for the rest of the menu)`,
@@ -139,7 +148,7 @@ async function runInPage(config) {
   await wait(settleMs);
   s = state();
   add(
-    'LIVE.event-duck-preserves-menu-music',
+    'LIVE.menu-floor-survives-a-ducking-cue',
     near(s.musicDuck, MENU_MUSIC_DEPTH),
     `musicDuck ${s.musicDuck.toFixed(3)} after a ducking cue in a menu (want ${MENU_MUSIC_DEPTH}; ` +
       `1.000 means the same defect on the music bus)`,
@@ -192,6 +201,71 @@ async function runInPage(config) {
   engine.play('uiClick', 0.5);
   await wait(settleMs);
   s = state();
+  // Minimum over a window rather than a sample at a chosen instant. The value sits inside the
+  // assertion's tolerance from 38.1 ms to 164.3 ms — 126.1 ms wide, derived from the attack tau
+  // 0.012, the release start at 0.16, and TOL — so ~12 polls land inside it and host load would
+  // have to stretch the interval tenfold before none did. A point sample would need a defensible
+  // instant; an extremum needs only that the window contains the event.
+  const duckFloor = async (event, ms = 400) => {
+    engine.play(event, 0.5);
+    let lowestEngine = Infinity;
+    let lowestMusic = Infinity;
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      const now = state();
+      lowestEngine = Math.min(lowestEngine, now.engineDuck);
+      lowestMusic = Math.min(lowestMusic, now.musicDuck);
+      await wait(10);
+    }
+    return { lowestEngine, lowestMusic };
+  };
+
+  engine.menuMix(false);
+  await wait(settleMs);
+  const uiDuck = await duckFloor('uiClick');
+  await wait(settleMs);
+  add(
+    // Verified by ab-mutations P7 at 8e8291d: deleting duckEngine() makes this check fail, while
+    // LIVE.menu-duck-applied and LIVE.menu-floor-survives-a-ui-click stay green.
+    'LIVE.ui-duck-fires-and-releases',
+    uiDuck.lowestEngine <= UI_DUCK_DEPTH + tol && near(state().engineDuck, 1),
+    `engineDuck fell to ${uiDuck.lowestEngine.toFixed(3)} (want <= ${UI_DUCK_DEPTH + tol}) and ` +
+      `returned to ${state().engineDuck.toFixed(3)} (want 1)`,
+  );
+
+  const evDuck = await duckFloor('finish');
+  await wait(settleMs);
+  add(
+    // Verified by ab-mutations P8 at 8e8291d: deleting duck() makes this check fail, while
+    // LIVE.menu-duck-applied stays green.
+    'LIVE.event-duck-fires-and-releases',
+    evDuck.lowestMusic <= 0.7 + tol && near(state().musicDuck, 1),
+    `musicDuck fell to ${evDuck.lowestMusic.toFixed(3)} (want <= ${0.7 + tol}) and returned to ` +
+      `${state().musicDuck.toFixed(3)} (want 1)`,
+  );
+
+  // --- production reclaims its own nodes ---------------------------------------------------------
+  // No harness sweep anywhere in this block: only AudioEngine's own ticker runs. Every ledger.sweep
+  // in audio-probe is called by the harness, so nothing anywhere tested that production reclaims.
+  // Measured against the PERMANENT count, not against a starting reading. The first version
+  // compared to `debugNodeCount()` sampled immediately after the duck tests, which still had
+  // voices in flight — so the baseline was inflated and "returned to where it started" was the
+  // wrong question. Quiescent means equal to the permanent graph, and that is a fixed reference.
+  const permanent = engine.debugPermanentNodeCount();
+  for (let i = 0; i < 40; i++) engine.play('uiClick', 0.5);
+  const nodesPeak = engine.debugNodeCount();
+  await wait(4000);
+  const nodesAfter = engine.debugNodeCount();
+  add(
+    // Verified by ab-mutations P5 at 8e8291d: deleting the production ticker's ledger sweep
+    // (AudioEngine.ts:496) makes this check fail, while LIVE.suspend-then-resume and
+    // GAME.score-slider-reaches-the-mix stay green.
+    'LIVE.production-reclaims-nodes',
+    nodesPeak > permanent && nodesAfter === permanent,
+    `permanent ${permanent}, peak ${nodesPeak} after 40 cues, ${nodesAfter} after 4 s with only ` +
+      'the engine\'s own ticker running (no harness sweep in this block)',
+  );
+
   add(
     'LIVE.duck-releases-in-flight',
     near(s.engineDuck, 1),
@@ -297,7 +371,7 @@ async function ensureDist(locked = false) {
   const rebuild = async (reason) => {
     if (locked) throw new ArtifactLockedError(reason);
     const { build } = await import('vite');
-    await build({ root: REPO_ROOT, logLevel: 'silent' });
+    await build({ root: REPO_ROOT, cacheDir: '.vite-cache', logLevel: 'silent' });
     return { dist, built: true, reason };
   };
 
@@ -337,6 +411,8 @@ async function buildAudioBundle(outDir) {
   await build({
     configFile: false,
     root: REPO_ROOT,
+    // See audio-probe: the worktree's node_modules is a symlink and vite writes into it.
+    cacheDir: '.vite-cache',
     logLevel: 'silent',
     build: {
       outDir,
@@ -418,6 +494,30 @@ async function runGamePhase(playwright, distDir) {
     let st = await page.evaluate(() => window.__LV.audioState());
     add('GAME.audio-running', st !== null && st.contextState === 'running',
       st === null ? 'audioState() returned null; the context was never created' : `ctx.state = ${st.contextState} after a click`);
+
+    // The player's route is slider -> settings -> Game.onSettingsChanged -> setMusicVolume. The
+    // LIVE pair tests the method; nothing tested the hop into it, so disconnecting the Score slider
+    // from the engine entirely would leave every other check in both suites green.
+    //
+    // Two positions, because a stub hardcoding setMusicVolume(0) satisfies the zero half alone.
+    await page.evaluate(() => window.__LV.setSettings({ musicVolume: 0 }));
+    await page.waitForTimeout(400);
+    const volOff = await page.evaluate(() => window.__LV.audioState());
+    await page.evaluate(() => window.__LV.setSettings({ musicVolume: 0.3 }));
+    await page.waitForTimeout(400);
+    const volPart = await page.evaluate(() => window.__LV.audioState());
+    await page.evaluate(() => window.__LV.setSettings({ musicVolume: 0.65 }));
+    add(
+      // Verified by ab-mutations P0 at 8e8291d: deleting the settings->engine call at Game.ts:1404,
+      // leaving setMusicVolume itself intact, makes this check fail, while
+      // LIVE.music-volume-zero-reaches-both-paths and LIVE.music-volume-tracks-both-paths stay green.
+      'GAME.score-slider-reaches-the-mix',
+      volOff !== null && volPart !== null
+        && Math.abs(volOff.musicVolume) <= TOL && Math.abs(volOff.musicSendVolume) <= TOL
+        && Math.abs(volPart.musicVolume - 0.3) <= TOL && Math.abs(volPart.musicSendVolume - 0.3) <= TOL,
+      `setSettings musicVolume 0 -> ${volOff?.musicVolume}/${volOff?.musicSendVolume}, `
+        + `0.3 -> ${volPart?.musicVolume}/${volPart?.musicSendVolume} (dry/send; both paths must follow)`,
+    );
 
     await page.evaluate(() => window.__LV.startRun({ skipIntro: true }));
     await page.waitForTimeout(700);
@@ -513,7 +613,11 @@ async function runGamePhase(playwright, distDir) {
 
     st = await page.evaluate(() => window.__LV.audioState());
     const method = reallyHidden ? 'real tab switch' : 'synthesised visibilitychange';
-    add('GAME.visibility-roundtrip-while-paused', st !== null && st.contextState === 'running',
+    // Verified by ab-mutations P4 at 8e8291d: deleting the game's suspend-on-hidden call site,
+    // leaving AudioEngine.suspend() intact, makes this check fail, while LIVE.suspend-then-resume
+    // stays green.
+    add('GAME.visibility-roundtrip-while-paused',
+      hiddenState?.contextState === 'suspended' && st !== null && st.contextState === 'running',
       `hidden -> ${hiddenState?.contextState ?? 'n/a'}, shown -> ${st?.contextState ?? 'n/a'} while paused, via ${method} ` +
       `(must return to running; this is the alt-tab-during-pause path that left the game silent)`);
 
