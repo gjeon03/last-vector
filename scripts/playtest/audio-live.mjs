@@ -50,6 +50,90 @@ async function runInPage(config) {
   const near = (a, b) => Math.abs(a - b) <= tol;
   const add = (id, passed, detail) => checks.push({ id, passed, detail });
 
+  // --- silence before the first gesture -------------------------------------------------------
+  // Runs FIRST, on its own engine, because the measurement is a count of source `.start()` calls
+  // across the page and a second engine already running would make the count unattributable.
+  //
+  // Not a peak measurement, deliberately. Nothing in production exposes the output — there is no
+  // analyser anywhere in `src/` — so a dBFS reading would mean adding a permanent node to the mix
+  // to serve a test. What actually makes sound is a source being started, so that is what this
+  // counts. It is a stricter reading than silence: a started source into a suspended context is
+  // inaudible today and audible the moment anything resumes the context.
+  //
+  // `prewarm()` is the path that builds without unlocking. The suite launches with
+  // `--autoplay-policy=no-user-gesture-required`, so a fresh context here starts `running` — this
+  // is the environment where the guard is load-bearing rather than decorative.
+  const started = [];
+  const patched = [];
+  for (const name of ['AudioBufferSourceNode', 'OscillatorNode', 'ConstantSourceNode']) {
+    const Ctor = globalThis[name];
+    if (!Ctor || typeof Ctor.prototype.start !== 'function') continue;
+    const original = Ctor.prototype.start;
+    patched.push({ Ctor, original });
+    Ctor.prototype.start = function instrumented(...args) {
+      started.push(name);
+      return original.apply(this, args);
+    };
+  }
+
+  const quiet = new AudioEngine({ seed: 13 });
+  await quiet.prewarm();
+  // Poll rather than sleep: `suspend()` is async, and a fixed wait either flakes or hides a
+  // regression behind its own slack. A mutation that never suspends burns the full budget and
+  // then reports what it actually saw.
+  const quietReach = async (want, ms = 1000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (quiet.debugMixState()?.contextState === want) return true;
+      await wait(25);
+    }
+    return false;
+  };
+  const settledSuspended = await quietReach('suspended');
+  const stateBefore = quiet.debugMixState()?.contextState ?? 'NO GRAPH';
+  const startsBefore = started.length;
+  const unlockedBefore = quiet.unlocked;
+
+  await quiet.unlock();
+  const settledRunning = await quietReach('running');
+  const stateAfter = quiet.debugMixState()?.contextState ?? 'NO GRAPH';
+  const startsAfter = started.length;
+  const unlockedAfter = quiet.unlocked;
+
+  for (const { Ctor, original } of patched) Ctor.prototype.start = original;
+  quiet.dispose();
+
+  add(
+    // Verified by ab-mutations P9a at 76fe8c1: deleting the build() guard that re-suspends a context
+    // the browser handed us already running makes this check fail, while LIVE.first-gesture-starts-audio
+    // and LIVE.suspend-then-resume stay green.
+    // Verified by ab-mutations P9b at 76fe8c1: deleting the deferral of engine.start()/music.start()
+    // out of build() and into unlock() makes this check fail, while LIVE.first-gesture-starts-audio
+    // and LIVE.context-running stay green.
+    'LIVE.silent-until-first-gesture',
+    settledSuspended && startsBefore === 0 && unlockedBefore === false,
+    `after prewarm() with autoplay permitted: ctx ${stateBefore} (want suspended), ` +
+      `${startsBefore} source .start() calls (want 0), unlocked ${unlockedBefore} (want false). ` +
+      'Both halves matter: the context guard and the deferred source start each keep this true ' +
+      'alone, so each is asserted separately or one can rot while the other carries the check',
+  );
+  // Absolute count, not `startsAfter > startsBefore`. The delta form coupled this check to the one
+  // above: a regression that starts the sources in build() makes the gesture start nothing, so the
+  // delta is zero and BOTH checks red. Two reds for one defect reads as two defects, and it left
+  // the silence check with no mutation that reds it alone — ab-mutations P9b called this out.
+  //
+  // What is given up is real and small: this no longer asserts on its own that the GESTURE is what
+  // started the sources. The pair still asserts it — zero before and non-zero after can only mean
+  // the gesture — but no single check does. The job here is narrower: prove the engine makes sound
+  // at all, so the silence check above cannot be satisfied by a dead engine.
+  add(
+    'LIVE.first-gesture-starts-audio',
+    settledRunning && startsAfter > 0 && unlockedAfter === true,
+    `after unlock(): ctx ${stateAfter} (want running), ${startsAfter} sources started in total ` +
+      `(want > 0), ${startsAfter - startsBefore} of them by the gesture, unlocked ` +
+      `${unlockedAfter} (want true)`,
+  );
+
   const engine = new AudioEngine({ seed: 11 });
   await engine.unlock();
 
