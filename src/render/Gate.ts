@@ -251,21 +251,35 @@ export class Gate {
       const mesh = new THREE.Mesh(this.buildMonolith(options.radius, rng), this.monolithMat);
       const r = options.radius * rng.range(0.98, 1.16);
       mesh.position.set(Math.cos(angle) * r, Math.sin(angle) * r, rng.range(-options.radius * 0.09, options.radius * 0.09));
-      // Tilt off the ring plane, hard enough to bring the extruded SIDE WALLS into view.
+      // Tilt off the ring plane, to bring the extruded SIDE WALLS into view.
       //
-      // buildMonolith extrudes along local +Z, and every rotation in the chain — the -pi/2 in the
-      // geometry, this `rotation.z = angle`, and the spinner's own rotation — is about Z. So
-      // nothing moved the extrusion axis, every monolith on every gate presented the same normal
-      // to within about 8 degrees, and the visible face sat at N.L between -0.42 and -0.97 at all
-      // nine gates: far below the -0.15 wrap threshold. Direct sun on the game's namesake object
-      // was not small, it was exactly zero, and seed-invariant, because the leg turns are authored
-      // with only +/-10% jitter. What remained was constant hemisphere ambient — a solid fill,
-      // flown through nine times a run at 200-600 m.
+      // CORRECTION, twice over. This comment previously claimed that every rotation in the chain
+      // was about Z so nothing moved the extrusion axis, and that direct sun on the cairn "was not
+      // small, it was exactly zero". Both are false.
       //
-      // The tilt works by bringing the side walls into view, whose normals sit near the
-      // terminator. Measured across-slab mean spread, before -> after: gate 03 25.3 -> 72.9 code
-      // values, gate 04 0.7 -> 89.5, gate 05 17.8 -> 59.4. Gate 02 barely moves, so it is not
-      // universal — but the slabs read as solid blocks with a lit top plane rather than as fill.
+      // 1. `git show 4582276^` has `rotation.x = rng.range(-0.09, 0.09)` and `rotation.y =
+      //    rng.range(-0.13, 0.13)` on the two lines after `rotation.z`. Non-Z tilt already
+      //    existed; this commit widened it (x 5x, y 3.8x) rather than introducing it. The comment
+      //    enumerated the rotation chain and omitted the two rotations in the code it replaced.
+      // 2. The closure figures quoted here — across-slab mean spread 25.3 -> 72.9, 0.7 -> 89.5,
+      //    17.8 -> 59.4 — are a CROSS-slab metric, and cannot separate key light from tilt-induced
+      //    ambient variation: `hemi = N.y * 0.5 + 0.5` is itself a function of the tilt, and
+      //    uGroundColor != uSkyColor. Four independent round-7 measurements found four slabs at
+      //    four different tilts whose face means land within 2.9 code values of each other, which
+      //    is a hemisphere signature and not a key.
+      //
+      // What this tilt actually delivered is the side walls: 6.3% of the object. 93.7% of the
+      // cairn's on-screen stone still receives ZERO key light, because these ranges are symmetric
+      // about zero — E[cos x cos y] = 0.927 — so the mean face normal does not move and N.L cannot
+      // cross the -0.15 wrap threshold from a pre-fix range of -0.42 to -0.97. Faces render as
+      // `mix(uGroundColor, uSkyColor, N.y*0.5+0.5)` alone: the fbm albedo, the derivative bump,
+      // the GGX lobe and the rim are all computed per pixel and multiplied by zero. Controls in
+      // the same build: nearby asteroids 100.0% and 84.3% sunlit, the Terminus hull 99.8%. The
+      // cairn is the only solid in the game that is not lit.
+      //
+      // OPEN — the fix under evaluation is rotating the slab geometry so the broad faces point
+      // tangentially around the ring, giving five normals spread through the ring plane instead of
+      // five copies of the gate normal. Do not mark this closed on a cross-slab spread again.
       mesh.rotation.z = angle;
       mesh.rotation.x = rng.range(-0.45, 0.45);
       mesh.rotation.y = rng.range(-0.5, 0.5);

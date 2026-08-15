@@ -65,10 +65,24 @@ interface Leg {
  * Every leg was inside the ship's capability by more than an order of magnitude, so the
  * authored differences between "hard right" and "the long run" were invisible in the hand.
  *
- * The fix is not more turn — it is less room. `length` now varies from 0.52 to 1.4, so the
- * tight legs put a real turn inside a distance where the ship's inertia is the binding
- * constraint, while the long ones stay long precisely so the contrast is felt. The aperture
- * came down too: 210 m across is still forgiving at 420 m/s, but it is no longer a barn door.
+ * CORRECTION — this paragraph used to open "The fix is not more turn — it is less room." That is
+ * false, and it is false about its own commit: `git show 59f4bc9` raised turn magnitude on six of
+ * the nine legs (0.34 -> 0.52, 0.88 -> 1.02, -0.44 -> -0.5, -0.72 -> -0.92, 0.55 -> 0.78,
+ * -0.24 -> -0.3) while also changing every length. The claim survived to round 7 because the
+ * correction filed against it was written against a different commit (f3aea92, where the legs
+ * genuinely are byte-identical) and left this sentence in place, fifteen lines below, unmarked.
+ *
+ * What is true: both turn and length were changed, and neither made the geometry demanding.
+ * Measured in round 7, the tightest leg ('the shelf cut') needs a 3718 m radius against a ship
+ * capable of 252 m at cruise and 795 m at boost — 6.8% of combined stick. Hazard cannot take up
+ * the slack either: `Asteroids.ts` rejects any rock within the radius of every protected segment,
+ * and the corridor's minimum half-width (145 m) exceeds the gate aperture radius (105 m), so the
+ * aperture binds before a rock ever can. A pilot flying the authored line never meets one, which
+ * is the single fact that explains the demand ceiling and which a previous edit deleted.
+ *
+ * Reference figures kept because they were measured and then lost from this file once already:
+ * the reference-pilot overshoot is 110 m, and the pre-clearance baseline was stick p90 0.086 with
+ * 5.1% of samples over quarter stick.
  */
 const LEGS: Leg[] = [
   // Wide on purpose: the opening leg is where a first-time pilot learns that the stick has

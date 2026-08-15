@@ -28,6 +28,10 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, resolve } from 'node:path';
+// Only REPO_ROOT. This suite never calls parseOptions or runManagedSuite, so runtime.mjs's
+// `--dist` guard at :465 never runs on its behalf. It is protected structurally — there is no
+// option to point it at another tree — not by that guard. Anyone adding a --dist here inherits
+// nothing.
 import { REPO_ROOT } from './runtime.mjs';
 
 // ---------------------------------------------------------------------------------------------
@@ -480,10 +484,16 @@ async function measureInPage(config) {
   /**
    * The score in isolation at a given Score-slider position, engine and sfx muted.
    *
-   * Mirrors what `setMusicVolume` drives — both the dry bus and the reverb-send path — because a
-   * control that moves only one of them is exactly the defect this measures. Both suites pinned
-   * masterVolume/musicVolume and never moved them, so a shipped slider that changed 0.55 dB of
-   * score between default and zero passed 23/23 and 21/21 for the life of the project.
+   * This measures the GRAPH, not the control. It assigns both gains directly and never calls
+   * `setMusicVolume`, so it establishes that the topology can be silenced — that `sendVolume` is
+   * really in the send path, and that zero on both nodes yields digital silence — and it would
+   * pass unchanged if `setMusicVolume` drove neither of them. The control is measured by
+   * `LIVE.music-volume-zero-reaches-both-paths`, and the player's route into it by
+   * `GAME.score-slider-reaches-the-mix`.
+   *
+   * Both suites pinned masterVolume/musicVolume and never moved them, so a shipped slider that
+   * changed 0.55 dB of score between default and zero passed 23/23 and 21/21 for the life of the
+   * project.
    */
   async function renderScoreStem(volume) {
     const seconds = method.bedSettleSeconds + method.bedWindowSeconds + 0.2;

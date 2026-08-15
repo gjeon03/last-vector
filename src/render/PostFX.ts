@@ -81,8 +81,16 @@ const PRESENT_FRAG = /* glsl */ `
     vec3 rgbM = tap(vUv);
     float lM = luma(rgbM);
 
-    // Cross-neighbourhood contrast. Below the threshold the pixel is left exactly alone, so
-    // flat regions — most of a starfield — pay four taps and are never touched.
+    // Cross-neighbourhood contrast. Below the threshold the pixel is left exactly alone.
+    //
+    // CORRECTION: this said flat regions "pay four taps". They pay FIVE — rgbM plus the four
+    // neighbours below — and every one of those taps issues three texture2D fetches whenever
+    // uAberration > 0.0001, so a flat pixel costs fifteen dependent fetches and an edge pixel up
+    // to thirty-nine. uAberration = speed01^2 * 0.0035 + boost * 0.011 (Game.ts), which is above
+    // that threshold from roughly 17% of max speed upward — i.e. essentially all of gameplay, not
+    // an exceptional case. Also worth knowing when reading this pass's cost: it renders to the
+    // canvas at full drawing-buffer size while the composite renders into the reduced viewport
+    // sub-rectangle, so lowering renderScale makes this pass a LARGER share of the frame.
     float lN = luma(tap(vUv + vec2(0.0, -uTexel.y)));
     float lS = luma(tap(vUv + vec2(0.0,  uTexel.y)));
     float lW = luma(tap(vUv + vec2(-uTexel.x, 0.0)));

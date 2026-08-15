@@ -275,10 +275,20 @@ export interface AudioBus {
    * construction: an OfflineAudioContext is never suspended and has no mix state machine, so no
    * number of checks added to the offline gate could ever have caught either one.
    */
+  /**
+   * Eight fields, not five. The three music-path readings were added with the round-6 Score fix
+   * and never declared here; a wider return type is structurally assignable to a narrower
+   * declaration, so nothing complained and every TypeScript consumer saw five fields where eight
+   * existed. A contract that claims less than the code delivers misleads the reader who never
+   * opens the implementation, which is the reader a contract exists for.
+   */
   debugMixState(): {
     contextState: string;
     engineDuck: number;
     musicDuck: number;
+    musicSendTrim: number;
+    musicVolume: number;
+    musicSendVolume: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
   } | null;

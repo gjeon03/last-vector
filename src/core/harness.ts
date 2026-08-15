@@ -8,7 +8,16 @@
 import type { Phase, RunResult, Settings, Telemetry } from './contracts.ts';
 
 export interface HarnessInput {
-  /** -1..1, positive = nose up (before invertY is applied). */
+  /**
+   * -1..1, positive = nose up.
+   *
+   * CORRECTION. This used to say "before invertY is applied", which stated that invertY is applied
+   * to harness input downstream. It is not. `Input.update()` returns inside the override branch at
+   * `Input.ts:171` and `invertY` is only read at `:226`, below that return — so harness-supplied
+   * pitch is never inverted, at any setting. A playtest author reading the old text would expect
+   * `setInput({pitch: 1})` with `invertY: true` to fly nose-down; it flies nose-up. The doc
+   * described the keyboard/mouse path while sitting on the struct that bypasses it.
+   */
   pitch?: number;
   /** -1..1, positive = nose right. */
   yaw?: number;
@@ -215,6 +224,9 @@ export interface HarnessApi {
     contextState: string;
     engineDuck: number;
     musicDuck: number;
+    musicSendTrim: number;
+    musicVolume: number;
+    musicSendVolume: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
   } | null;

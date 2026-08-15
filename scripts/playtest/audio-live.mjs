@@ -24,6 +24,10 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, resolve } from 'node:path';
+// Only REPO_ROOT. This suite never calls parseOptions or runManagedSuite, so runtime.mjs's
+// `--dist` guard at :465 never runs on its behalf. It is protected structurally — there is no
+// option to point it at another tree — not by that guard. Anyone adding a --dist here inherits
+// nothing.
 import { REPO_ROOT } from './runtime.mjs';
 
 /**
@@ -450,7 +454,8 @@ async function runGamePhase(playwright, distDir) {
         viaMenu !== null && viaMenu.menuEngineFloor < 1 && Math.abs(viaMenu.engineDuck - viaMenu.menuEngineFloor) <= TOL,
         `pauseMenu(true): engineDuck ${viaMenu?.engineDuck?.toFixed(3) ?? 'n/a'}, menuEngineFloor ` +
           `${viaMenu?.menuEngineFloor ?? 'n/a'} — the sanctioned harness route must reach the same ` +
-          `mix state as a real ESC, which it is compared against directly above`,
+          `mix state as a real ESC. Both are asserted against the same expected values above; the ` +
+          `two readings are not compared to each other`,
       );
       await page.evaluate(() => window.__LV.pauseMenu(false));
       await page.waitForTimeout(300);
