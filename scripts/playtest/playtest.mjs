@@ -48,14 +48,28 @@ async function runPlaytest({ report, session, options }) {
   const inputOutcome = await report.check({
     id: 'M2.automation-input',
     name: 'Automation drives the declared flight input surface',
-    criteria: [criterion('M2', 'full', 'Exercises every declared control, confirms the applied command, and observes finite six-axis pose motion.')],
+    /* `partial`, not `full`, and the correction is measured rather than argued. This declared
+       "Exercises every declared control" while `Input.update()` returns inside the override branch
+       before any of the real input pipeline runs. Proven by mutation ab-mutations M10a at b572962:
+       stubbing `held()` kills every key-derived input in the game, `INPUT.keys-drive-the-command`
+       goes red, and THIS CHECK STAYS GREEN. What it actually proves is that a resolved command
+       supplied through `setInput` is applied verbatim and moves the ship on six axes. */
+    criteria: [criterion('M2', 'partial', 'Proves the harness override path applies a resolved six-axis command verbatim and produces pose motion; the shipped input pipeline is covered by the INPUT.* checks instead.')],
     assertion: 'A fixed-timestep run applies pitch, yaw, roll, throttle, strafeX, strafeY, boost, and brake exactly; after 60 frames telemetry is flying and moving, position changes, and all three body angular rates respond.',
   }, async () => collectInputEvidence(page, options));
 
   await report.check({
     id: 'M7.automation-input-surface',
     name: 'Scripted input covers the keyboard/mouse command vocabulary',
-    criteria: [criterion('M7', 'partial', 'Proves resolved API-level pitch/yaw/roll/throttle/strafe/boost/brake input only; physical bindings and pointer lock remain a manual check.')],
+    /* The gap this discloses was under-described, in a way that mattered: it named "physical
+       bindings and pointer lock", which reads as an environmental limit covering the whole
+       subsystem. Two things were wrong with that. The keyboard half was never gated on pointer
+       lock at all — `handleKeyDown` is a window listener whose only `locked` reference is the Tab
+       guard — so it was testable all along and simply was not tested. And what went untested was
+       not "bindings" but the input TRANSFORMATION layer: the stick integrator, the expo curves,
+       the throttle rate, invertY. The keyboard half is now covered by the INPUT.* checks; what
+       remains genuinely blocked is the mouse path, behind `handleMouseMove`'s lock gate. */
+    criteria: [criterion('M7', 'partial', 'Proves the resolved API-level command surface here, and the key-derived axes, throttle integrator and invertY in the INPUT.* checks; the mouse-derived stick, mouseSensitivity, stick expo, the gamepad branch and pointer lock itself remain unexercised.')],
     assertion: 'The same automation command containing every keyboard/mouse flight action is accepted and can be released with setInput(null).',
   }, async () => {
     verify(inputOutcome.ok, 'The full input command was not accepted; see M2.automation-input.', inputOutcome.error);
