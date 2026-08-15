@@ -396,6 +396,13 @@ export class Game {
     window.addEventListener('pointerdown', unlock, true);
     window.addEventListener('keydown', unlock, true);
     this.releaseUnlock = unlock;
+    /* ORDERING DEPENDENCY, stated because nothing else states it: these two listeners must be
+       registered BEFORE the Overlay below adds its own capture-phase keydown. AudioEngine.play()
+       and update() drop everything until unlock() has run, and unlock() sets its flag
+       synchronously — so on a keyboard first-gesture the unlock listener must fire first or the
+       overlay's own key handling would produce a UI cue into a still-locked engine and lose it.
+       Moving the Overlay construction above this block would reintroduce that swallow silently,
+       on the keyboard path only. */
 
     this.overlay = new Overlay(options.root, {
       // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and

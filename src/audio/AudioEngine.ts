@@ -315,7 +315,11 @@ export class AudioEngine implements AudioBus {
 
   update(dt: number, engine: EngineAudioState): void {
     const g = this.graph;
-    if (!g) return;
+    /* Same pre-gesture guard as play(), and it is not optional: guarding play() alone was
+       simulated during review and the residual chuff stack queued through this path still peaked
+       -9.46 dBFS on the first gesture — 16 dB above the fully-guarded case. Both entry points, or
+       it is not fixed. */
+    if (!g || !this.unlockedFlag) return;
     const step = Number.isFinite(dt) ? Math.min(Math.max(dt, 0), 0.25) : 0.016;
     g.engine.update(step, engine);
     // Belt and braces: the interval ticker can be throttled, the frame loop cannot.
@@ -328,7 +332,17 @@ export class AudioEngine implements AudioBus {
    */
   play(event: SfxEvent, intensity = 0.5): void {
     const g = this.graph;
-    if (!g) return;
+    /* `!this.unlockedFlag` as well as `!g`, and the second half is load-bearing since prewarm().
+       The graph now exists from boot with the context suspended, and a suspended context's
+       currentTime is FROZEN — so every voice scheduled before the first gesture gets a start time
+       that is already in the past the moment the context resumes, and they all fire at once. The
+       attract autopilot boosts on the title screen, so this was 90 sources — ten ignitions and ten
+       cut-offs collapsed onto one instant at -3.04 dBFS as the first sound of every session, out
+       of digital silence. Game.ts's own boost-feedback comment states the violated invariant:
+       ignition and cut-off "must never fire together."
+       Safe for the player's own first click: unlock() sets unlockedFlag synchronously before its
+       first await, from a capture-phase pointerdown that precedes the click event. */
+    if (!g || !this.unlockedFlag) return;
     // A hair of lookahead: scheduling exactly at `currentTime` can drop the attack segment.
     const when = g.ctx.currentTime + 0.012;
     try {
