@@ -117,6 +117,11 @@ export class Input {
 
   private reportLockError(reason: string): void {
     if (this.disposed) return;
+    // One refusal, one report. Both the promise rejection and the `pointerlockerror` event fire for
+    // a single rejected request, and both funnel here — measured at two log lines per refusal in
+    // headless and headed Chromium. The event form exists for browsers that do not return a
+    // promise, so neither path can simply be removed; the duplicate is suppressed instead.
+    if (this.lockRefused) return;
     this.lockRefused = true;
     this.onLockError?.(reason);
   }

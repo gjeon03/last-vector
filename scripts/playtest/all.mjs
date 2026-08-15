@@ -58,7 +58,29 @@ for (const suite of suites) {
 }
 
 const finished = Date.now();
-const status = results.every((result) => result.status === 'PASS') ? 'PASS' : 'FAIL';
+
+/**
+ * A suite passes only if it BOTH reported PASS and actually completed.
+ *
+ * This used to be `result.status === 'PASS'` alone, which made the aggregate blind to a child that
+ * wrote a nominal PASS report and then aborted. That is not hypothetical: `--require-clean` writes
+ * its report and exits 2, so the clean-tree enforcement added this session could never have failed
+ * the gate it was added to. Reproduced directly — dirty tree, `audio-probe --require-clean` exits 2
+ * with `status: PASS` in its own report, and the aggregate went green.
+ *
+ * Found by an independent agent from a different family, on a first pass, after five rounds of
+ * eight-discipline review had looked at the game and never at the aggregator.
+ */
+const suiteFailures = (result) => {
+  const reasons = [];
+  if (result.status !== 'PASS') reasons.push(`reported ${result.status}`);
+  if (result.exitCode !== 0) reasons.push(`exited ${result.exitCode}`);
+  if (result.signal !== null) reasons.push(`killed by ${result.signal}`);
+  if (result.reportError !== null) reasons.push(`report unreadable: ${result.reportError}`);
+  return reasons;
+};
+for (const result of results) result.failures = suiteFailures(result);
+const status = results.every((result) => result.failures.length === 0) ? 'PASS' : 'FAIL';
 const combined = {
   schemaVersion: 1,
   suite: 'all',
@@ -71,6 +93,11 @@ const combined = {
 };
 const combinedPath = resolve(outputRoot, 'report.json');
 await writeFile(combinedPath, `${JSON.stringify(combined, null, 2)}\n`, 'utf8');
+for (const result of results) {
+  if (result.failures.length > 0) {
+    process.stdout.write(`  FAIL ${result.suite}: ${result.failures.join('; ')}\n`);
+  }
+}
 process.stdout.write(`${status}: ${combinedPath}\n`);
 process.exitCode = status === 'PASS' ? 0 : 1;
 
