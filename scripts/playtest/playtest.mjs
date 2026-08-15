@@ -21,6 +21,7 @@ const REQUIRED_METHODS = [
   'step',
   'setDriven',
   'setFixedTimestep',
+  'setSettings',
   'errors',
 ];
 
@@ -63,6 +64,49 @@ async function runPlaytest({ report, session, options }) {
       releasedToHumanControl: inputOutcome.evidence.releasedToHumanControl,
       limitation: 'No current __LV method exposes physical binding state or pointer-lock ownership.',
     };
+  });
+
+  const keyboardOutcome = await capture(async () => collectKeyboardEvidence(page, options));
+
+  await report.check({
+    id: 'INPUT.keys-drive-the-command',
+    name: 'Real key events drive the shipped input pipeline',
+    criteria: [criterion('M7', 'partial', 'Exercises the key-derived axes and the throttle integrator through Input.update()\'s real path, with no harness override in place.')],
+    assertion: 'With setInput(null) so no override is active, dispatched keydowns produce roll +1 on D and -1 on A, strafeX +1 on E, pitch +0.85 on ArrowUp and -0.85 on ArrowDown, and holding S drops throttle by 1.35/s measured as two equal successive deltas.',
+  }, async () => {
+    const e = unwrap(keyboardOutcome);
+    const near = (a, b, tol = 0.01) => finiteNumber(a) && Math.abs(a - b) <= tol;
+    verify(near(e.rollRight, 1) && near(e.rollLeft, -1), `Roll did not respond to D/A with both signs: ${e.rollRight} / ${e.rollLeft}.`, e);
+    verify(near(e.strafeRight, 1), `StrafeX did not respond to E: ${e.strafeRight}.`, e);
+    verify(near(e.pitchUp, 0.85) && near(e.pitchDown, -0.85), `Pitch did not respond to the arrow keys with both signs: ${e.pitchUp} / ${e.pitchDown}.`, e);
+    /* Two EQUAL deltas is what separates an integrator from an assignment. */
+    verify(near(e.throttle.delta1, e.throttle.expectedDelta, 0.02), `First throttle delta ${e.throttle.delta1} is not the 1.35/s rate.`, e);
+    verify(near(e.throttle.delta2, e.throttle.expectedDelta, 0.02), `Second throttle delta ${e.throttle.delta2} is not the 1.35/s rate — a one-shot assignment would show a first delta and then zero.`, e);
+    verify(near(e.throttle.delta1, e.throttle.delta2, 0.02), `Throttle deltas are not equal (${e.throttle.delta1} vs ${e.throttle.delta2}), so throttle is not being integrated.`, e);
+    return {
+      ...e,
+      notCovered: [
+        'the mouse-derived virtual stick, mouseDx/mouseDy and the 0.24 s recentre — behind handleMouseMove\'s `if (!this.locked) return`',
+        'mouseSensitivity, which scales mouse deltas only and is unreachable with the above',
+        'expo() on stick input; the key terms are added outside it, so this check exercises expo on nothing',
+        'the gamepad branch entirely',
+        'pointer lock itself',
+      ],
+    };
+  });
+
+  await report.check({
+    id: 'INPUT.invertY-reaches-flight',
+    name: 'The invert-pitch setting reaches the flight command',
+    criteria: [criterion('M7', 'partial', 'Proves the settings->Input->command path for invertY end to end, in both positions.')],
+    assertion: 'ArrowUp yields pitch +0.85 with invertY off and -0.85 with invertY on, so the setting is read by the code that builds the command rather than merely stored.',
+  }, async () => {
+    const e = unwrap(keyboardOutcome);
+    const near = (a, b, tol = 0.01) => finiteNumber(a) && Math.abs(a - b) <= tol;
+    verify(near(e.invertY.off, 0.85), `invertY off did not give +0.85 pitch: ${e.invertY.off}.`, e);
+    /* Both positions, or a build that ignores the flag and happens to have the expected sign passes. */
+    verify(near(e.invertY.on, -0.85), `invertY on did not invert the pitch: ${e.invertY.on}. The setting is stored but not reaching the command.`, e);
+    return e.invertY;
   });
 
   const playthroughOutcome = await capture(async () => collectPlaythrough(page, options));
@@ -339,6 +383,73 @@ async function collectPlaythrough(page, options) {
     await bestEffort(page, 'setAutopilot', [false]);
     await bestEffort(page, 'setDriven', [false]);
   }
+}
+
+/**
+ * Drives the REAL input path — no harness override — with dispatched key events.
+ *
+ * `Input.update()` returns inside the override branch, so every check that supplies input through
+ * `setInput` executes none of the virtual stick, the expo response curves, the key mapping, the
+ * throttle integrator, `sensitivity`, `invertY` or the gamepad block. Setting `setInput(null)` and
+ * pressing real keys is the only way any of that runs under test.
+ */
+async function collectKeyboardEvidence(page, options) {
+  verify(page, 'Browser page is unavailable.');
+  await callHarness(page, 'ready', [], options.timeoutMs);
+  await callHarness(page, 'setFixedTimestep', [1 / 60]);
+  await callHarness(page, 'setDriven', [true]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'setAutopilot', [false]);
+  /* The point of the whole check: no override, so `update()` falls through to the real path. */
+  await callHarness(page, 'setInput', [null]);
+  await stepUntilFlying(page, options.timeoutMs);
+
+  const hold = async (key, frames = 10) => {
+    await page.keyboard.down(key);
+    await callHarness(page, 'step', [frames], options.timeoutMs);
+    const input = await callHarness(page, 'activeInput');
+    await page.keyboard.up(key);
+    await callHarness(page, 'step', [4], options.timeoutMs);
+    return input;
+  };
+
+  const rollRight = await hold('d');
+  const rollLeft = await hold('a');
+  const strafeRight = await hold('e');
+  const pitchUp = await hold('ArrowUp');
+  const pitchDown = await hold('ArrowDown');
+
+  /* The throttle integrator, sampled as a RATE rather than an endpoint. `throttle` moves by
+     1.35 * dt per frame, so one sample proves nothing: "it went down" passes against a plain
+     assignment. Two equal deltas do not — an assignment produces a first delta and then zero.
+     KeyS rather than KeyW because throttle starts at 0.85 and KeyW saturates at 1.0 in 0.111 s,
+     which would leave the rate unobservable and let a stub that pins throttle high pass. */
+  const t0 = (await callHarness(page, 'activeInput')).throttle;
+  await page.keyboard.down('s');
+  await callHarness(page, 'step', [15], options.timeoutMs);
+  const t1 = (await callHarness(page, 'activeInput')).throttle;
+  await callHarness(page, 'step', [15], options.timeoutMs);
+  const t2 = (await callHarness(page, 'activeInput')).throttle;
+  await page.keyboard.up('s');
+  await callHarness(page, 'step', [4], options.timeoutMs);
+
+  /* Both positions. One is satisfiable by a build that ignores the flag and happens to carry the
+     sign the test expects. */
+  await callHarness(page, 'setSettings', [{ invertY: false }]);
+  const normalPitch = await hold('ArrowUp');
+  await callHarness(page, 'setSettings', [{ invertY: true }]);
+  const invertedPitch = await hold('ArrowUp');
+  await callHarness(page, 'setSettings', [{ invertY: false }]);
+
+  return {
+    rollRight: rollRight.roll,
+    rollLeft: rollLeft.roll,
+    strafeRight: strafeRight.strafeX,
+    pitchUp: pitchUp.pitch,
+    pitchDown: pitchDown.pitch,
+    throttle: { t0, t1, t2, delta1: t0 - t1, delta2: t1 - t2, expectedDelta: 1.35 * 0.25 },
+    invertY: { off: normalPitch.pitch, on: invertedPitch.pitch },
+  };
 }
 
 async function stepUntilFlying(page, timeoutMs) {
