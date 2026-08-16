@@ -111,10 +111,10 @@ async function runInPage(config) {
   quiet.dispose();
 
   add(
-    // Verified by ab-mutations P9a at 76fe8c1: deleting the build() guard that re-suspends a context
+    // Verified by ab-mutations P9a at 52567c8: deleting the build() guard that re-suspends a context
     // the browser handed us already running makes this check fail, while LIVE.first-gesture-starts-audio
     // and LIVE.suspend-then-resume stay green.
-    // Verified by ab-mutations P9b at 76fe8c1: deleting the deferral of engine.start()/music.start()
+    // Verified by ab-mutations P9b at 52567c8: deleting the deferral of engine.start()/music.start()
     // out of build() and into unlock() makes this check fail, while LIVE.first-gesture-starts-audio
     // and LIVE.context-running stay green.
     'LIVE.silent-until-first-gesture',
@@ -167,7 +167,7 @@ async function runInPage(config) {
   engine.resume();
   const didResume = await reach('running');
   add(
-    // Verified by ab-mutations P3 at 8e8291d: deleting AudioEngine.suspend() makes this check fail,
+    // Verified by ab-mutations P3 at 52567c8: deleting AudioEngine.suspend() makes this check fail,
     // while GAME.score-slider-reaches-the-mix and LIVE.production-reclaims-nodes stay green.
     'LIVE.suspend-then-resume',
     didSuspend && didResume,
@@ -316,7 +316,7 @@ async function runInPage(config) {
   const uiDuck = await duckFloor('uiClick');
   await wait(settleMs);
   add(
-    // Verified by ab-mutations P7 at 8e8291d: deleting duckEngine() makes this check fail, while
+    // Verified by ab-mutations P7 at 52567c8: deleting duckEngine() makes this check fail, while
     // LIVE.menu-duck-applied and LIVE.menu-floor-survives-a-ui-click stay green.
     'LIVE.ui-duck-fires-and-releases',
     uiDuck.lowestEngine <= UI_DUCK_DEPTH + tol && near(state().engineDuck, 1),
@@ -327,7 +327,7 @@ async function runInPage(config) {
   const evDuck = await duckFloor('finish');
   await wait(settleMs);
   add(
-    // Verified by ab-mutations P8 at 8e8291d: deleting duck() makes this check fail, while
+    // Verified by ab-mutations P8 at 52567c8: deleting duck() makes this check fail, while
     // LIVE.menu-duck-applied stays green.
     'LIVE.event-duck-fires-and-releases',
     evDuck.lowestMusic <= 0.7 + tol && near(state().musicDuck, 1),
@@ -348,7 +348,7 @@ async function runInPage(config) {
   await wait(4000);
   const nodesAfter = engine.debugNodeCount();
   add(
-    // Verified by ab-mutations P5 at 8e8291d: deleting the production ticker's ledger sweep
+    // Verified by ab-mutations P5 at 52567c8: deleting the production ticker's ledger sweep
     // (AudioEngine.ts:496) makes this check fail, while LIVE.suspend-then-resume and
     // GAME.score-slider-reaches-the-mix stay green.
     'LIVE.production-reclaims-nodes',
@@ -599,7 +599,7 @@ async function runGamePhase(playwright, distDir) {
     const volPart = await page.evaluate(() => window.__LV.audioState());
     await page.evaluate(() => window.__LV.setSettings({ musicVolume: 0.65 }));
     add(
-      // Verified by ab-mutations P0 at 8e8291d: deleting the settings->engine call at Game.ts:1404,
+      // Verified by ab-mutations P0 at 52567c8: deleting the settings->engine call at Game.ts:1404,
       // leaving setMusicVolume itself intact, makes this check fail, while
       // LIVE.music-volume-zero-reaches-both-paths and LIVE.music-volume-tracks-both-paths stay green.
       'GAME.score-slider-reaches-the-mix',
@@ -704,7 +704,7 @@ async function runGamePhase(playwright, distDir) {
 
     st = await page.evaluate(() => window.__LV.audioState());
     const method = reallyHidden ? 'real tab switch' : 'synthesised visibilitychange';
-    // Verified by ab-mutations P4 at 8e8291d: deleting the game's suspend-on-hidden call site,
+    // Verified by ab-mutations P4 at 52567c8: deleting the game's suspend-on-hidden call site,
     // leaving AudioEngine.suspend() intact, makes this check fail, while LIVE.suspend-then-resume
     // stays green.
     add('GAME.visibility-roundtrip-while-paused',
