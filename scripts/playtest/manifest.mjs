@@ -141,6 +141,11 @@ const EXPECTED_CHECKS = {
     'GAME.no-page-errors',
     'GAME.silent-on-title-until-gesture',
     'GAME.title-gesture-starts-audio',
+    // The master fader, by both routes. It had no coverage of any kind until round 9 — the same
+    // hole the Score slider fell through when it shipped with 0.55 dB of travel and both suites
+    // stayed green. LIVE tests the setter, GAME tests the settings hop into it.
+    'LIVE.master-volume',
+    'GAME.master-slider-reaches-the-mix',
   ],
 };
 

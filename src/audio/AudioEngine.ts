@@ -484,6 +484,7 @@ export class AudioEngine implements AudioBus {
     musicSendVolume: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
+    masterGain: number;
   } | null {
     const g = this.graph;
     if (!g) return null;
@@ -496,6 +497,11 @@ export class AudioEngine implements AudioBus {
       musicSendVolume: g.music.sendVolume.gain.value,
       menuEngineFloor: this.menuEngineFloor,
       menuMusicFloor: this.menuMusicFloor,
+      /* The node gain, not the stored `masterVolume` intent. Reading back the field the setter
+         just wrote proves only that the setter assigns its own field; reading the AudioParam
+         proves the slider reached the mix. The music slider shipped with 0.55 dB of travel while
+         both suites stayed green, and the check that would have caught it is this distinction. */
+      masterGain: g.master.gain.value,
     };
   }
 
