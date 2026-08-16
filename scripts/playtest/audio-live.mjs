@@ -203,6 +203,31 @@ async function runInPage(config) {
     `musicVolume ${volBack.musicVolume.toFixed(3)}, musicSendVolume ${volBack.musicSendVolume.toFixed(3)} after setMusicVolume(0.65)`,
   );
 
+  // --- master fader -----------------------------------------------------------------------------
+  // The master slider had no coverage at all, which is the same hole the Score slider fell through:
+  // it shipped with 0.55 dB of usable travel while both suites reported green. The product is
+  // correct today — this exists so the gate notices if it stops being.
+  //
+  // Asserted against the NODE gain, not the stored intent. `masterVolume` is the setter's own
+  // field, so reading it back proves only that an assignment happened; `master.gain.value` is what
+  // the mix is multiplied by. The scale factor is deliberate too: the fader sits at value * 0.9, so
+  // a mutation that drops the 0.9 or replaces the ramp with a passthrough moves these numbers.
+  //
+  // Three positions, not two. Zero and one endpoint together are satisfied by a two-branch stub;
+  // the mid position is what forces the control to be continuous.
+  const masterAt = async (v) => { engine.setMasterVolume(v); await wait(400); return state().masterGain; };
+  const mFull = await masterAt(0.8);
+  const mMid = await masterAt(0.4);
+  const mZero = await masterAt(0);
+  await masterAt(0.8);
+  add(
+    'LIVE.master-volume',
+    near(mFull, 0.72) && near(mMid, 0.36) && near(mZero, 0),
+    `master gain ${mFull.toFixed(3)} at 0.8 (want 0.72), ${mMid.toFixed(3)} at 0.4 (want 0.36), ` +
+      `${mZero} at 0 (want 0, within ${tol}). Raw value at zero, not rounded, so a residual that ` +
+      'creeps in later is visible in the output instead of being formatted away',
+  );
+
   // --- static menu trim -------------------------------------------------------------------------
   engine.menuMix(true);
   await wait(settleMs);
@@ -608,6 +633,29 @@ async function runGamePhase(playwright, distDir) {
         && Math.abs(volPart.musicVolume - 0.3) <= TOL && Math.abs(volPart.musicSendVolume - 0.3) <= TOL,
       `setSettings musicVolume 0 -> ${volOff?.musicVolume}/${volOff?.musicSendVolume}, `
         + `0.3 -> ${volPart?.musicVolume}/${volPart?.musicSendVolume} (dry/send; both paths must follow)`,
+    );
+
+    // The master slider by the player's own route. The LIVE check above tests setMasterVolume();
+    // this tests that the settings store reaches it, which is the hop that had no coverage — the
+    // same split as the Score pair, and the reason P0 exists.
+    await page.evaluate(() => window.__LV.setSettings({ masterVolume: 0 }));
+    await page.waitForTimeout(400);
+    const mOff = await page.evaluate(() => window.__LV.audioState());
+    await page.evaluate(() => window.__LV.setSettings({ masterVolume: 0.5 }));
+    await page.waitForTimeout(400);
+    const mHalf = await page.evaluate(() => window.__LV.audioState());
+    await page.evaluate(() => window.__LV.setSettings({ masterVolume: 0.8 }));
+    await page.waitForTimeout(400);
+    const mRestored = await page.evaluate(() => window.__LV.audioState());
+    add(
+      'GAME.master-slider-reaches-the-mix',
+      mOff !== null && mHalf !== null && mRestored !== null
+        && Math.abs(mOff.masterGain) <= TOL
+        && Math.abs(mHalf.masterGain - 0.45) <= TOL
+        && Math.abs(mRestored.masterGain - 0.72) <= TOL,
+      `setSettings masterVolume 0 -> ${mOff?.masterGain}, 0.5 -> ${mHalf?.masterGain} (want 0.45), `
+        + `0.8 -> ${mRestored?.masterGain} (want 0.72). Three positions including the restore, so a `
+        + 'stub that only ever silences cannot pass',
     );
 
     await page.evaluate(() => window.__LV.startRun({ skipIntro: true }));
