@@ -222,17 +222,32 @@ async function runPlaytest({ report, session, options }) {
   await report.check({
     id: 'M3.hazard-invariance',
     name: 'The course is identical at every quality level',
-    criteria: [criterion('M3', 'full', 'Asserts the collision/draw parity property directly rather than leaving it instrumented and unchecked.')],
+    /* The previous wording of this `full` was disproved by mutation: it claimed the
+       collision/draw parity property was asserted directly, while both call sites read the same
+       list — so rewiring the collider to the full field changed no check in the gate, recreating
+       the exact historical defect hazard() was built to catch. The collider now records which
+       list it iterated and hazard() reports the reference identity, so the coupling below is
+       asserted rather than assumed and `full` is earned rather than declared. */
+    criteria: [criterion('M3', 'full', 'Asserts clearance-profile invariance across quality AND that the list the collider actually iterated is, by identity, the drawn gameplay list hazard() sampled.')],
     assertion:
       'hazard() reports the same clearance profile at low, medium, high and ultra while the drawn '
-      + 'population changes, and the reference autopilot stays inside the debris-free channel.',
+      + 'population changes, and at every quality the collider\'s own recorded list is identical '
+      + 'to the sampled one.',
   }, async () => {
+    /* One simulated frame guarantees resolveCollisions has recorded a list — it runs
+       unconditionally in simulate(), attract mode included. */
+    await callHarness(page, 'step', [2]);
     const byQuality = {};
     for (const quality of ['low', 'medium', 'high', 'ultra']) {
       await callHarness(page, 'setSettings', [{ quality }]);
+      await callHarness(page, 'step', [2]);
       // Sample count is pinned: hazard() is sample-count sensitive, and three reviewers quoting
       // its digits without stating theirs produced three different answers for one property.
       byQuality[quality] = await callHarness(page, 'hazard', [900]);
+      verify(byQuality[quality].colliderSharesDrawnList === true,
+        `At quality "${quality}" the collider is not iterating the drawn gameplay list — the `
+        + 'historical full-field/drawn-subset split is back, or nothing has simulated a frame.',
+        byQuality[quality]);
     }
     const profile = (h) => `${h.minClearance}/${h.p05Clearance}/${h.medianClearance}/${h.tightFraction}`;
     const first = profile(byQuality.low);

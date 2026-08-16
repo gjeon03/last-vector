@@ -8,7 +8,7 @@ import { Starfield } from '../render/Starfield.ts';
 import { Star } from '../render/Star.ts';
 import { Planet } from '../render/Planet.ts';
 import { bakeNebula } from '../render/Nebula.ts';
-import { AsteroidField } from '../render/Asteroids.ts';
+import { AsteroidField, type AsteroidInstance } from '../render/Asteroids.ts';
 import { DustField } from '../render/Dust.ts';
 import { Trail } from '../render/Trail.ts';
 import { DerelictField, ShelfSpan, Terminus } from '../render/Structures.ts';
@@ -196,6 +196,8 @@ export class Game {
    * a boot clock skew or a tab-return hitch cannot poison the estimate.
    */
   private adaptRecentMs: number[] = [];
+  /** The exact list the last collision pass iterated. See resolveCollisions. */
+  private lastCollisionList: AsteroidInstance[] | null = null;
   /** Long-frame threshold in ms, refresh-relative; starts lenient until a clean window lands. */
   private adaptLongMs = 25.7;
   private adaptWinMinMs = Infinity;
@@ -910,7 +912,16 @@ export class Game {
     void dt;
     const shipRadius = this.ship.radius;
     let nearest = Infinity;
-    for (const rock of this.asteroids.activeInstances) {
+    /* Record WHICH list this pass iterates, through the same variable the loop reads, so the
+       record and the use cannot drift apart. hazard() reports whether this is still the drawn
+       gameplay list by reference identity — the coupling that harness.ts used to assert in prose
+       ("the same set that collides") with nothing enforcing it. A mutation rewiring this loop to
+       the full field changed no check in the gate; now it flips colliderSharesDrawnList and
+       M3.hazard-invariance reds. One reference assignment per frame; the identity test runs only
+       when the harness asks. */
+    const rocks = this.asteroids.activeInstances;
+    this.lastCollisionList = rocks;
+    for (const rock of rocks) {
       const dx = rock.position.x - this.ship.position.x;
       const dy = rock.position.y - this.ship.position.y;
       const dz = rock.position.z - this.ship.position.z;
@@ -1817,6 +1828,8 @@ export class Game {
       p05Clearance: +at(0.05).toFixed(1),
       medianClearance: +at(0.5).toFixed(1),
       tightFraction: +(clearances.filter((c) => c < 200).length / clearances.length).toFixed(3),
+      colliderSharesDrawnList:
+        this.lastCollisionList === null ? null : this.lastCollisionList === this.asteroids.activeInstances,
     };
   }
 

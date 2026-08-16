@@ -171,8 +171,11 @@ export interface HarnessApi {
   /** Every gate crossing so far, in order. Survives until the next `startRun`. */
   gateHistory(): GatePassRecord[];
   /**
-   * How much room the racing line actually has, sampled against the rocks currently DRAWN —
-   * which is the same set that collides.
+   * How much room the racing line actually has, sampled against the rocks currently DRAWN.
+   *
+   * Whether that is also the set that COLLIDES is reported, not assumed: an earlier version of
+   * this docstring asserted it in prose, and a mutation rewiring the collider to the full field
+   * changed no check in the gate. `colliderSharesDrawnList` carries the enforced answer.
    *
    * Two limits, because quoting these digits without them has produced three different answers
    * for one property. It lerps STRAIGHT CHORDS between gate centres, not the curve the ship
@@ -248,6 +251,19 @@ export interface HazardReport {
   medianClearance: number;
   /** Fraction of the line with less than 200 m of room either side. */
   tightFraction: number;
+  /**
+   * Whether the list the collider ITERATED on its last pass is, by reference identity, the drawn
+   * gameplay list this report sampled. Null until the first simulated frame records one.
+   *
+   * This field exists because the coupling used to be prose. The docstring above claimed the
+   * sampled set "is the same set that collides" with nothing enforcing it, and a mutation
+   * rewiring the collider to the full field changed no check in the gate — recreating, exactly,
+   * the historical defect this API was built to catch (collision against the full field, drawing
+   * from the quality-scaled subset, a third of hittable rocks never rendered, bit-identical
+   * traces). Both call sites read the same list, so parity between them measured nothing about
+   * the collider. Identity of the recorded list does.
+   */
+  colliderSharesDrawnList: boolean | null;
 }
 
 declare global {
