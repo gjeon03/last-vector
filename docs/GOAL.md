@@ -114,6 +114,17 @@ not make me interrogate the centre. But reading a result against its own bounds 
 it can run on every measurement without requiring either discipline or memory. The free checks are
 what make per-measurement possible at all.
 
+**A check that cannot answer must fail loudly, because silence and success are the same
+output.** Three instances in one day, every one biased toward "all clear": a staleness checker
+whose parse error put the literal word `at` into the ref, so `git diff at` died on stderr with
+exit 128 while stdout stayed empty and an empty diff scored "not stale" — a broken check and a
+clean bill of health, indistinguishable; a BSD-sed incompatibility that silently substituted
+nothing; and `all.mjs --require-clean`, which reds four suites at SETUP for an unrelated reason.
+The repair is never "be more careful reading the output": validate the ref before diffing, check
+the exit code of the instrument itself, and treat "the check found nothing" as a claim that needs
+the check's own health as a premise. The operator nearly accepted the first failure because it
+agreed with what they already believed — which is exactly when it fires.
+
 **Where it can be enforced, enforce it rather than remember it.** `scripts/playtest/audio-probe.mjs`
 reads `git rev-parse HEAD` and `git status --porcelain` and stamps its own summary line — `PASS
 16/16 checks at 9b8296e`, or `(DIRTY TREE)` with the offending paths and a note that the numbers
