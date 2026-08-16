@@ -858,7 +858,7 @@ function evaluateGate(measurement) {
   const LADDER = ['idle', 'countdown', 'cruise', 'full'];
   const rungs = LADDER.map((n) => ({ n, lufs: measurement.beds[n]?.engineOnly?.lufsShortTerm ?? null }));
   checks.push({
-    // Verified by ab-mutations P1 at b572962: deleting the engine layer's response to
+    // Verified by ab-mutations P1 at f492553: deleting the engine layer's response to
     // EngineAudioState (early return before any param moves) makes this check fail, while
     // MUSIC.exists stays green.
     id: 'ENGINE.exists-and-scales-with-thrust',
@@ -870,7 +870,7 @@ function evaluateGate(measurement) {
   const plain = measurement.beds.full?.engineOnly?.lufsShortTerm ?? null;
   const boosted = measurement.beds.fullBoosted?.engineOnly?.lufsShortTerm ?? null;
   checks.push({
-    // Verified by ab-mutations P1b at 0dc47b5: deleting the boost layer, with speed01 held equal
+    // Verified by ab-mutations P1b at f492553: deleting the boost layer, with speed01 held equal
     // across the pair, makes this check fail, while ENGINE.exists-and-scales-with-thrust stays green.
     id: 'ENGINE.boost-layer-adds-energy',
     passed: Number.isFinite(plain) && Number.isFinite(boosted) && boosted > plain,
@@ -880,7 +880,7 @@ function evaluateGate(measurement) {
 
   const idleBed = measurement.beds.idle;
   checks.push({
-    // Verified by ab-mutations P2 at b572962: deleting the score entirely (MusicBed.start stubbed,
+    // Verified by ab-mutations P2 at f492553: deleting the score entirely (MusicBed.start stubbed,
     // so no oscillator ever runs) makes this check fail, while
     // ENGINE.exists-and-scales-with-thrust stays green.
     id: 'MUSIC.exists',

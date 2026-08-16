@@ -111,10 +111,10 @@ async function runInPage(config) {
   quiet.dispose();
 
   add(
-    // Verified by ab-mutations P9a at 52567c8: deleting the build() guard that re-suspends a context
+    // Verified by ab-mutations P9a at f492553: deleting the build() guard that re-suspends a context
     // the browser handed us already running makes this check fail, while LIVE.first-gesture-starts-audio
     // and LIVE.suspend-then-resume stay green.
-    // Verified by ab-mutations P9b at 52567c8: deleting the deferral of engine.start()/music.start()
+    // Verified by ab-mutations P9b at f492553: deleting the deferral of engine.start()/music.start()
     // out of build() and into unlock() makes this check fail, while LIVE.first-gesture-starts-audio
     // and LIVE.context-running stay green.
     'LIVE.silent-until-first-gesture',
@@ -167,7 +167,7 @@ async function runInPage(config) {
   engine.resume();
   const didResume = await reach('running');
   add(
-    // Verified by ab-mutations P3 at 52567c8: deleting AudioEngine.suspend() makes this check fail,
+    // Verified by ab-mutations P3 at f492553: deleting AudioEngine.suspend() makes this check fail,
     // while GAME.score-slider-reaches-the-mix and LIVE.production-reclaims-nodes stay green.
     'LIVE.suspend-then-resume',
     didSuspend && didResume,
@@ -221,6 +221,12 @@ async function runInPage(config) {
   const mZero = await masterAt(0);
   await masterAt(0.8);
   add(
+    // Verified by ab-mutations P12b at f492553: deleting the write from setMasterVolume() to the
+    // master gain node, leaving the stored field set, makes this check fail, while
+    // LIVE.music-volume-tracks-both-paths and LIVE.context-running stay green.
+    // GAME.master-slider-reaches-the-mix is declared downstream and fails with it: the player's
+    // route reaches the gain THROUGH this setter, so the two cannot be separated from this side.
+    // P12a separates them from the other side by deleting only the settings hop.
     'LIVE.master-volume',
     near(mFull, 0.72) && near(mMid, 0.36) && near(mZero, 0),
     `master gain ${mFull.toFixed(3)} at 0.8 (want 0.72), ${mMid.toFixed(3)} at 0.4 (want 0.36), ` +
@@ -341,7 +347,7 @@ async function runInPage(config) {
   const uiDuck = await duckFloor('uiClick');
   await wait(settleMs);
   add(
-    // Verified by ab-mutations P7 at 52567c8: deleting duckEngine() makes this check fail, while
+    // Verified by ab-mutations P7 at f492553: deleting duckEngine() makes this check fail, while
     // LIVE.menu-duck-applied and LIVE.menu-floor-survives-a-ui-click stay green.
     'LIVE.ui-duck-fires-and-releases',
     uiDuck.lowestEngine <= UI_DUCK_DEPTH + tol && near(state().engineDuck, 1),
@@ -352,7 +358,7 @@ async function runInPage(config) {
   const evDuck = await duckFloor('finish');
   await wait(settleMs);
   add(
-    // Verified by ab-mutations P8 at 52567c8: deleting duck() makes this check fail, while
+    // Verified by ab-mutations P8 at f492553: deleting duck() makes this check fail, while
     // LIVE.menu-duck-applied stays green.
     'LIVE.event-duck-fires-and-releases',
     evDuck.lowestMusic <= 0.7 + tol && near(state().musicDuck, 1),
@@ -373,7 +379,7 @@ async function runInPage(config) {
   await wait(4000);
   const nodesAfter = engine.debugNodeCount();
   add(
-    // Verified by ab-mutations P5 at 52567c8: deleting the production ticker's ledger sweep
+    // Verified by ab-mutations P5 at f492553: deleting the production ticker's ledger sweep
     // (AudioEngine.ts:496) makes this check fail, while LIVE.suspend-then-resume and
     // GAME.score-slider-reaches-the-mix stay green.
     'LIVE.production-reclaims-nodes',
@@ -624,7 +630,7 @@ async function runGamePhase(playwright, distDir) {
     const volPart = await page.evaluate(() => window.__LV.audioState());
     await page.evaluate(() => window.__LV.setSettings({ musicVolume: 0.65 }));
     add(
-      // Verified by ab-mutations P0 at 52567c8: deleting the settings->engine call at Game.ts:1404,
+      // Verified by ab-mutations P0 at f492553: deleting the settings->engine call at Game.ts:1404,
       // leaving setMusicVolume itself intact, makes this check fail, while
       // LIVE.music-volume-zero-reaches-both-paths and LIVE.music-volume-tracks-both-paths stay green.
       'GAME.score-slider-reaches-the-mix',
@@ -648,6 +654,9 @@ async function runGamePhase(playwright, distDir) {
     await page.waitForTimeout(400);
     const mRestored = await page.evaluate(() => window.__LV.audioState());
     add(
+      // Verified by ab-mutations P12a at f492553: deleting the settings->engine hop for
+      // masterVolume, leaving setMasterVolume() itself intact, makes this check fail, while
+      // LIVE.master-volume and GAME.score-slider-reaches-the-mix stay green.
       'GAME.master-slider-reaches-the-mix',
       mOff !== null && mHalf !== null && mRestored !== null
         && Math.abs(mOff.masterGain) <= TOL
@@ -752,7 +761,7 @@ async function runGamePhase(playwright, distDir) {
 
     st = await page.evaluate(() => window.__LV.audioState());
     const method = reallyHidden ? 'real tab switch' : 'synthesised visibilitychange';
-    // Verified by ab-mutations P4 at 52567c8: deleting the game's suspend-on-hidden call site,
+    // Verified by ab-mutations P4 at f492553: deleting the game's suspend-on-hidden call site,
     // leaving AudioEngine.suspend() intact, makes this check fail, while LIVE.suspend-then-resume
     // stays green.
     add('GAME.visibility-roundtrip-while-paused',
