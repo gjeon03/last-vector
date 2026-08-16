@@ -68,14 +68,14 @@ const MONOLITH_FRAG = /* glsl */ `
     float band = abs(fract(vLocal.y * 0.09 + 0.5) - 0.5);
     float glyph = smoothstep(0.075, 0.03, band);
     float rib = smoothstep(0.6, 0.95, fbm(vec3(vLocal.y * 0.4, vLocal.x * 0.2, 3.0), 3) * 0.5 + 0.5);
-    // -Z, not -X: the geometry now carries an extra rotateY, so the slab's height runs along Z and
-    // the face that points at the ring centre is the -Z one. Gating on X after that rotation put
-    // the glyph channel on the broad face that looks across the aperture rather than at the pilot.
-    // Currently moot either way — the rib term below suppresses this channel to ~0 in both
-    // orientations, because fbm's amplitude cannot reach the smoothstep(0.6, 0.95) knee, so it is
-    // 0.00% of pixels today. Fixed now so that whoever repairs rib inherits the right surface
-    // rather than rediscovering this.
-    float inward = smoothstep(0.1, 0.7, -normalize(vLocal).z);
+    // The geometry's rotateY bakes into vLocal, so which local axis faces the ring centre MOVES
+    // with that angle: at the old PI/2 it was -Z alone, at the current PI/4 it splits evenly
+    // between -X and -Z, so the gate blends both (0.7071 = 1/sqrt(2) renormalises the pair).
+    // Currently moot either way — the rib term above suppresses this channel to ~0, because
+    // fbm's amplitude cannot reach the smoothstep(0.6, 0.95) knee. Whoever repairs rib must
+    // re-derive this axis against the rotateY in force at the time.
+    vec3 inwardN = normalize(vLocal);
+    float inward = smoothstep(0.1, 0.7, -(inwardN.x + inwardN.z) * 0.7071);
     float channel = glyph * rib * inward;
 
     float pulse = 0.62 + 0.38 * sin(uTime * 2.1 - vLocal.y * 0.16);
@@ -482,8 +482,19 @@ export class Gate {
        every material term multiplied by zero. Widening the per-slab tilt did not fix that: those
        ranges are symmetric about zero, so the mean normal does not move.
        Now the five slabs' faces are spread through the ring plane and roughly half meet the sun
-       at any course heading, seed-independently, without touching the shared lighting model. */
-    geometry.rotateY(Math.PI / 2);
+       at any course heading, seed-independently, without touching the shared lighting model.
+
+       PI/4, not PI/2. The full quarter-turn fixed the lighting and collapsed the silhouette:
+       three round-8 skeptics, refuting three different cairn blockers, converged on the residue
+       that the slabs had gone edge-on to the approach — the spar archetype's frontal extent fell
+       107.35 m -> 10.16 m, ~90% of the face the player navigates by. A calibrated offline sweep
+       of this angle (reproducing both known endpoints before measuring anything between them)
+       found most of the lighting gain arrives by 45 degrees while three quarters of the frontal
+       extent survives: 82.24 m frontal, lit-eligible fraction 24.1% across a full spinner period
+       against 12.9% at zero and ~26% at ninety. The sweep measures geometric eligibility for
+       wrapped diffuse, not shaded pixels — the visual call on whether it reads as a cairn belongs
+       to reviewers, not to this comment. */
+    geometry.rotateY(Math.PI / 4);
     geometry.computeVertexNormals();
     return geometry;
   }
