@@ -196,6 +196,8 @@ export class Game {
    * a boot clock skew or a tab-return hitch cannot poison the estimate.
    */
   private adaptRecentMs: number[] = [];
+  /** A dynamicScale change waiting to be applied at the next frame START. See frame(). */
+  private pendingScaleApply = false;
   /** Pending debounced shrink from a window drag. See handleResize. */
   private resizeSettleTimer: number | null = null;
   /** The exact list the last collision pass iterated. See resolveCollisions. */
@@ -694,6 +696,17 @@ export class Game {
   /** Advances simulation and renders one frame. Called by the rAF loop and by the harness. */
   frame(rawDt: number): void {
     if (this.disposed || this.contextLost) return;
+    /* Scale changes land HERE, never mid-frame. In live play the distinction is invisible — the
+       controller runs inside the frame anyway — but a harness-driven capture steps and presents
+       as separate calls, and a viewport move landing between them presented frames whose bloom
+       chain read margins the renderer never wrote: catastrophic, reproducible corruption in 2 of
+       10 authored vantages, invisible to every numeric bar the screenshot suite has. Live mode
+       measured clean across a 915-frame screencast precisely because it applies at frame start;
+       driven mode now mirrors it. */
+    if (this.pendingScaleApply) {
+      this.pendingScaleApply = false;
+      this.applyRenderScale();
+    }
     const dt = this.fixedTimestep ?? clamp(rawDt, 0.0005, 0.05);
     this.clock += dt;
     this.grade.time = this.clock;
@@ -727,6 +740,19 @@ export class Game {
   private adaptResolution(rawDt: number): void {
     if (this.adaptSettle > 0) {
       this.adaptSettle--;
+      return;
+    }
+    /* A stall is not pixel-load evidence. Unclamped, a single >1 s main-thread hitch (a tab
+       switch, a GC pause, a debugger) polluted one window's mean enough to cost a measured
+       -0.12 scale step and ~3 s of recovery — violating this function's own single-hitch
+       contract two comments up. Discard the contaminated window entirely: sustained slowness
+       still accumulates through ordinary frames, so genuine load keeps dropping the scale. */
+    if (rawDt > 0.25) {
+      this.adaptAccumulator = 0;
+      this.adaptFrames = 0;
+      this.adaptLongFrames = 0;
+      this.adaptWinMinMs = Infinity;
+      this.adaptWinMaxMs = 0;
       return;
     }
     this.adaptAccumulator += rawDt;
@@ -801,7 +827,7 @@ export class Game {
     }
 
     if (Math.abs(this.dynamicScale - before) > 0.001) {
-      this.applyRenderScale();
+      this.pendingScaleApply = true;
       // Discard the next two frames from the controller's evidence. A scale change still costs
       // one pipeline flush; counting that flush as a long frame is what let the scaler drive
       // itself to the floor and stay there.
@@ -1492,8 +1518,10 @@ export class Game {
       chromaticAberration: s.chromaticAberration,
     });
     this.applyQualityPopulations();
-    // Allocation depends on the window alone now, so a settings change only moves the viewport.
-    this.applyRenderScale();
+    // Allocation depends on the window alone now, so a settings change only moves the viewport —
+    // at the next frame START, like every other scale change: this ran between a driven capture's
+    // step and present once, and the presented frame's bloom chain read margins nothing wrote.
+    this.pendingScaleApply = true;
   }
 
   /** Trims drawn populations to the current quality level. Cheap and immediate. */
