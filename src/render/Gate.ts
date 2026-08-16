@@ -275,18 +275,15 @@ export class Gate {
       //    four different tilts whose face means land within 2.9 code values of each other, which
       //    is a hemisphere signature and not a key.
       //
-      // What this tilt actually delivered is the side walls: 6.3% of the object. 93.7% of the
-      // cairn's on-screen stone still receives ZERO key light, because these ranges are symmetric
-      // about zero — E[cos x cos y] = 0.927 — so the mean face normal does not move and N.L cannot
-      // cross the -0.15 wrap threshold from a pre-fix range of -0.42 to -0.97. Faces render as
-      // `mix(uGroundColor, uSkyColor, N.y*0.5+0.5)` alone: the fbm albedo, the derivative bump,
-      // the GGX lobe and the rim are all computed per pixel and multiplied by zero. Controls in
-      // the same build: nearby asteroids 100.0% and 84.3% sunlit, the Terminus hull 99.8%. The
-      // cairn is the only solid in the game that is not lit.
-      //
-      // OPEN — the fix under evaluation is rotating the slab geometry so the broad faces point
-      // tangentially around the ring, giving five normals spread through the ring plane instead of
-      // five copies of the gate normal. Do not mark this closed on a cross-slab spread again.
+      // What this tilt delivered on its own WAS only the side walls — 6.3% of the object, with
+      // 93.7% of the stone at zero key light, because these ranges are symmetric about zero
+      // (E[cos x cos y] = 0.927): the mean face normal does not move, so this jitter can never
+      // cross the -0.15 wrap threshold by itself. The repair that worked is the geometry-level
+      // rotateY in buildMonolith (finally 45 degrees, d9c27c5), which moves the mean normal;
+      // this per-slab jitter stays for variety on top of it. Round 9: five reviewers and two
+      // skeptics judged the lit result shippable from pixels. Ledger L04 — closed, and it was
+      // certified closed once before on a cross-slab spread that could not tell key light from
+      // tilt-induced ambient, so do not re-certify it with that metric.
       mesh.rotation.z = angle;
       mesh.rotation.x = rng.range(-0.45, 0.45);
       mesh.rotation.y = rng.range(-0.5, 0.5);
@@ -475,12 +472,12 @@ export class Gate {
     // Extrusion builds in XY; rotate so local +X is radially outward and +Y runs along it.
     geometry.rotateZ(-Math.PI / 2);
     /* Then turn the slab so its BROAD faces point around the ring instead of along the gate
-       normal. Without this every monolith presents the same face direction — the extrusion axis
-       was local +Z and every rotation in the placement chain is about Z — so all five slabs on
-       all nine gates showed the camera a face at N.L between -0.42 and -0.97, below the -0.15
-       wrap threshold, and 93.7% of the cairn's stone rendered as hemisphere ambient alone with
-       every material term multiplied by zero. Widening the per-slab tilt did not fix that: those
-       ranges are symmetric about zero, so the mean normal does not move.
+       normal. Without this every monolith presented nearly the same face direction: the placement
+       chain DOES carry X/Y jitter (it always did — claiming otherwise is ledger L04), but its
+       ranges are symmetric about zero, so the mean face normal never moved and N.L stayed between
+       -0.42 and -0.97 against a -0.15 wrap threshold. 93.7% of the stone rendered as hemisphere
+       ambient alone, every material term multiplied by zero. Only a geometry-level rotation moves
+       the MEAN, which is why this line exists and jitter widening could not replace it.
        Now the five slabs' faces are spread through the ring plane and roughly half meet the sun
        at any course heading, seed-independently, without touching the shared lighting model.
 

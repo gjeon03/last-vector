@@ -94,15 +94,15 @@ pnpm playtest -- --dist scripts/playtest/fixtures/missing-harness \
 | `SETUP.page-load` | Chromium receives a successful main-document response and reaches `load`. | setup only |
 | `API.contract` | `window.__LV`, its string version, requested boot-time seed, and every method required by that suite exist after the bounded boot wait. | API prerequisite |
 | `API.ready` | `__LV.ready()` resolves before the configured timeout. | API prerequisite |
-| `M2.automation-input` | A fixed-step command containing pitch, yaw, roll, throttle, both strafes, boost, and brake is applied exactly; after 60 frames the run is flying and moving, pose vectors are finite, position changed, and all three body angular rates responded. | M2 full |
-| `M7.automation-input-surface` | The full resolved command vocabulary is accepted and `setInput(null)` releases automation control. | M7 partial; physical bindings/pointer lock manual |
+| `M2.automation-input` | A fixed-step command containing pitch, yaw, roll, throttle, both strafes, boost, and brake is applied exactly; after 60 frames the run is flying and moving, pose vectors are finite, position changed, and all three body angular rates responded. | M2 partial — proves the harness override path only; the shipped pipeline is covered by the INPUT.* checks (ledger L08) |
+| `M7.automation-input-surface` | The full resolved command vocabulary is accepted and `setInput(null)` releases automation control. | M7 partial — see INPUT.keys-drive-the-command, INPUT.invertY-reaches-flight and INPUT.mouse-pipeline for the shipped pipeline; only trusted lock acquisition and raw OS deltas remain manual (ledger L15) |
 | `M3.sequential-gates` | Skill-1 autopilot at fixed 1/60 s reaches positive `gatesTotal`, clears every gate exactly once in index order, records finite monotonic pass evidence, and emits one split per gate. | M3 full |
 | `M4.destination-finish` | The deterministic playthrough reaches `finished` with a non-null result, positive finite total time, and non-empty destination name. | M4 full |
 | `PERF.settings` | Requested quality, render scale 1, and hidden FPS overlay round-trip through settings. | perf prerequisite |
 | `PERF.sample-shape` | Frames/seconds/timings/counts are valid, percentiles are ordered, reported FPS is within 5% (or 1 FPS) of frames ÷ seconds, and effective render scale matches the drawing buffer. | perf prerequisite |
-| `M5.performance-1080p` | At 1920×1080/device scale 1, `__LV.profile(seconds)` reports at least 60 FPS. | M5 full when paired with runtime-errors |
+| `M5.performance-1080p` | At 1920×1080, `__LV.profile(seconds)` holds the 60 Hz budget: mean frame ≤ 16.9 ms, p95 ≤ 20 ms, no frame over 33 ms, and renderScale ≥ 0.58 so the budget was not bought by collapsing resolution. ("At least 60 FPS" was the old wording — a perfectly vsynced run reports ~59.99, ledger L20.) | M5 full when paired with runtime-errors |
 | `SCREENSHOT.setup` | Fixed 1/60 s flight starts at requested quality and every requested named vantage is advertised by `vantages()`. | visual evidence prerequisite |
-| `SCREENSHOT.cell-NNN` | For one course-position × vantage cell, API seek/camera calls succeed, one fixed frame is stepped and presented before freezing, and Playwright writes a PNG larger than 1 KiB. | Q1-Q6 review evidence, no direct M criterion |
+| `SCREENSHOT.cell-NNN` | For one course-position × vantage cell, API seek/camera calls succeed, the HUD fade settles, one fixed frame is stepped and presented, and the DECODED image passes: requested dimensions, ≥12 distinct luminance levels, ≥12% midtone shelf in 0.18-0.45, <86% shadow, measurable chroma, and the vantage subject projecting on screen. (The old "PNG larger than 1 KiB" passed on black, magenta, and loading frames — ledger L17.) | Q1-Q6 review evidence, no direct M criterion |
 | `SCREENSHOT.matrix-complete` | Every requested matrix cell produced a PNG; setup failure cannot masquerade as an empty success. | Q1-Q6 review evidence, no direct M criterion |
 | `M5.runtime-errors` | Console errors, uncaught page errors, and strings from `__LV.errors()` are all empty. | M5 partial in each suite |
 | `M6.localhost-only` | No intercepted browser request targets a non-loopback URL. | M6 full |
@@ -113,8 +113,12 @@ real-time measurement because that is its API contract.
 
 ## Current automation-contract gap
 
-The harness now consumes the API's pose, resolved-input, gate-history, driven-mode, and explicit
-presentation diagnostics. The remaining M7 boundary is physical device behavior: no read-only API
-reports active device, keyboard/mouse binding resolution, or pointer-lock support and ownership.
-Those bindings remain a manual browser check unless the project lead adds such a diagnostic to
-`src/core/harness.ts`.
+The harness consumes the API's pose, resolved-input, gate-history, driven-mode, and presentation
+diagnostics, and — since `926f6c0` — drives the shipped keyboard AND mouse pipelines directly:
+real key events with no override for the key-derived axes, throttle integrator and invertY, and a
+`pointerLockElement` override with synthetic MouseEvents for the lock gate, virtual stick,
+sensitivity/expo and button mapping (ledger L15; an earlier version of this section called all of
+that "a manual browser check"). The remaining M7 boundary is narrow and real: trusted pointer-lock
+ACQUISITION, raw OS mouse-delta delivery, gamepad hardware, and every judgement of feel. The
+authoritative list of gate checks is `scripts/playtest/manifest.mjs` — set-equal, so this document
+can lag but the gate cannot.

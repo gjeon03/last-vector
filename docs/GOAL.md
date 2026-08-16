@@ -319,13 +319,12 @@ Recorded honestly, because an unstated gap reads as coverage.
   mostly a choice, because the sentence naming the limit could not fail.
 - **No gamepad has been connected**, and the gamepad branch sits in the region above that no
   automated test reaches, so "the code path is read-only verified" is all that can be said for it.
-- **Eight claims in this project's own comments and documents have been disproved by measurement**,
-  five of them the author's, one of them written *in the commit that was correcting another*. The
-  pattern is not carelessness about facts — every one had its supporting facts right. It is
-  asserting a **mechanism** where a **measurement** was owed: `Course.ts` on leg lengths, `Hud.ts`
-  on G-load distributions, `audio-probe.mjs` on what it measured, `Gate.ts` on the cairn's
-  rotation chain, `PostFX.ts` on tap counts, `harness.ts` on invertY, `styles.css` on
-  `min-height: 0`, and this document on pointer lock.
+- **Twenty-one claims in this project's own record have been disproved by measurement — see
+  `docs/LEDGER.md`, which is the authority.** Counts kept in prose, including the "eight" that
+  used to open this bullet, have been wrong in both directions; one round produced two different
+  findings each labelled "the eleventh". Eleven of the twenty-one are the author's, and five were
+  born inside corrective work. The pattern is not carelessness about facts — nearly every row had
+  its supporting facts right. It is asserting a **mechanism** where a **measurement** was owed.
 
   Two of round 7's fixes failed the same way and had to be made three times each. In both, the
   premise was verified and true and the inference from it was false — that declining to `resume()`
