@@ -196,6 +196,8 @@ export class Game {
    * a boot clock skew or a tab-return hitch cannot poison the estimate.
    */
   private adaptRecentMs: number[] = [];
+  /** Pending debounced shrink from a window drag. See handleResize. */
+  private resizeSettleTimer: number | null = null;
   /** The exact list the last collision pass iterated. See resolveCollisions. */
   private lastCollisionList: AsteroidInstance[] | null = null;
   /** Long-frame threshold in ms, refresh-relative; starts lenient until a clean window lands. */
@@ -1533,19 +1535,52 @@ export class Game {
     // what already happens at every dynamic render scale; the 320x240 floors below are the guard
     // against an absurdly small buffer.
     const dpr = Math.min(rawDpr, 2, budget);
-    this.allocWidth = Math.max(320, Math.round(width * dpr));
-    this.allocHeight = Math.max(240, Math.round(height * dpr));
+    const wantW = Math.max(320, Math.round(width * dpr));
+    const wantH = Math.max(240, Math.round(height * dpr));
 
-    this.renderer.setPixelRatio(1);
-    this.renderer.setSize(this.allocWidth, this.allocHeight, false);
+    /* CSS size and aspect follow the drag immediately — that is what keeps the picture attached
+       to the window. REALLOCATION does not: a drag delivers a resize event stream, and
+       reallocating nine render targets per event measured ~2.4 GB/s of allocation, 25-28 long
+       frames in 2.5 s, and drove renderScale 1.0 -> 0.73-0.79 for zero GPU benefit — the
+       controller read its own reallocation stalls as pixel load, the round-1 feedback loop on
+       the one path the fix never covered. So: grow now (a too-small backing store would upscale
+       blurrily), defer shrinks to the drag settling, and either way tell the controller to
+       discard what it saw. */
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
-    this.post.setSize(this.allocWidth, this.allocHeight);
-    this.applyRenderScale();
     this.chase.setAspect(width / height);
     this.farCamera.aspect = width / height;
     this.farCamera.updateProjectionMatrix();
+
+    if (wantW > this.allocWidth || wantH > this.allocHeight) {
+      this.reallocateTargets(Math.max(wantW, this.allocWidth), Math.max(wantH, this.allocHeight));
+    }
+    if (this.resizeSettleTimer !== null) window.clearTimeout(this.resizeSettleTimer);
+    this.resizeSettleTimer = window.setTimeout(() => {
+      this.resizeSettleTimer = null;
+      if (wantW !== this.allocWidth || wantH !== this.allocHeight) this.reallocateTargets(wantW, wantH);
+    }, 250);
   };
+
+  /** The expensive half of a resize: reallocates every render target and resets the adaptive
+      controller's evidence, because reallocation stalls are not pixel load and must not be
+      graded as if they were — the same settle discipline the controller applies to its own
+      viewport moves, which this path used to bypass. */
+  private reallocateTargets(allocW: number, allocH: number): void {
+    this.allocWidth = allocW;
+    this.allocHeight = allocH;
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(this.allocWidth, this.allocHeight, false);
+    this.post.setSize(this.allocWidth, this.allocHeight);
+    this.applyRenderScale();
+    this.adaptSettle = 4;
+    this.adaptAccumulator = 0;
+    this.adaptFrames = 0;
+    this.adaptLongFrames = 0;
+    this.adaptWinMinMs = Infinity;
+    this.adaptWinMaxMs = 0;
+    this.adaptCooldown = Math.max(this.adaptCooldown, 0.35);
+  }
 
   /** Cheap: moves each target's viewport rectangle. No allocation, no canvas resize. */
   private applyRenderScale(): void {
@@ -1889,6 +1924,7 @@ export class Game {
   dispose(): void {
     this.disposed = true;
     this.releaseUnlock();
+    if (this.resizeSettleTimer !== null) window.clearTimeout(this.resizeSettleTimer);
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('error', this.handleError);
     window.removeEventListener('unhandledrejection', this.handleRejection);
