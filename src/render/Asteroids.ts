@@ -503,6 +503,11 @@ export class AsteroidField {
    */
   setVisibleFraction(fraction: number): void {
     const f = Math.max(0, Math.min(1, fraction));
+    /* `length = 0` and push, NEVER `this.activeInstances = []`. The array's REFERENCE is
+       load-bearing: the collider records which list it iterated and M3.hazard-invariance asserts
+       that record is identical, by reference, to this list — that identity is what turned the
+       collider/draw coupling from prose into an assertion. Reallocating here would red M3 with a
+       message about a parity violation when the actual change was an allocation strategy. */
     this.activeInstances.length = 0;
     for (const batch of this.batches) {
       let gameplay = 0;
