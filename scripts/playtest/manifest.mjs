@@ -49,6 +49,7 @@ const EXPECTED_CHECKS = {
     'M7.automation-input-surface',
     'INPUT.keys-drive-the-command',
     'INPUT.invertY-reaches-flight',
+    'INPUT.mouse-pipeline',
     'M3.sequential-gates',
     'M4.destination-finish',
     'UX.screen-flow',

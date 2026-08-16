@@ -124,6 +124,92 @@ async function runPlaytest({ report, session, options }) {
     return e.invertY;
   });
 
+  await report.check({
+    id: 'INPUT.mouse-pipeline',
+    name: 'Pointer-locked mouse flight works, and lock loss releases mouse buttons',
+    criteria: [criterion('M7', 'partial', 'Drives the shipped mouse pipeline — lock gate, virtual stick, sensitivity/expo, button mapping — via a pointerLockElement override; trusted lock acquisition and raw OS deltas remain human-only.')],
+    assertion:
+      'With document.pointerLockElement faked to the canvas, synthetic mousemove deflects pitch/yaw '
+      + 'through the virtual stick, LMB sets boost; on lock loss WITHOUT a mouseup the mouse boost '
+      + 'clears (the Esc-latch regression), while a physically held keyboard boost survives it.',
+  }, async () => {
+    /* GOAL.md carried "the mouse half needs a human... Nothing else will do it" for six rounds.
+       Disproved by construction in round 9: everything except trusted lock ACQUISITION and raw OS
+       delta delivery is drivable — and the first contact with the never-exercised surface found
+       that round's only surviving blocker, the boost latch this check now pins. */
+    await callHarness(page, 'ready', [], options.timeoutMs);
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [null]);
+    await stepUntilFlying(page, options.timeoutMs);
+
+    const setLock = async (on) => {
+      await page.evaluate((locked) => {
+        const canvas = document.querySelector('canvas');
+        window.__mockLock = locked;
+        Object.defineProperty(document, 'pointerLockElement', {
+          get: () => (window.__mockLock ? canvas : null),
+          configurable: true,
+        });
+        document.dispatchEvent(new Event('pointerlockchange'));
+      }, on);
+    };
+    const mouse = async (type, init) => {
+      await page.evaluate(({ t, i }) => { document.dispatchEvent(new MouseEvent(t, i)); }, { t: type, i: init });
+    };
+    /* Lock loss pauses the game through the overlay (by design), which stops input.update() and
+       would leave activeInput stale — so every post-lock-loss read resumes first. */
+    const resumeAndRead = async () => {
+      await page.evaluate(() => window.__LV.pauseMenu(false));
+      await callHarness(page, 'step', [4]);
+      return callHarness(page, 'activeInput');
+    };
+
+    await setLock(true);
+    await mouse('mousemove', { movementX: 160, movementY: -110 });
+    await callHarness(page, 'step', [2]);
+    const steered = await callHarness(page, 'activeInput');
+    verify(Math.abs(steered.yaw) > 0.05 && Math.abs(steered.pitch) > 0.05,
+      `Synthetic mouse movement did not reach pitch/yaw through the virtual stick: yaw ${steered.yaw}, pitch ${steered.pitch}.`, steered);
+
+    await mouse('mousedown', { button: 0 });
+    await callHarness(page, 'step', [2]);
+    const boosting = await callHarness(page, 'activeInput');
+    verify(boosting.boost === true, 'LMB did not engage boost through the mouse pipeline.', boosting);
+
+    /* The latch: drop the lock with the button still down — the mouseup after Esc is exactly the
+       event the guard drops. Boost must clear anyway, from the lock transition itself. */
+    await setLock(false);
+    const released = await resumeAndRead();
+    verify(released.boost === false,
+      'Mouse boost survived pointer-lock loss with no mouseup — the Esc latch is back: hold boost, Esc, resume, and the ship boosts indefinitely.', released);
+
+    /* The rejected alternative's failure mode, asserted so nobody ships it later: a PHYSICAL
+       keyboard boost held across the same transition must NOT be released. */
+    await page.keyboard.down('Shift');
+    await setLock(true);
+    await mouse('mousedown', { button: 0 });
+    await callHarness(page, 'step', [2]);
+    await setLock(false);
+    const keyboardHeld = await resumeAndRead();
+    await page.keyboard.up('Shift');
+    await mouse('mouseup', { button: 0 });
+    await page.evaluate(() => { delete document.pointerLockElement; delete window.__mockLock; });
+    await callHarness(page, 'step', [2]);
+    verify(keyboardHeld.boost === true,
+      'Lock loss released a physically held keyboard boost — clearing must touch mouse state only.', keyboardHeld);
+
+    return {
+      steered: { yaw: steered.yaw, pitch: steered.pitch },
+      mouseBoostEngaged: boosting.boost,
+      clearedOnLockLoss: released.boost === false,
+      keyboardSurvivedLockLoss: keyboardHeld.boost === true,
+      notCovered: ['trusted pointer-lock acquisition', 'raw OS mouse delta delivery', 'real Esc keystroke ordering'],
+    };
+  });
+
   const playthroughOutcome = await capture(async () => collectPlaythrough(page, options));
 
   await report.check({

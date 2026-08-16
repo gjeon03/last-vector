@@ -52,6 +52,9 @@ export class Input {
 
   private readonly keys = new Set<string>();
   private stickX = 0;
+  /** Mouse-button flight actions. See handleMouseButton for why these are not synthetic keys. */
+  private mouseBoost = false;
+  private mouseBrake = false;
   private stickY = 0;
   private mouseDx = 0;
   private mouseDy = 0;
@@ -149,6 +152,8 @@ export class Input {
     this.stickY = 0;
     this.mouseDx = 0;
     this.mouseDy = 0;
+    this.mouseBoost = false;
+    this.mouseBrake = false;
     this.keys.clear();
     this.throttle = 0.85;
   }
@@ -203,8 +208,8 @@ export class Input {
     if (this.held('KeyS')) this.throttle -= throttleRate * dt;
     this.throttle = clamp01(this.throttle);
 
-    let boost = this.held('ShiftLeft') || this.held('ShiftRight');
-    let brake = this.held('Space');
+    let boost = this.held('ShiftLeft') || this.held('ShiftRight') || this.mouseBoost;
+    let brake = this.held('Space') || this.mouseBrake;
 
     // --- gamepad -------------------------------------------------------------------
     const pad = this.readGamepad();
@@ -295,6 +300,11 @@ export class Input {
     if (!locked) {
       this.mouseDx = 0;
       this.mouseDy = 0;
+      /* The half of the latch fix that handleMouseButton cannot do for itself: the mouseup that
+         follows a lock loss is dropped by its guard, so the release has to happen HERE, on the
+         transition. A physically held keyboard boost is untouched — these are mouse-only state. */
+      this.mouseBoost = false;
+      this.mouseBrake = false;
     }
     this.onLockChange?.(locked);
   };
@@ -306,17 +316,27 @@ export class Input {
     this.mouseDy += clamp(e.movementY, -180, 180);
   };
 
+  /**
+   * Dedicated booleans, NOT synthetic key injection. The first version pushed 'ShiftLeft'/'Space'
+   * into the shared `keys` set, and the early-return above dropped the mouseup that arrives after
+   * pointer lock is lost — Escape, the game's own pause gesture — so the code was never cleared:
+   * hold boost, Esc to the menu, release, resume, and the ship boosts at full command
+   * indefinitely with nothing held (measured 454.8 -> 774.2 m/s uncommanded). Three independent
+   * reproductions, and it also arms during the countdown, so a first-run player was exposed.
+   *
+   * Two properties of this shape, both load-bearing:
+   * - the booleans are CLEARED in handlePointerLockChange when the lock drops, so losing the lock
+   *   mid-hold cannot latch anything;
+   * - they are separate state OR'd into the command in update(), so clearing them cannot delete a
+   *   physically held keyboard ShiftLeft. The obvious alternative — processing mouseup even when
+   *   unlocked — was attacked and rejected in review for exactly that: releasing LMB over a menu
+   *   would silently release a keyboard boost the player is still holding.
+   */
   private readonly handleMouseButton = (e: MouseEvent): void => {
     if (!this.locked) return;
     const down = e.type === 'mousedown';
-    if (e.button === 0) {
-      if (down) this.keys.add('ShiftLeft');
-      else this.keys.delete('ShiftLeft');
-    }
-    if (e.button === 2) {
-      if (down) this.keys.add('Space');
-      else this.keys.delete('Space');
-    }
+    if (e.button === 0) this.mouseBoost = down;
+    if (e.button === 2) this.mouseBrake = down;
   };
 
   private readonly handleGamepad = (e: GamepadEvent): void => {
