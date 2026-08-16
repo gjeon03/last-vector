@@ -322,6 +322,7 @@ export interface AudioBus {
     musicSendTrim: number;
     musicVolume: number;
     musicSendVolume: number;
+    masterGain: number;
     menuEngineFloor: number;
     menuMusicFloor: number;
   } | null;
