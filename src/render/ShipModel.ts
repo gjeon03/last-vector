@@ -191,8 +191,22 @@ const PLUME_FRAG = /* glsl */ `
   ${GLSL_NOISE}
 
   void main() {
-    // vUv.y runs 0 at the nozzle to 1 at the tail of the plume.
-    float t = clamp(vUv.y, 0.0, 1.0);
+    /* vUv.y runs 1 at the NOZZLE and 0 at the tail — the opposite of what this comment used to
+     * claim, and every term below was written against the claim rather than the geometry.
+     *
+     * Measured, not argued. three's CylinderGeometry emits uv.y as 1 - v with v = 0 at
+     * radiusTop, so the narrow end carries uv.y = 1; rotateX(-PI/2) then translate(0,0,0.5)
+     * puts that narrow end at local z = 0, which is the nozzle. Reading the built attribute back
+     * confirms it exactly: (z=0, radius=0.10, v=1) and (z=1, radius=0.52, v=0).
+     *
+     * With t = vUv.y the consequences were total, not subtle: body = pow(1-t, 1.7) evaluated to
+     * 0.000 at the nozzle and 1.000 at the tail, so the drive was fully transparent exactly where
+     * it should burn, and the white-hot uCore was painted on the far end where only the cool
+     * uFlame belongs. At full boost the ship showed two nozzle-throat discs and no flame — the
+     * plume cone was there, dense, four metres behind where anyone would look for it. This is the
+     * most-looked-at surface in the game; it is on screen for the whole run.
+     */
+    float t = clamp(1.0 - vUv.y, 0.0, 1.0);
     float radial = abs(vUv.x - 0.5) * 2.0;
 
     // Shock diamonds: periodic brightening along the plume, drifting outward.
