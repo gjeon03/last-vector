@@ -265,6 +265,27 @@ export interface HazardReport {
    * the collider. Identity of the recorded list does.
    */
   colliderSharesDrawnList: boolean | null;
+  /**
+   * Rocks currently in motion toward the racing line.
+   *
+   * Reported so a check can fail when the feature is DELETED rather than only when it
+   * misbehaves. `docs/GOAL.md` states the operational test for this: a capability assertion
+   * passes when you delete the caller. Every instrument in this project that has embarrassed us
+   * was a capability assertion sold as a wiring one — so the drift check reads this count and
+   * reds at zero, instead of merely observing that nothing has gone wrong.
+   */
+  driftingRocks: number;
+  /**
+   * Metres of room left inside the volumes that must NEVER contain rock: the spawn bubble and
+   * every gate aperture. This is the distance from each protected sphere's surface to the
+   * nearest rock surface, minimised over all of them.
+   *
+   * Positive means intact. Zero or negative means a rock has entered a volume the placement
+   * pass rejected it from — the player starting inside a boulder, or a cairn with its hole
+   * plugged. Measured against the CURRENT positions, so it is a statement about the drifting
+   * field rather than about where the field was built.
+   */
+  protectedVolumeClearance: number;
 }
 
 declare global {

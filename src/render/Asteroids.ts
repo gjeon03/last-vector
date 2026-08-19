@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Rng, fbm3 } from '../core/rng.ts';
 import { GLSL_NOISE } from './glslNoise.ts';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { distanceToSegment } from '../core/mathx.ts';
+import { closestPointOnSegment, distanceToSegment } from '../core/mathx.ts';
 import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.ts';
 import { PALETTE } from '../core/art.ts';
 
@@ -178,7 +178,16 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
 }
 
 export interface AsteroidInstance {
+  /**
+   * Where the rock is RIGHT NOW. Collision, hazard sampling and the drawn matrix all read this
+   * one vector, so a drifting rock is a threat to exactly the extent that it looks like one.
+   */
   position: THREE.Vector3;
+  /**
+   * Where it was placed, and the only position the construction-time clearance tests ever saw.
+   * A drifter's `position` is always `home + driftDir * driftAmplitude * s`, with s in [0,1].
+   */
+  readonly home: THREE.Vector3;
   /**
    * Close enough to the racing line to be part of the course. Gameplay rock is always drawn
    * and always collides, at every quality level, so difficulty does not follow the settings.
@@ -192,6 +201,21 @@ export interface AsteroidInstance {
   spinAxis: THREE.Vector3;
   spinRate: number;
   quaternion: THREE.Quaternion;
+  /**
+   * Drift, if any. `driftAmplitude` of 0 means this rock never moves, which is almost all of
+   * them: motion is a per-frame matrix write and a per-frame trig pair, and a field of two
+   * thousand moving rocks buys nothing a hundred well-placed ones do not.
+   *
+   * The unit direction points at the nearest point on the flown racing line, so a drifter is
+   * always closing on the player's path rather than wandering. `driftAmplitude` is the metres
+   * it may travel along that direction, and it is bounded at construction by two hard
+   * guarantees — see `setupDrift`.
+   */
+  driftDir: THREE.Vector3;
+  driftAmplitude: number;
+  /** Radians per second, and the offset that decides where in the sweep t = 0 finds it. */
+  driftOmega: number;
+  driftPhase: number;
 }
 
 
@@ -223,6 +247,24 @@ export interface AsteroidFieldOptions {
   hazardBand?: number;
   /** Metres either side of the spine. */
   spread: number;
+  /**
+   * How many rocks are allowed to drift toward the racing line. A hard cap, not a target: a
+   * candidate that cannot be given a safe sweep is skipped rather than nudged.
+   */
+  driftCount?: number;
+  /** Metres of sweep a drifter is given, before the safety bounds cut it down. */
+  driftAmplitude?: [number, number];
+  /** Seconds for one full out-and-back sweep. */
+  driftPeriod?: [number, number];
+  /**
+   * Fraction of a leg's authored clearance that stays rock-free no matter what the drifters do.
+   *
+   * This is the whole difficulty dial, and it is the reason drift is safe to ship. At 0.55 a
+   * pilot holding the middle of the channel is never reachable, and a pilot cutting the corner
+   * — which is what a fast lap looks like — is. Drift makes the SHOULDERS of the course
+   * dangerous without touching the line the course was authored around.
+   */
+  driftInnerFloor?: number;
   /** Metres of clear space kept around the spine so the course is always flyable. */
   corridor: number;
   minRadius: number;
@@ -256,6 +298,11 @@ export class AsteroidField {
   readonly instances: AsteroidInstance[] = [];
   /** The rocks currently drawn. This is the collision set, by construction. */
   readonly activeInstances: AsteroidInstance[] = [];
+
+  /** The subset in motion. A cached list, so the per-frame cost is bounded by it and not by the field. */
+  private readonly drifters: AsteroidInstance[] = [];
+  /** Simulation seconds of drift. Advanced by `advanceDrift`, zeroed by `resetDrift`. */
+  private driftTime = 0;
 
   private readonly batches: AsteroidBatch[] = [];
   private readonly material: THREE.ShaderMaterial;
@@ -351,6 +398,7 @@ export class AsteroidField {
 
       const instance: AsteroidInstance = {
         position: candidate,
+        home: candidate.clone(),
         gameplay: nearestLine <= GAMEPLAY_BAND,
         radius: collisionRadius,
         scale,
@@ -360,6 +408,10 @@ export class AsteroidField {
           new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
           rng.range(0, Math.PI * 2),
         ),
+        driftDir: new THREE.Vector3(),
+        driftAmplitude: 0,
+        driftOmega: 0,
+        driftPhase: 0,
       };
       this.instances.push(instance);
       perVariant[variant].push(instance);
@@ -424,6 +476,7 @@ export class AsteroidField {
 
         const instance: AsteroidInstance = {
           position: candidate,
+          home: candidate.clone(),
           gameplay: true,
           radius: collisionRadius,
           scale,
@@ -433,11 +486,17 @@ export class AsteroidField {
             new THREE.Vector3(rng.signed(), rng.signed(), rng.signed()).normalize(),
             rng.range(0, Math.PI * 2),
           ),
+          driftDir: new THREE.Vector3(),
+          driftAmplitude: 0,
+          driftOmega: 0,
+          driftPhase: 0,
         };
         this.instances.push(instance);
         perVariant[variant].push(instance);
       }
     }
+
+    this.setupDrift(options, rng);
 
     const tint = new THREE.Color();
     for (let v = 0; v < VARIANTS; v++) {
@@ -466,6 +525,177 @@ export class AsteroidField {
   }
 
   /**
+   * Picks the drifters and gives each one a sweep it is PROVEN safe to make.
+   *
+   * Two guarantees, and neither is a comment — both are arithmetic on the segment the rock will
+   * actually travel along, so a rock that cannot satisfy them simply does not drift:
+   *
+   *  1. **Protected volumes are never entered, at any phase.** The spawn bubble and every gate
+   *     aperture are spheres the placement pass already rejected rocks from. A moving rock must
+   *     clear them for its whole sweep, not just at t = 0 — so the entry point of the ray into
+   *     each sphere is solved for exactly and the amplitude is cut short of it. Starting the run
+   *     inside a boulder, or finding a cairn's hole plugged, are the two failures that make the
+   *     game unplayable rather than harder.
+   *  2. **The inner core of the flown channel stays clear.** Drift always points AT the racing
+   *     line, so the closest approach is the far end of the sweep, and that end is held outside
+   *     `driftInnerFloor` of the leg's authored clearance.
+   *
+   * Rocks smaller than 18 m read as gravel at speed and are not worth a per-frame write; rocks
+   * over 90 m arriving on the line is not difficulty, it is a wall.
+   */
+  private setupDrift(options: AsteroidFieldOptions, rng: Rng): void {
+    const segs = options.keepClearSegments ?? [];
+    const zones = options.keepClear ?? [];
+    const wanted = options.driftCount ?? 0;
+    if (segs.length === 0 || wanted <= 0) return;
+
+    const [ampLo, ampHi] = options.driftAmplitude ?? [45, 120];
+    const [periodLo, periodHi] = options.driftPeriod ?? [14, 26];
+    const innerFloor = options.driftInnerFloor ?? 0.55;
+
+    const target = new THREE.Vector3();
+    const toZone = new THREE.Vector3();
+
+    /* Candidates are RANKED by how much room they already have outside the channel wall, and the
+       tightest ones win. Taking them in construction order instead would have handed the whole
+       budget to the spine scatter, which is placed by a rule that has nothing to do with the
+       flown line: those rocks sit kilometres out, would have drifted their full sweep, and would
+       have threatened nobody. A drifting rock the player never meets is pure cost. */
+    const candidates: { inst: AsteroidInstance; dir: THREE.Vector3; gap: number; seg: number }[] = [];
+    for (const inst of this.instances) {
+      if (!inst.gameplay || inst.radius < 18 || inst.radius > 90) continue;
+
+      let bestDistance = Infinity;
+      let bestSeg: { a: THREE.Vector3; b: THREE.Vector3; radius: number } | null = null;
+      for (const seg of segs) {
+        const d = distanceToSegment(inst.home, seg.a, seg.b);
+        if (d < bestDistance) {
+          bestDistance = d;
+          bestSeg = seg;
+        }
+      }
+      if (!bestSeg) continue;
+      // Standing further outside the wall than this, it cannot reach anything a pilot flies.
+      const slack = bestDistance - inst.radius - bestSeg.radius;
+      if (slack > 260) continue;
+
+      closestPointOnSegment(inst.home, bestSeg.a, bestSeg.b, target);
+      const dir = new THREE.Vector3().subVectors(target, inst.home);
+      const gap = dir.length();
+      if (gap < 1e-3) continue;
+      dir.divideScalar(gap);
+      candidates.push({ inst, dir, gap, seg: bestSeg.radius });
+    }
+    candidates.sort((a, b) => (a.gap - a.inst.radius - a.seg) - (b.gap - b.inst.radius - b.seg));
+
+    const probe = new THREE.Vector3();
+    const segLength = segs.map((seg) => seg.a.distanceTo(seg.b));
+    for (const candidate of candidates) {
+      if (this.drifters.length >= wanted) break;
+      const { inst, dir, gap } = candidate;
+
+      let amplitude = Math.min(rng.range(ampLo, ampHi), gap - (candidate.seg * innerFloor + inst.radius));
+
+      // Guarantee 1: solve |home + t*dir - centre| = radius for the near root and stop short.
+      for (const zone of zones) {
+        if (amplitude <= 0) break;
+        const reach = zone.radius + inst.radius;
+        toZone.subVectors(inst.home, zone.center);
+        const b = dir.dot(toZone);
+        const c = toZone.lengthSq() - reach * reach;
+        const disc = b * b - c;
+        if (disc <= 0) continue; // the ray misses the sphere entirely
+        const entry = -b - Math.sqrt(disc);
+        // 25 m rather than a hair: the guarantee has to survive a seed nobody has flown, and a
+        // bound that only just holds on the one world that was measured is not a bound.
+        if (entry > 0) amplitude = Math.min(amplitude, entry - 25);
+      }
+
+      /* Guarantee 2, and the line above is only the FIRST half of it.
+       *
+       * Capping against the nearest segment alone is wrong, and quietly so. `clearChannel` holds
+       * two descriptions of the same route — the gate-to-gate chords a fast pilot cuts to, and
+       * 220 samples of the curve the ship actually follows — and consecutive legs have different
+       * authored clearances. A rock whose nearest segment is a 145 m leg is frequently also close
+       * to a 320 m one, and drifting until it satisfies 0.55 x 145 can put it well inside
+       * 0.55 x 320 of the wider leg's line. The floor has to hold against EVERY segment it can
+       * reach, so the constraint is swept along the actual path rather than evaluated once.
+       *
+       * Twelve samples, not a solve: the distance from a moving point to a segment is not
+       * monotone in t once the perpendicular foot slides off an end cap, so there is no clean
+       * root to take. Load-time cost is bounded and paid once. */
+      const STEPS = 12;
+      let allowed = 0;
+      for (let s = 1; s <= STEPS; s++) {
+        const t = (amplitude * s) / STEPS;
+        probe.copy(inst.home).addScaledVector(dir, t);
+        let ok = true;
+        for (let k = 0; k < segs.length; k++) {
+          const seg = segs[k];
+          const floor = seg.radius * innerFloor + inst.radius;
+          /* Cheap reject. Every point of the segment lies within `segLength` of its own start,
+             so `d(probe, a) - segLength` is a lower bound on the distance to the segment. */
+          const bound = segLength[k] + floor;
+          if (probe.distanceToSquared(seg.a) > bound * bound) continue;
+          if (distanceToSegment(probe, seg.a, seg.b) < floor) { ok = false; break; }
+        }
+        if (!ok) break;
+        allowed = t;
+      }
+      amplitude = allowed;
+
+      // Below this the sweep is smaller than the rock and reads as jitter, not as an approach.
+      if (amplitude < 24) continue;
+
+      inst.driftDir.copy(dir);
+      inst.driftAmplitude = amplitude;
+      inst.driftOmega = (Math.PI * 2) / rng.range(periodLo, periodHi);
+      inst.driftPhase = rng.range(0, Math.PI * 2);
+      this.drifters.push(inst);
+    }
+    this.resetDrift();
+  }
+
+  /**
+   * Advances the drift sweep. Called from the SIMULATION, never from the render pass.
+   *
+   * That distinction is load-bearing three times over. Pause has to freeze the field or the
+   * pause menu is a place where rocks creep up on you; the screenshot suite's frozen captures
+   * have to be stable; and `M3.hazard-invariance` compares one clearance profile against
+   * another across four quality levels, which is only a statement about quality if the world
+   * has not moved in between.
+   *
+   * Position is a pure function of `driftTime` — `home + dir * amp * (1 - cos)/2`, never an
+   * accumulation. Two harness processes stepping the same sequence therefore place every rock
+   * identically, which an integrator would not: `setDriven` zeroes the clock precisely because
+   * free rAF frames run for an unknown length of time before a driver takes over, and anything
+   * that had been integrating over those frames would carry the difference forever.
+   */
+  advanceDrift(dt: number): void {
+    if (this.drifters.length === 0) return;
+    this.driftTime += dt;
+    const t = this.driftTime;
+    for (const inst of this.drifters) {
+      const sweep = 0.5 * (1 - Math.cos(inst.driftOmega * t + inst.driftPhase));
+      inst.position.copy(inst.home).addScaledVector(inst.driftDir, inst.driftAmplitude * sweep);
+    }
+  }
+
+  /** Returns every drifter to the phase-0 pose, so a restart re-flies the identical world. */
+  resetDrift(): void {
+    this.driftTime = 0;
+    for (const inst of this.drifters) {
+      const sweep = 0.5 * (1 - Math.cos(inst.driftPhase));
+      inst.position.copy(inst.home).addScaledVector(inst.driftDir, inst.driftAmplitude * sweep);
+    }
+  }
+
+  /** How many rocks are actually in motion. Reported through the harness, not assumed. */
+  get driftingCount(): number {
+    return this.drifters.length;
+  }
+
+  /**
    * Tumbling is updated only for rocks near the player. At 40 km the rotation of a 30 m rock
    * is invisible, and skipping them keeps the per-frame matrix writes bounded.
    */
@@ -479,7 +709,13 @@ export class AsteroidField {
       let dirty = false;
       for (let i = 0; i < batch.instances.length; i++) {
         const inst = batch.instances[i];
-        if (inst.position.distanceToSquared(cameraPosition) > spinRadiusSq) continue;
+        /* A drifter's matrix is rewritten wherever it is. Skipping it past the spin radius
+           would leave the drawn transform frozen at wherever it was when it left range, so it
+           would jump the moment the player closed again — and its COLLIDER would be at the
+           position it jumped from, which is an invisible wall. Bounded by construction: the
+           drifter list is capped, not proportional to the field. */
+        if (inst.driftAmplitude === 0
+          && inst.position.distanceToSquared(cameraPosition) > spinRadiusSq) continue;
         spin.setFromAxisAngle(inst.spinAxis, inst.spinRate * dt);
         inst.quaternion.multiply(spin).normalize();
         this.tmpMatrix.compose(inst.position, inst.quaternion, this.tmpScale.setScalar(inst.scale));

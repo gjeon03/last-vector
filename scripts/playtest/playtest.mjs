@@ -320,21 +320,48 @@ async function runPlaytest({ report, session, options }) {
       + 'population changes, and at every quality the collider\'s own recorded list is identical '
       + 'to the sampled one.',
   }, async () => {
-    /* One simulated frame guarantees resolveCollisions has recorded a list — it runs
-       unconditionally in simulate(), attract mode included. */
+    const QUALITIES = ['low', 'medium', 'high', 'ultra'];
+    /* TWO ROUNDS, and the split is not tidiness — it is what keeps this check meaningful now
+       that part of the field MOVES.
+     *
+     * The property is "quality does not change the course". Comparing four clearance profiles
+     * only says that if all four describe the same instant, and each `step` needed to make the
+     * collider record a list also advances the drift sweep by a frame or two. At the sweep
+     * speeds involved that is tenths of a metre — which is well inside the 0.1 m resolution
+     * `hazard()` reports at, so the profiles would have differed and the failure would have
+     * read as "quality changed the course" when the truth was "time passed".
+     *
+     * So: round one steps at every quality and collects the collider-identity answer, which is
+     * the assertion that needs a simulated frame. Round two freezes the simulation and samples
+     * all four profiles at ONE world time, which is the assertion that needs the world to hold
+     * still. Neither is weakened; both get the conditions they actually require.
+     *
+     * `setPaused` does not touch the settings path — `applyQualityPopulations` runs from the
+     * settings subscription, not from the frame loop — so the drawn population still changes
+     * under a frozen simulation, which is exactly the state this comparison wants. */
     await callHarness(page, 'step', [2]);
-    const byQuality = {};
-    for (const quality of ['low', 'medium', 'high', 'ultra']) {
+    const identity = {};
+    for (const quality of QUALITIES) {
       await callHarness(page, 'setSettings', [{ quality }]);
       await callHarness(page, 'step', [2]);
+      const live = await callHarness(page, 'hazard', [200]);
+      identity[quality] = live.colliderSharesDrawnList;
+      verify(live.colliderSharesDrawnList === true,
+        `At quality "${quality}" the collider is not iterating the drawn gameplay list — the `
+        + 'historical full-field/drawn-subset split is back, or nothing has simulated a frame.',
+        live);
+    }
+
+    await callHarness(page, 'setPaused', [true]);
+    const byQuality = {};
+    for (const quality of QUALITIES) {
+      await callHarness(page, 'setSettings', [{ quality }]);
       // Sample count is pinned: hazard() is sample-count sensitive, and three reviewers quoting
       // its digits without stating theirs produced three different answers for one property.
       byQuality[quality] = await callHarness(page, 'hazard', [900]);
-      verify(byQuality[quality].colliderSharesDrawnList === true,
-        `At quality "${quality}" the collider is not iterating the drawn gameplay list — the `
-        + 'historical full-field/drawn-subset split is back, or nothing has simulated a frame.',
-        byQuality[quality]);
     }
+    await callHarness(page, 'setPaused', [false]);
+
     const profile = (h) => `${h.minClearance}/${h.p05Clearance}/${h.medianClearance}/${h.tightFraction}`;
     const first = profile(byQuality.low);
     for (const [quality, h] of Object.entries(byQuality)) {
@@ -342,9 +369,70 @@ async function runPlaytest({ report, session, options }) {
     }
     const gameplay = new Set(Object.values(byQuality).map((h) => h.gameplayRocks));
     verify(gameplay.size === 1, 'Gameplay rock count changes with quality.', { byQuality });
+    const drifting = new Set(Object.values(byQuality).map((h) => h.driftingRocks));
+    verify(drifting.size === 1, 'Drifting rock count changes with quality — drift is gameplay rock and must never be trimmed.', { byQuality });
     const drawn = Object.values(byQuality).map((h) => h.activeRocks);
     verify(drawn[0] < drawn[drawn.length - 1], 'Quality no longer changes the drawn population at all.', { byQuality });
-    return { samples: 900, byQuality };
+    return { samples: 900, identity, byQuality };
+  });
+
+  /* Drift was added to make the shoulders of the course dangerous. It is also the first thing in
+   * this project that can move a collider at runtime, which puts two build-time guarantees at
+   * risk of quietly becoming false halfway through a run: the spawn bubble and the gate
+   * apertures were cleared ONCE, against positions that no longer hold.
+   *
+   * Both halves below are deliberately of the kind that fails when the subject is DELETED, not
+   * only when it misbehaves — `docs/GOAL.md`'s rule, learned from a screenshot suite that passed
+   * ten stills of empty sky. Stub `AsteroidField.advanceDrift` to a no-op and the motion evidence
+   * collapses to a single value and this reds; set `driftCount` to 0 and the population assertion
+   * reds. A check that only watches for a violation would have gone green on a deleted feature. */
+  await report.check({
+    id: 'M3.drift-respects-protected-volumes',
+    name: 'Drifting rock never enters the spawn bubble or a gate aperture',
+    criteria: [criterion('M3', 'partial', 'Covers the runtime half of the debris guarantee — that a moving field keeps the volumes the placement pass cleared — across a full sweep period.')],
+    assertion:
+      'Across 33 s of simulation, which exceeds the longest authored sweep, rock is in motion at '
+      + 'every sample, the measured line clearance actually varies by at least 15 m (so a stalled '
+      + 'field cannot pass), no rock ever comes within the spawn bubble or any gate aperture, and '
+      + 'the sampled racing line is never blocked.',
+  }, async () => {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+    await callHarness(page, 'setDriven', [true]);
+
+    const samples = [];
+    for (let i = 0; i < 66; i += 1) {
+      await callHarness(page, 'step', [30, 1 / 60]);   // 0.5 s per sample, 33 s total
+      samples.push(await callHarness(page, 'hazard', [200]));
+    }
+    await callHarness(page, 'setDriven', [false]);
+
+    const drifting = samples.map((s) => s.driftingRocks);
+    const clearances = samples.map((s) => s.protectedVolumeClearance);
+    const lineClearances = samples.map((s) => s.minClearance);
+    const worstProtected = Math.min(...clearances);
+    const spread = Math.max(...lineClearances) - Math.min(...lineClearances);
+    const evidence = {
+      samples: samples.length,
+      simulatedSeconds: 33,
+      hazardSamples: 200,
+      driftingRocks: drifting[0],
+      worstProtectedVolumeClearance: +worstProtected.toFixed(1),
+      lineClearanceRange: [+Math.min(...lineClearances).toFixed(1), +Math.max(...lineClearances).toFixed(1)],
+      lineClearanceSpread: +spread.toFixed(1),
+    };
+
+    verify(drifting.every((n) => n > 0), 'No rock is drifting — the feature is absent, not merely quiet.', evidence);
+    verify(new Set(drifting).size === 1, 'The drifting population changed mid-run.', evidence);
+    verify(spread >= 15,
+      `Line clearance moved only ${evidence.lineClearanceSpread} m over ${evidence.simulatedSeconds} s; `
+      + 'the field is not actually in motion.', evidence);
+    verify(worstProtected > 0,
+      `A rock came ${(-worstProtected).toFixed(1)} m INSIDE a protected volume — the spawn point or a `
+      + 'gate aperture is no longer guaranteed clear once the field moves.', evidence);
+    verify(Math.min(...lineClearances) > 0,
+      'A rock reached the sampled racing line itself; the authored course is no longer flyable.', evidence);
+    return evidence;
   });
 
   await report.check({

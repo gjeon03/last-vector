@@ -113,16 +113,57 @@ export const FLIGHT: Record<
   number
 > = {
   /** Metres per second. */
-  cruiseSpeed: 420,
-  boostSpeed: 980,
-  maxSpeed: 1080,
+  cruiseSpeed: 500,
+  boostSpeed: 1180,
+  maxSpeed: 1300,
   /** Seconds to reach cruise from rest at full throttle. */
   spoolTime: 2.4,
-  boostCapacity: 100,
-  boostDrain: 34,
-  boostRegen: 17,
-  boostRegenDelay: 0.9,
+  /**
+   * The overdrive reserve, in arbitrary units — `boostDrain` and `boostRegen` are per second,
+   * so the only numbers that mean anything are the two ratios below.
+   *
+   * 180 / 30 = **6.0 s of drive from a full tank**, against 2.9 s before. The old reserve was
+   * shorter than a single long leg: 'the long run' is 1.4x the nominal 6.2 km spacing and
+   * exists specifically so the player boosts down it, and at 2.9 s the burst ended a third of
+   * the way along. A burst now outlasts the straight that was authored for it, which is the
+   * whole reason the reserve exists.
+   *
+   * 22/s refills the full 180 in 8.2 s, so the DUTY CYCLE improves even though the absolute
+   * refill is longer: 6.0 s of drive per 8.2 s of wait, against 2.9 per 5.9. The re-arm level
+   * in `Ship` is a FRACTION of capacity, so it tracks this automatically — 45% of 180 is 2.7 s
+   * of usable drive, which keeps a re-engage a decision rather than a twitch.
+   */
+  boostCapacity: 180,
+  boostDrain: 30,
+  boostRegen: 22,
+  boostRegenDelay: 0.75,
 };
+
+/**
+ * Distances that are really DURATIONS, expressed as seconds of cruise travel.
+ *
+ * Every one of these was a bare metre value fitted against a 420 m/s cruise, and every one is
+ * a threshold the player experiences as time-to-contact rather than as distance: how long the
+ * proximity warning gives you, how long the gate tick escalates for, how hard a given closing
+ * geometry hits. Raising cruise to 500 and leaving them in metres would have quietly shortened
+ * all three by 16% and made every collision 19% more severe for the same flown line — a
+ * difficulty change nobody asked for, wearing a speed change's clothes.
+ *
+ * Deriving them means the coupling is enforced rather than remembered. The seconds are the
+ * design; the metres are output.
+ */
+export const FLIGHT_RANGE = {
+  /** 0.62 s — the proximity warning band, and the collider's broad-phase reach. */
+  proximity: FLIGHT.cruiseSpeed * 0.62,
+  /** 2.14 s — where the gate's approach tick starts, and the range its urgency is scaled over. */
+  gateTick: FLIGHT.cruiseSpeed * 2.14,
+  /** 6.19 s — divisor setting the tick's repeat interval at the far edge of that band. */
+  gateTickInterval: FLIGHT.cruiseSpeed * 6.19,
+  /** 0.52 s of lateral travel is full slip, i.e. the vector is completely off the nose. */
+  fullSlip: FLIGHT.cruiseSpeed * 0.524,
+  /** 1.24 s — closing speed that scores a maximum-severity hull strike. */
+  fatalClosing: FLIGHT.cruiseSpeed * 1.24,
+} as const;
 
 /**
  * Maximum pixels the renderer will allocate for the scene, before the dynamic scaler.

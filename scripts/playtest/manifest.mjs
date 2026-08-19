@@ -54,6 +54,7 @@ const EXPECTED_CHECKS = {
     'M4.destination-finish',
     'UX.screen-flow',
     'M3.hazard-invariance',
+    'M3.drift-respects-protected-volumes',
     'GAME.renderscale-intent-persists',
     'FEEL.boost-latch',
     'M5.runtime-errors',

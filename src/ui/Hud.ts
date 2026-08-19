@@ -11,7 +11,7 @@
  */
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
-import { UI } from '../core/art.ts';
+import { FLIGHT, UI } from '../core/art.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -457,7 +457,11 @@ export class Hud {
     speed.append(speedRow, this.nGload);
 
     const bars = el('div', 'lv-bars');
-    this.nBoostRow = this.buildBar('BOOST', 'boost');
+    this.nBoostRow = this.buildBar(
+      'BOOST',
+      'boost',
+      Math.round(FLIGHT.boostCapacity / FLIGHT.boostDrain),
+    );
     this.nBoostFill = this.nBoostRow.querySelector('.lv-bar-fill') as HTMLElement;
     this.nBoostGhost = this.nBoostRow.querySelector('.lv-bar-ghost') as HTMLElement;
     this.nHullRow = this.buildBar('HULL', 'hull');
@@ -520,10 +524,24 @@ export class Hud {
     this.setShowFps(false);
   }
 
-  private buildBar(label: string, kind: string): HTMLElement {
+  private buildBar(label: string, kind: string, segments = 0): HTMLElement {
     const row = el('div', `lv-bar lv-bar--${kind}`);
     const track = el('div', 'lv-bar-track');
     track.append(el('div', 'lv-bar-ghost'), el('div', 'lv-bar-fill'));
+    /* Interior divisions, one per second of drive. A bare 0..1 fill communicates a FRACTION,
+       and a fraction of an unstated capacity is not information a pilot can act on: the reserve
+       is worth six seconds of overdrive and the only question ever asked of it is "have I got
+       enough left for this straight". Ticks turn the bar into a clock. Drawn from the flight
+       constants rather than hard-coded, so a retune cannot leave the gauge lying. */
+    if (segments > 1) {
+      const ticks = el('div', 'lv-bar-ticks');
+      for (let i = 1; i < segments; i++) {
+        const tick = el('i', 'lv-bar-tick');
+        tick.style.setProperty('--i', String(i / segments));
+        ticks.appendChild(tick);
+      }
+      track.appendChild(ticks);
+    }
     row.append(el('span', 'lv-bar-k', label), track);
     return row;
   }

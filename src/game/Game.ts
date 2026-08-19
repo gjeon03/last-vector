@@ -24,7 +24,7 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
-import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, SCALE } from '../core/art.ts';
+import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_RANGE, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
 import type {
@@ -202,6 +202,8 @@ export class Game {
   private resizeSettleTimer: number | null = null;
   /** The exact list the last collision pass iterated. See resolveCollisions. */
   private lastCollisionList: AsteroidInstance[] | null = null;
+  /** Spheres no rock may enter, at rest or in drift: the spawn bubble and every gate aperture. */
+  private readonly protectedVolumes: { center: THREE.Vector3; radius: number }[];
   /** Long-frame threshold in ms, refresh-relative; starts lenient until a clean window lands. */
   private adaptLongMs = 25.7;
   private adaptWinMinMs = Infinity;
@@ -292,6 +294,21 @@ export class Game {
     this.course = new Course(seed, this.lighting);
     this.mainScene.add(this.course.object);
 
+    /* Kept as a field rather than an inline literal because the guarantee has to be MEASURABLE
+       after the fact, not only enforced at placement time. Rocks move now, and a report that
+       says "the aperture is clear" has to name the same spheres the placement pass used or it
+       is checking a different claim than the one being made. */
+    this.protectedVolumes = [
+      // The spawn point, generously: the very first thing a player sees must not be a
+      // collision. And every aperture, so threading a cairn is never blocked by a boulder
+      // that happens to have landed in the hole.
+      { center: this.course.startPosition.clone(), radius: 1100 },
+      ...this.course.gates.map((gate) => ({
+        center: gate.position.clone(),
+        radius: gate.radius * 2.4,
+      })),
+    ];
+
     this.terminus = new Terminus({
       position: this.course.terminusPosition,
       normal: this.course.terminusNormal,
@@ -319,16 +336,15 @@ export class Game {
       // The flown volume: the curved spine the ship follows AND the chords a fast pilot cuts
       // to, each at its own leg's clearance. Built by Course, which is what knows the legs.
       keepClearSegments: this.course.clearChannel,
-      keepClear: [
-        // The spawn point, generously: the very first thing a player sees must not be a
-        // collision. And every aperture, so threading a cairn is never blocked by a boulder
-        // that happens to have landed in the hole.
-        { center: this.course.startPosition.clone(), radius: 1100 },
-        ...this.course.gates.map((gate) => ({
-          center: gate.position.clone(),
-          radius: gate.radius * 2.4,
-        })),
-      ],
+      keepClear: this.protectedVolumes,
+      // A hundred rocks on the shoulders of the course sweep in toward the flown line and back
+      // out again. Everything the placement pass guarantees still holds at every phase of that
+      // sweep — see AsteroidField.setupDrift — so the danger lands exactly where a fast pilot
+      // cuts the corner and nowhere near the spawn or a cairn's aperture.
+      driftCount: 110,
+      driftAmplitude: [45, 120],
+      driftPeriod: [14, 26],
+      driftInnerFloor: 0.55,
       seed: seed ^ 0x2f19,
     });
     this.mainScene.add(this.asteroids.object);
@@ -575,6 +591,9 @@ export class Game {
     this.paused = false;
     void this.audio.unlock();
     this.course.reset();
+    // Every run meets the same rocks in the same places at the same moments. A time trial whose
+    // hazards depend on how long the player sat on the title screen is not a time trial.
+    this.asteroids.resetDrift();
     this.gateHistory.length = 0;
     this.logLines.length = 0;
     this.resetShipToStart();
@@ -679,6 +698,7 @@ export class Game {
     this.countdown = null;
     this.overlay.setCountdown(null);
     this.course.reset();
+    this.asteroids.resetDrift();
     this.resetShipToStart();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
@@ -836,6 +856,11 @@ export class Game {
   }
 
   private simulate(dt: number): void {
+    /* Rocks move first, then the ship, then contacts are resolved against where both ended up.
+       Advancing the field inside `updateVisuals` instead would have run it while paused and
+       during frozen screenshot captures, and would have put the drawn position one resolution
+       pass ahead of the colliding one. */
+    this.asteroids.advanceDrift(dt);
     const command = this.resolveCommand(dt);
 
     if (this.phase === 'countdown') {
@@ -954,7 +979,7 @@ export class Game {
       const dy = rock.position.y - this.ship.position.y;
       const dz = rock.position.z - this.ship.position.z;
       const distSq = dx * dx + dy * dy + dz * dz;
-      const reach = rock.radius + shipRadius + 260;
+      const reach = rock.radius + shipRadius + FLIGHT_RANGE.proximity;
       if (distSq > reach * reach) continue;
 
       const dist = Math.sqrt(distSq);
@@ -976,7 +1001,10 @@ export class Game {
         }
       }
     }
-    this.proximity = nearest === Infinity ? 0 : clamp01(1 - nearest / 260);
+    /* The same range the broad phase above reaches with, by construction. If the proximity band
+       were the wider of the two, every rock outside the reach would report full proximity
+       because `nearest` never left Infinity for it. */
+    this.proximity = nearest === Infinity ? 0 : clamp01(1 - nearest / FLIGHT_RANGE.proximity);
   }
 
   private updateProximity(dt: number): void {
@@ -1383,7 +1411,10 @@ export class Game {
     const gate = this.course.nextGate;
     if (gate && this.phase === 'flying') {
       const distance = this.ship.position.distanceTo(gate.position);
-      const band = distance < 900 ? Math.max(0.12, distance / 2600) : 0;
+      const band =
+        distance < FLIGHT_RANGE.gateTick
+          ? Math.max(0.12, distance / FLIGHT_RANGE.gateTickInterval)
+          : 0;
       if (band > 0) {
         // Seconds, not frames. `band` is in seconds, and this ran once per RENDERED frame, so the
     // repeat interval was band * 60/fps: at 120 Hz the first tick at 900 m already fires at
@@ -1395,7 +1426,7 @@ export class Game {
     this.gateTickTimer -= dt;
         if (this.gateTickTimer <= 0) {
           this.gateTickTimer = band;
-          this.audio.play('gateNear', clamp01(1 - distance / 900));
+          this.audio.play('gateNear', clamp01(1 - distance / FLIGHT_RANGE.gateTick));
         }
       } else {
         this.gateTickTimer = 0;
@@ -1718,6 +1749,11 @@ export class Game {
       // processes to render the same frame.
       this.clock = 0;
       this.grade.time = 0;
+      /* Same argument, same fix, different subject: the drift sweep is a function of its own
+         accumulated simulation time, and the free rAF frames before a driver takes over advance
+         it by an unknown amount. Zeroing the shader clock without zeroing this would leave the
+         rocks in a different place in every process that ran the identical script. */
+      this.asteroids.resetDrift();
     }
   }
 
@@ -1883,6 +1919,17 @@ export class Game {
 
     const sorted = [...clearances].sort((a, b) => a - b);
     const at = (f: number): number => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
+
+    // Re-measured against live positions every call, over the SAME spheres the placement pass
+    // was given. A drifting field makes this a running guarantee rather than a build-time one.
+    let protectedClearance = Infinity;
+    for (const zone of this.protectedVolumes) {
+      for (const rock of rocks) {
+        const room = point.copy(rock.position).distanceTo(zone.center) - rock.radius - zone.radius;
+        if (room < protectedClearance) protectedClearance = room;
+      }
+    }
+
     return {
       activeRocks: rocks.length,
       gameplayRocks: this.asteroids.instances.filter((r) => r.gameplay).length,
@@ -1893,6 +1940,9 @@ export class Game {
       tightFraction: +(clearances.filter((c) => c < 200).length / clearances.length).toFixed(3),
       colliderSharesDrawnList:
         this.lastCollisionList === null ? null : this.lastCollisionList === this.asteroids.activeInstances,
+      driftingRocks: this.asteroids.driftingCount,
+      protectedVolumeClearance:
+        protectedClearance === Infinity ? Infinity : +protectedClearance.toFixed(1),
     };
   }
 

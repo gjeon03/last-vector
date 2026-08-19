@@ -467,6 +467,30 @@
   transform: scaleX(0);
 }
 
+/* The overdrive reserve is the primary resource in flight and it was reading at the same
+   weight as the hull strip, which only ever moves when something has already gone wrong.
+   Given its own height and width, plus per-second divisions, so a glance answers "how much
+   drive is left" in seconds rather than in percent. */
+.lv-bar--boost .lv-bar-track {
+  width: clamp(120px, 15.4vmin, 268px);
+  height: clamp(7px, 0.86vmin, 12px);
+}
+
+.lv-bar-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.lv-bar-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--i) * 100%);
+  width: 1px;
+  background: rgba(6, 12, 22, 0.78);
+}
+
 .lv-bar--boost .lv-bar-fill {
   background: linear-gradient(to right, #4bb7ff, var(--c-primary));
   box-shadow: 0 0 10px rgba(127, 232, 255, 0.5);

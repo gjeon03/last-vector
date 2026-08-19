@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { FlightCommand } from '../core/Input.ts';
-import { FLIGHT } from '../core/art.ts';
+import { FLIGHT, FLIGHT_RANGE } from '../core/art.ts';
 import { clamp, clamp01, damp } from '../core/mathx.ts';
 
 /**
@@ -147,7 +147,9 @@ export class Ship {
     if (this.speed < 1) return 0;
     this.getForward(this.scratch);
     const along = this.velocity.dot(this.scratch);
-    return clamp01(Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) / 220);
+    return clamp01(
+      Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) / FLIGHT_RANGE.fullSlip,
+    );
   }
 
   get gForce(): number {
@@ -318,7 +320,9 @@ export class Ship {
 
   applyImpact(normal: THREE.Vector3, penetration: number): number {
     const closing = Math.max(0, -this.velocity.dot(normal));
-    const severity = clamp01(closing / 520);
+    // Scaled to cruise, not a bare metre-per-second constant: severity is about the geometry of
+    // the contact, and the same glancing angle at a faster cruise must stay the same glance.
+    const severity = clamp01(closing / FLIGHT_RANGE.fatalClosing);
 
     // Slide along the surface rather than stopping dead: glancing a rock should cost time and
     // control, not end the run.

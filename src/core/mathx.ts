@@ -58,3 +58,26 @@ export const distanceToSegment = (point: THREE.Vector3, a: THREE.Vector3, b: THR
   segScratchB.copy(a).addScaledVector(segScratch, t);
   return point.distanceTo(segScratchB);
 };
+
+const closestScratch = new THREE.Vector3();
+
+/**
+ * The point on segment a-b nearest to `point`, written into `out`.
+ *
+ * Its own scratch, deliberately. `distanceToSegment` computes the same point internally but
+ * into a module-level temporary that the next call overwrites, and sharing that temporary
+ * between a query and a result is the aliasing failure `clearVantageOfObstacles` was already
+ * caught by once — there it put a camera 4.5 Mm off aim.
+ */
+export const closestPointOnSegment = (
+  point: THREE.Vector3,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  out: THREE.Vector3,
+): THREE.Vector3 => {
+  closestScratch.subVectors(b, a);
+  const lenSq = closestScratch.lengthSq();
+  if (lenSq < 1e-6) return out.copy(a);
+  const t = clamp01(out.subVectors(point, a).dot(closestScratch) / lenSq);
+  return out.copy(a).addScaledVector(closestScratch, t);
+};
