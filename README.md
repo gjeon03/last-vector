@@ -1,13 +1,17 @@
 # LAST VECTOR
 
-Fly the last vector home.
+마지막 벡터를 따라 집으로.
 
-A browser-native spacecraft flight run through **the Cairn Drift** — a debris shelf orbiting a
-dying amber star, strung with monolithic navigation markers left by whoever charted it first.
-Thread the nine cairns and make **Vesper Terminus** before the drift closes.
+**▶ 플레이: https://gjeon03.github.io/last-vector/**
 
-Runs entirely in the browser. No server, no network at runtime, no binary assets — every rock,
-star, nebula, hull panel and sound in the build is generated from a seed at load time.
+죽어가는 호박색 별을 도는 잔해 대륙 **케언 드리프트(the Cairn Drift)**를 가로지르는 브라우저
+우주선 비행. 이곳을 처음 측량한 누군가가 남긴 거대한 항법 표지들이 항로에 늘어서 있다. 아홉 개의
+케언을 꿰고, 드리프트가 닫히기 전에 **베스퍼 터미너스(Vesper Terminus)**에 닿아야 한다.
+
+전부 브라우저 안에서 돈다. 서버도, 런타임 네트워크도, 바이너리 에셋도 없다. 빌드에 들어 있는 모든
+바위와 별과 성운과 선체 패널과 소리는 로드 시점에 시드 하나에서 생성된다.
+
+## 로컬에서 실행
 
 ```bash
 pnpm install
@@ -15,70 +19,77 @@ pnpm dev            # http://127.0.0.1:5173
 ```
 
 ```bash
-pnpm build          # typecheck + static build into dist/
-pnpm serve:dist     # http://127.0.0.1:4173 — a dumb static file server, no rewrites
+pnpm build          # 타입체크 + dist/ 정적 빌드
+pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정적 서버
 ```
 
-`dist/` is path-relative and self-contained: drop it on any static host.
+`dist/`는 경로가 상대적이고 자기완결적이다. 아무 정적 호스트에나 올리면 그대로 돈다.
 
-## Controls
+## 배포
+
+`main`에 푸시하면 `.github/workflows/deploy.yml`이 GitHub Pages로 배포한다. 워크플로는 `pnpm build`를
+그대로 실행하므로 타입 오류가 있으면 배포가 실패한다.
+
+## 조작
 
 | | |
 |---|---|
-| **Mouse** | Steer. The pointer drives a virtual stick that self-centres, so holding a deflection holds the turn. |
-| **W / S** | Throttle up / down |
-| **A / D** | Roll |
-| **Shift** *or* left mouse | Boost — drains the reserve, refills after a beat |
-| **Space** *or* right mouse | Brake and drift: kills the assist so the ship slides |
-| **Q / E** | Strafe left / right |
-| **R / F** | Strafe up / down |
-| **Arrow keys** | Pitch and yaw without the mouse |
-| **Esc** | Pause |
-| **N** | Restart the run |
+| **마우스** | 조향. 포인터가 스스로 중앙으로 돌아오는 가상 스틱을 움직이므로, 편향을 유지하면 선회가 유지된다. |
+| **W / S** | 추력 증가 / 감소 |
+| **A / D** | 롤 |
+| **Shift** *또는* 마우스 좌클릭 | 부스트 — 예비 출력을 소모하고 한 박자 뒤 다시 찬다 |
+| **Space** *또는* 마우스 우클릭 | 제동과 드리프트: 보정을 꺼서 배를 미끄러뜨린다 |
+| **Q / E** | 좌 / 우 스트레이프 |
+| **R / F** | 상 / 하 스트레이프 |
+| **방향키** | 마우스 없이 피치와 요 |
+| **Esc** | 일시정지 |
+| **N** | 주행 재시작 |
 
-A gamepad works if one is connected: left stick steers, right stick rolls, triggers throttle.
+게임패드가 연결되어 있으면 동작한다. 왼쪽 스틱이 조향, 오른쪽 스틱이 롤, 트리거가 추력이다.
 
-## How it is built
+## 구조
 
 ```
-src/core/       contracts between subsystems, input, settings, seeded rng, art direction
-src/render/     the renderer: HDR post stack, procedural sky, rocks, gates, hull, station
-src/game/       flight model, chase camera, course, orchestration, automation surface
-src/audio/      procedural WebAudio engine — synthesis only, no samples
-src/ui/         HUD and screens: DOM for text, one canvas for the vector instruments
+src/core/       서브시스템 간 계약, 입력, 설정, 시드 기반 난수, 아트 디렉션
+src/render/     렌더러: HDR 포스트 스택, 절차적 하늘, 바위, 게이트, 선체, 스테이션
+src/game/       비행 모델, 체이스 카메라, 항로, 오케스트레이션, 자동화 표면
+src/audio/      절차적 WebAudio 엔진 — 합성만, 샘플 없음
+src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하나
 ```
 
-A few decisions worth knowing about before changing anything:
+무언가를 바꾸기 전에 알아둘 만한 결정 몇 가지:
 
-- **Two scenes, two cameras.** The nebula, the stars, Achra and Vesper live in a scene drawn by
-  a camera that only ever *rotates*, so they sit at effectively infinite distance. Depth is then
-  cleared and everything reachable is drawn with a 90 km range. That is what lets a gas giant and
-  a hull panel share a frame without z-fighting.
-- **The sky is baked, not raymarched.** A domain-warped, ridged, star-lit nebula is rendered once
-  into a cube map at boot. It buys a shader far too expensive to run per frame for the price of
-  one texture lookup, with no seams and no pole distortion.
-- **Adaptive resolution.** The internal buffer scales to hold a 16.7 ms frame while the canvas
-  stays at native size. The quality setting is a ceiling, not a promise — see `PerfSample.renderScale`.
-- **The flight model splits velocity.** Thrust drives the component along the nose; the lateral
-  component decays on its own clock. Turning converts forward velocity into lateral velocity, so
-  the ship visibly arcs through a turn before the vector catches up. The assist level is nothing
-  but that decay time constant.
+- **씬 둘, 카메라 둘.** 성운과 별, 아크라와 베스퍼는 오직 *회전*만 하는 카메라가 그리는 씬에 산다.
+  그래서 사실상 무한 거리에 놓인다. 그다음 깊이를 비우고, 닿을 수 있는 모든 것을 90 km 사거리로
+  그린다. 가스 행성과 선체 패널이 z-파이팅 없이 한 프레임을 공유할 수 있는 이유다.
+- **하늘은 레이마칭이 아니라 굽는다.** 도메인 워프된 리지드 성운을 별빛과 함께 부팅 시 큐브맵에 한 번
+  렌더한다. 프레임마다 돌리기엔 너무 비싼 셰이더를 텍스처 조회 한 번 값에 사는 셈이고, 이음매도 극
+  왜곡도 없다.
+- **적응형 해상도.** 캔버스는 네이티브 크기를 유지한 채 내부 버퍼가 16.7 ms 프레임을 지키도록
+  스케일한다. 품질 설정은 약속이 아니라 상한이다 — `PerfSample.renderScale` 참고.
+- **비행 모델은 속도를 쪼갠다.** 추력은 기수 방향 성분을 밀고, 측면 성분은 자기 시계로 감쇠한다.
+  선회는 전진 속도를 측면 속도로 바꾸므로, 벡터가 따라잡기 전에 배가 눈에 보이게 호를 그린다. 보정
+  강도란 그 감쇠 시상수 하나에 지나지 않는다.
 
-## Automation
+## 자동화
 
-The page exposes `window.__LV` (see `src/core/harness.ts`) so playthroughs, performance probes
-and screenshot matrices can be driven headlessly without synthetic input events.
+페이지가 `window.__LV`를 노출한다(`src/core/harness.ts` 참고). 덕분에 합성 입력 이벤트 없이도 주행과
+성능 측정, 스크린샷 매트릭스를 헤드리스로 구동할 수 있다.
 
 ```bash
-pnpm playtest         # full unattended playthrough + assertions
-pnpm playtest:perf    # 1080p / 1440p frame-time probe
-pnpm playtest:shots   # deterministic screenshot matrix
+pnpm playtest              # 무인 전체 주행 + 어서션
+pnpm playtest:perf         # 1080p / 1440p 프레임타임 측정
+pnpm playtest:screenshots  # 결정적 스크린샷 매트릭스
+pnpm playtest:all          # 위 셋을 모두
 ```
 
-The API is installed after an asynchronous boot, not at `load`. Wait for `window.__LV` or for
-`html[data-lv-ready="1"]` before driving it. Pin a world with `?seed=<uint32>`.
+이 스크립트들은 **빌드하지 않고** `dist/`를 정적 서빙한다. 현재 작업 트리를 검증하려면 반드시
+`pnpm build`를 먼저 돌려야 한다. 그러지 않으면 이전 산출물을 측정하게 된다.
 
-## Credits and originality
+API는 `load` 시점이 아니라 비동기 부팅이 끝난 뒤 설치된다. 구동하기 전에 `window.__LV` 또는
+`html[data-lv-ready="1"]`를 기다려야 한다. `?seed=<uint32>`로 월드를 고정할 수 있다.
 
-Original art direction, fiction, ship design, course layout, interface and audio. The quality
-target was the class of modern space-flight games; nothing in here is copied from one.
+## 크레딧과 독창성
+
+아트 디렉션, 픽션, 함선 디자인, 항로 배치, 인터페이스, 오디오 모두 오리지널이다. 품질 목표는 현대
+우주 비행 게임의 수준이었고, 여기 있는 어떤 것도 그중 하나에서 베껴오지 않았다.
