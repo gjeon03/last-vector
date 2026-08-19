@@ -78,9 +78,21 @@ const PLANET_FRAG = /* glsl */ `
 
     vec3 col = base * (uShadow * 0.16 + uLit * light * 0.92);
 
-    // Forward scattering along the terminator: the classic warm rim on a lit gas giant.
-    float terminator = pow(1.0 - abs(ndl), 6.0) * smoothstep(-0.35, 0.25, ndl);
-    col += vec3(1.0, 0.72, 0.52) * terminator * 0.2;
+    /* Forward scattering along the terminator: the classic warm rim on a lit gas giant.
+     *
+     * At pow 6.0 and 0.2 this was not a rim, it was a BAR. Two separate faults compounding:
+     * the exponent reaches half height at |ndl| = 0.109, so the band covers about 6% of the
+     * disc — narrow enough that the eye reads its sides as an edge rather than a gradient — and
+     * the additive 0.2 lands on a lit surface whose own value is near (0.47, 0.34, 0.22), so the
+     * band came out roughly 40% BRIGHTER than the sub-solar point. The dimmest part of the lit
+     * hemisphere was the brightest thing on the planet, and the committed planet-rise still shows
+     * it as a hard vertical seam with the cloud banding washing out across it.
+     *
+     * Halved and widened: a warm blush that the day side still out-values, which is what forward
+     * scattering actually looks like. Both numbers move, because either alone leaves the other
+     * fault — a lower peak in a narrow band is still a seam, and a wide band at 0.2 is a wash. */
+    float terminator = pow(1.0 - abs(ndl), 3.2) * smoothstep(-0.35, 0.25, ndl);
+    col += vec3(1.0, 0.72, 0.52) * terminator * 0.10;
 
     // Rayleigh-ish limb: the atmosphere is denser at grazing angles.
     vec3 viewDir = normalize(-vec3(0.0, 0.0, 1.0));
