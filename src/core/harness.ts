@@ -146,7 +146,15 @@ export interface HarnessApi {
    */
   /**
    * Takes the frame loop from rAF. Zeroes the world clock on the transition into driven mode,
-   * so animated shaders start from the same phase in every process.
+   * so animated shaders start from the same phase in every process — and, for the same reason,
+   * returns the drifting asteroids to phase 0.
+   *
+   * CALL THIS BEFORE `startRun`, not after. Both resets land at the moment control is taken, so
+   * taking control late resets a world the ship has already been flying through: the rAF loop
+   * keeps running during the round-trips, and those are network-latency long. A playthrough that
+   * called `startRun` first measured 70.65 s with a hull contact and 74.43 s clean on one commit,
+   * because the rocks snapped back underneath a pilot who had moved. Neither figure described the
+   * course. Driven first, and nothing advances until `step` says so.
    */
   setDriven(driven: boolean): void;
   /**

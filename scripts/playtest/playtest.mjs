@@ -570,6 +570,25 @@ async function collectPlaythrough(page, options) {
   verify(page, 'Browser page is unavailable.');
   await reloadHarness(page, options.timeoutMs);
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
+  /* setDriven FIRST, and this ordering is the whole of the check's determinism claim.
+   *
+   * `step()` implies setDriven(true), so taking control implicitly meant the rAF loop kept
+   * running through the two round-trips between `startRun` and the first `step` — and those are
+   * network-latency long, not frame long. The run was therefore already timed, already moving,
+   * and already some tens of metres down the course before the "deterministic fixed-timestep
+   * playthrough" took its first step, by an amount that varied with how busy the host was. The
+   * lap time this check reports has always carried that noise; it simply never asserted anything
+   * tight enough to notice.
+   *
+   * It became visible when the asteroid field started moving. `setDriven(true)` zeroes the world
+   * clock — see Game.setDriven, and the reasoning there is exactly this — and now also returns
+   * the drifters to phase 0. Doing that AFTER free frames had already flown the ship snapped the
+   * rocks back underneath a pilot who had moved, so two runs of the same commit produced
+   * different laps: 70.65 s with a hull contact against 74.43 s clean. Neither was a measurement
+   * of the course; both were measurements of round-trip latency.
+   *
+   * Driven before the run starts means nothing advances until `step` says so. */
+  await callHarness(page, 'setDriven', [true]);
   await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
 
