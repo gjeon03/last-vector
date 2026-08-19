@@ -5,10 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Least privilege at the top: the build job installs dependencies and runs third-party
+# actions, so it gets read access and nothing more. The write scopes that can publish a
+# site or mint an OIDC token are granted only to the deploy job, which runs one
+# first-party action and no project code.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Let a newer run supersede an in-flight one, but never cancel a deploy midway.
 concurrency:
@@ -18,10 +20,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      # Third party, so pinned to a commit rather than a movable tag: v4 is a tag the
+      # upstream owner can repoint at any time, and this step runs before our own code.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
 
@@ -35,8 +41,6 @@ jobs:
       # `pnpm build` is `tsc --noEmit && vite build`, so a type error fails the deploy.
       - run: pnpm build
 
-      - uses: actions/configure-pages@v5
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
@@ -44,6 +48,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
