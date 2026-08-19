@@ -44,7 +44,13 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     bloom: true,
     bloomStrength: 0.62,
     godrays: true,
-    godraySamples: 18,
+    /* Raised with the ray march's start-dither (see GODRAY_FRAG). The two are one fix and the
+       counts here are the half of it that costs anything. The shaft buffer is a QUARTER-
+       resolution pass — 480x270 at 1080p — so its taps are cheap in a way the count alone does
+       not suggest, and the beading these numbers cause is at full screen scale because the
+       result is bilinearly upsampled by four. Dither alone left a coarse screen door; more taps
+       alone left softer beads. */
+    godraySamples: 30,
     motionBlurSamples: 4,
     starCount: 9000,
     dustCount: 1600,
@@ -60,7 +66,7 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     bloom: true,
     bloomStrength: 0.72,
     godrays: true,
-    godraySamples: 26,
+    godraySamples: 44,
     motionBlurSamples: 6,
     starCount: 16000,
     dustCount: 2600,
@@ -76,7 +82,9 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     bloom: true,
     bloomStrength: 0.78,
     godrays: true,
-    godraySamples: 40,
+    /* 64 is the loop's hard ceiling in GODRAY_FRAG, not a tuned value: a GLSL ES 1.0 for-loop
+       needs a constant bound, so the shader unrolls to 64 and breaks early. Ultra sits on it. */
+    godraySamples: 64,
     motionBlurSamples: 8,
     starCount: 24000,
     dustCount: 4200,

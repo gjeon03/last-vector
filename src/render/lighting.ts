@@ -88,7 +88,22 @@ export const GLSL_LIGHTING = /* glsl */ `
     float backlight = pow(max(dot(-V, L), 0.0), 2.2);
     float sideLight = smoothstep(-0.35, 0.55, dot(N, L));
     float facing = smoothstep(-0.1, 0.6, dot(Nrim, -L));
-    vec3 rimLight = uRimColor * fres * (sideLight * 0.35 + backlight * 4.2) * facing * ao;
+    /* Saturating, not linear, and this is the difference between a lit edge and a sticker.
+     *
+     * The term used to be sideLight * 0.35 + backlight * 4.2, applied straight. Backlight
+     * approaches 1 across the WHOLE disc whenever the star is behind an object — that is what it
+     * is for — so with fres from a smooth pre-displacement normal the product reached ~2.1 linear
+     * everywhere near the limb. Past about 1.0 the tonemapper has nothing left to give, so the
+     * band clipped to flat white over tens of pixels and every backlit rock came out as a cream
+     * ring drawn round a dead interior: measurable in the committed shelf-edge still, where the
+     * largest rock in frame carries a uniform blown rim and no midtone between rim and core.
+     *
+     * The failure was the CEILING, not the idea. Compressing with x/(1+x) keeps the whole
+     * low-end response — a grazing edge still lifts, and lifts in the star's colour — while the
+     * peak lands near 1 instead of over 2, which is where a highlight still has hue and shape.
+     * The power is raised alongside it so the falloff reads as an edge rather than a shelf. */
+    float rimDrive = sideLight * 0.35 + backlight * 4.2;
+    vec3 rimLight = uRimColor * fres * (rimDrive / (1.0 + rimDrive * 0.85)) * facing * ao;
 
     return (direct + ambient + rimLight) * uExposureBias;
   }
@@ -157,7 +172,10 @@ export function createLightingUniforms(sunDirection: THREE.Vector3): LightingUni
     uGroundColor: { value: new THREE.Color(PALETTE.nebulaIndigo).multiplyScalar(0.22) },
     // The rim takes the star's colour, because that is what is lighting it.
     uRimColor: { value: new THREE.Color(0xffcf9e).multiplyScalar(0.5) },
-    uRimPower: { value: 4.0 },
+    // 4.0 spread the grazing term over roughly a tenth of a large rock's radius, which is a
+    // shelf, not an edge. See the saturation note in shadeSurfaceRim: the two changes are one
+    // fix, and raising the power alone would only have made a narrower blown band.
+    uRimPower: { value: 6.0 },
     uExposureBias: { value: 1 },
     uHazeColor: { value: new THREE.Color(0x121d33) },
     // Looking toward the star, the dust between you and a distant object scatters warm. A
