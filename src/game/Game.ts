@@ -1883,6 +1883,7 @@ export class Game {
           position: [cam.position.x, cam.position.y, cam.position.z] as [number, number, number],
           forward: [f.x, f.y, f.z] as [number, number, number],
           near: cam.near,
+          fov: cam.fov,
         };
       })(),
     };

@@ -81,6 +81,8 @@ export interface HarnessPose {
     forward: [number, number, number];
     /** Active perspective near plane, metres. Cockpit mode needs a substantially closer plane. */
     near: number;
+    /** Active vertical field of view, degrees. */
+    fov: number;
   };
 }
 

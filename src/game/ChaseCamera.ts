@@ -24,6 +24,10 @@ const BASE_OFFSET = new THREE.Vector3(0, 2.3, 13.4);
 const COCKPIT_OFFSET = new THREE.Vector3(0, 1.05, -2.15);
 const CHASE_NEAR = 1.5;
 const COCKPIT_NEAR = 0.1;
+const COCKPIT_FOV_BONUS = 8;
+// Settings top out at 100; speed, boost, and impact can add another 16. Keeping the ceiling at
+// that full chase target plus the cockpit bonus prevents the cap from ever making cockpit narrower.
+const COCKPIT_MAX_FOV = 124;
 
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
@@ -151,7 +155,10 @@ export class ChaseCamera {
     // 99 degrees at full boost shrank the ship's on-screen size by 2.6x and smeared the
     // frame edges. The player's own ship is the only object of known size in view; removing it
     // turns speed into a screen effect instead of a vehicle moving through a world.
-    const targetFov = this.baseFov + speed01 * 4 + boost * 9 + shake.impact * 3;
+    const chaseTargetFov = this.baseFov + speed01 * 4 + boost * 9 + shake.impact * 3;
+    const targetFov = mode === 'cockpit'
+      ? Math.min(chaseTargetFov + COCKPIT_FOV_BONUS, COCKPIT_MAX_FOV)
+      : chaseTargetFov;
     this.fov = damp(this.fov, targetFov, boost > 0.5 ? 0.16 : 0.28, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

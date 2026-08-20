@@ -219,7 +219,9 @@ async function runPlaytest({ report, session, options }) {
     criteria: [criterion('M7', 'partial', 'Drives the real KeyV action during active flight, then verifies the applied camera geometry and the SettingsStore reload path.')],
     assertion:
       'During active flight a real KeyV changes chase to cockpit without changing any ship state; '
-      + 'cockpit places the camera within six metres of the ship and uses a near plane below 0.25 m; '
+      + 'cockpit places the camera within six metres of the ship, uses a near plane below 0.25 m, '
+      + 'and settles about 8 degrees wider than chase for identical ordinary and full-boost ship '
+      + 'traces without exceeding 124 degrees; '
       + 'the selection survives reload; a second real KeyV restores the chase boom and original '
       + 'near plane, again without directly changing ship state.',
   }, async () => {
@@ -245,7 +247,11 @@ async function runPlaytest({ report, session, options }) {
     verify(e.persisted.settingsMode === 'cockpit' && e.persisted.mode === 'cockpit',
       'The cockpit selection did not survive the SettingsStore reload path.', e);
     verify(e.persisted.shipMatchesChaseTrace,
-      'An identical 45-frame flight trace produced different ship state in cockpit and chase modes.', e);
+      'An identical settled flight trace produced different ship state in cockpit and chase modes.', e);
+    verify(Math.abs(e.persisted.fov - e.initial.fov - 8) <= 0.05,
+      `For the identical ship trace cockpit settled at ${e.persisted.fov} degrees versus chase ${e.initial.fov}; the cockpit view is not about 8 degrees wider.`, e);
+    verify(e.persisted.fov <= 124 + 0.01,
+      `Cockpit FOV exceeded its 124 degree ceiling: ${e.persisted.fov}.`, e);
     verify(e.afterSecondKey.mode === 'chase' && e.afterSecondKey.settingsMode === 'chase',
       'A second real KeyV did not restore both applied and stored chase mode.', e);
     verify(e.afterSecondKey.shipUnchanged,
@@ -258,6 +264,16 @@ async function runPlaytest({ report, session, options }) {
       'The restored chase boom is materially different from the initial chase pose.', e);
     verify(vectorDistance(e.restored.forward, e.initial.forward) < 0.02,
       'The restored chase camera did not recover the initial forward aim.', e);
+    verify(e.boostedChase.mode === 'chase' && e.boostedCockpit.mode === 'cockpit',
+      'The full-boost comparison did not measure chase and then enter cockpit through a real KeyV toggle.', e);
+    verify(e.boostedCockpit.shipMatchesChaseTrace,
+      'The full-boost chase and cockpit probes did not produce identical ship state.', e);
+    verify(e.boostedCockpit.fov > e.boostedChase.fov,
+      `Full-boost cockpit FOV ${e.boostedCockpit.fov} was not wider than chase ${e.boostedChase.fov}.`, e);
+    verify(Math.abs(e.boostedCockpit.fov - e.boostedChase.fov - 8) <= 0.05,
+      `For the identical base-100 full-boost trace cockpit settled at ${e.boostedCockpit.fov} degrees versus chase ${e.boostedChase.fov}; the cockpit view is not about 8 degrees wider.`, e);
+    verify(e.boostedCockpit.fov <= 124 + 0.01,
+      `Full-boost cockpit FOV exceeded its 124 degree ceiling: ${e.boostedCockpit.fov}.`, e);
     return e;
   });
 
@@ -787,6 +803,7 @@ async function collectKeyboardEvidence(page, options) {
 
 async function collectCameraEvidence(page, options) {
   verify(page, 'Browser page is unavailable.');
+  const settleFrames = 240;
   const prepareFlight = async () => {
     // Force a fresh driven-mode transition so both sides of the reload comparison get the same
     // world-clock origin as well as the same fixed step.
@@ -799,12 +816,14 @@ async function collectCameraEvidence(page, options) {
     await callHarness(page, 'clearVantage');
     await stepUntilFlying(page, options.timeoutMs);
     // Let either camera settle at the run's deterministic start before measuring its boom.
-    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
   };
 
+  let originalFov = null;
   try {
     await callHarness(page, 'ready', [], options.timeoutMs);
-    await callHarness(page, 'setSettings', [{ cameraMode: 'chase' }]);
+    originalFov = (await callHarness(page, 'settings')).fov;
+    await callHarness(page, 'setSettings', [{ cameraMode: 'chase', fov: 76 }]);
     await prepareFlight();
 
     const initialPose = await callHarness(page, 'pose');
@@ -823,7 +842,7 @@ async function collectCameraEvidence(page, options) {
       settingsMode: (await callHarness(page, 'settings')).cameraMode,
       shipUnchanged: sameShipSnapshot(beforeFirstKey, shipSnapshot(immediatelyAfterFirstKey)),
     };
-    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
     const cockpit = cameraSample(await callHarness(page, 'pose'));
 
     // KeyV must route through SettingsStore, so a cold Game instance must recover cockpit mode.
@@ -847,8 +866,37 @@ async function collectCameraEvidence(page, options) {
       settingsMode: (await callHarness(page, 'settings')).cameraMode,
       shipUnchanged: sameShipSnapshot(beforeSecondKey, shipSnapshot(immediatelyAfterSecondKey)),
     };
-    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
     const restored = cameraSample(await callHarness(page, 'pose'));
+
+    // Compare both modes from cold Game instances at the widest supported setting. Reloading
+    // before each trace gives the FOV damper, boost blend, damage flash, and world clock identical
+    // origins; KeyV remains the route into cockpit and its SettingsStore persistence is what makes
+    // the second cold instance boot in that mode.
+    await callHarness(page, 'setSettings', [{ cameraMode: 'chase', fov: 100 }]);
+    await reloadHarness(page, options.timeoutMs);
+    await prepareFlight();
+    await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
+    await callHarness(page, 'step', [150, 1 / 60], options.timeoutMs);
+    const boostedChasePose = await callHarness(page, 'pose');
+    const boostedChase = {
+      ...cameraSample(boostedChasePose),
+      mode: await callHarness(page, 'cameraMode'),
+    };
+    await page.keyboard.press('v');
+    await reloadHarness(page, options.timeoutMs);
+    await prepareFlight();
+    await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
+    await callHarness(page, 'step', [150, 1 / 60], options.timeoutMs);
+    const boostedCockpitPose = await callHarness(page, 'pose');
+    const boostedCockpit = {
+      ...cameraSample(boostedCockpitPose),
+      mode: await callHarness(page, 'cameraMode'),
+      shipMatchesChaseTrace: sameShipSnapshot(
+        shipSnapshot(boostedChasePose),
+        shipSnapshot(boostedCockpitPose),
+      ),
+    };
 
     return {
       phaseAtFirstToggle,
@@ -859,9 +907,14 @@ async function collectCameraEvidence(page, options) {
       persisted,
       afterSecondKey,
       restored,
+      boostedChase,
+      boostedCockpit,
     };
   } finally {
-    await bestEffort(page, 'setSettings', [{ cameraMode: 'chase' }]);
+    await bestEffort(page, 'setSettings', [{
+      cameraMode: 'chase',
+      ...(finiteNumber(originalFov) ? { fov: originalFov } : {}),
+    }]);
     await bestEffort(page, 'setInput', [null]);
     await bestEffort(page, 'setDriven', [false]);
   }
@@ -908,7 +961,8 @@ function validPose(pose) {
     [pose.camera?.position, 3],
     [pose.camera?.forward, 3],
   ].every(([vector, length]) => Array.isArray(vector) && vector.length === length && vector.every(finiteNumber))
-    && finiteNumber(pose.camera?.near) && pose.camera.near > 0;
+    && finiteNumber(pose.camera?.near) && pose.camera.near > 0
+    && finiteNumber(pose.camera?.fov) && pose.camera.fov > 0;
 }
 
 function shipSnapshot(pose) {
@@ -935,6 +989,7 @@ function cameraSample(pose) {
     position: pose.camera.position,
     forward: pose.camera.forward,
     near: pose.camera.near,
+    fov: pose.camera.fov,
     distanceFromShip: vectorDistance(pose.position, pose.camera.position),
     shipForwardAlignment: pose.camera.forward.reduce(
       (sum, value, index) => sum + value * pose.forward[index], 0,
