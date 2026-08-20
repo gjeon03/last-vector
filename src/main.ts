@@ -150,13 +150,15 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.1.0',
+    version: '1.3.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
+    damageHull: (amount) => game.damageHull(amount),
+    stageCollision: () => game.stageCollision(),
     setInput: (input: HarnessInput | null) => game.setHarnessInput(input),
     setAutopilot: (enabled, options) => game.setAutopilot(enabled, options?.skill ?? 1),
     seekCourse: (t) => game.seekCourse(t),

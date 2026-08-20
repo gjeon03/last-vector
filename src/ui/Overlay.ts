@@ -176,6 +176,10 @@ export class Overlay {
     this.screens.showResult(result);
   }
 
+  showFailure(elapsed: number): void {
+    this.screens.showFailure(elapsed);
+  }
+
   setCountdown(value: number | null): void {
     this.countdown = value;
     this.screens.setCountdown(value);
@@ -241,6 +245,7 @@ export class Overlay {
         return 'title';
       case 'briefing':
         return 'briefing';
+      case 'failed':
       case 'finished':
         return 'results';
       default:
@@ -253,7 +258,11 @@ export class Overlay {
     const counting = this.phase === 'countdown' || this.countdown !== null;
     this.hud.setActive(flying || counting, counting || this.paused);
     const menuish =
-      this.phase === 'title' || this.phase === 'briefing' || this.phase === 'finished' || this.paused;
+      this.phase === 'title' ||
+      this.phase === 'briefing' ||
+      this.phase === 'failed' ||
+      this.phase === 'finished' ||
+      this.paused;
     this.grain.dataset['on'] = menuish ? '1' : '0';
   }
 

@@ -55,6 +55,7 @@ const EXPECTED_CHECKS = {
     'M3.sequential-gates',
     'M4.destination-finish',
     'FEEL.gate-boost-recharge',
+    'GAME.hull-failure-retry',
     'UX.screen-flow',
     'M3.hazard-invariance',
     'M3.moving-hazard-bounds',

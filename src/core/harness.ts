@@ -119,8 +119,25 @@ export interface HarnessApi {
   /** Latest telemetry snapshot. */
   telemetry(): Telemetry;
   phase(): Phase;
-  /** Non-null once the run has finished. */
+  /** Non-null once the run has finished successfully; failures deliberately keep this null. */
   result(): RunResult | null;
+  /**
+   * Apply normalised structural damage for deterministic terminal-state tests.
+   *
+   * Damage is accepted only while actively flying. Reaching zero does not change phase inside
+   * this call: the next simulation step resolves all same-frame damage first, then transitions
+   * once to `failed`. The clamped hull value is returned in every phase.
+   */
+  damageHull(amount: number): number;
+  /**
+   * Stage one deterministic contact against a currently drawn asteroid.
+   *
+   * This moves the ship into overlap at a known closing speed but applies no damage itself. The
+   * next `step()` must run the production asteroid-motion, collision and `Ship.applyImpact` path.
+   * Repeated calls preserve accumulated hull damage and the run's contact sequence. Returns null
+   * outside active flight or when no drawn asteroid is available.
+   */
+  stageCollision(): { rockId: number; overlap: number; closingSpeed: number } | null;
   /** Override pilot input. Values persist until changed. `null` returns control to the human. */
   setInput(input: HarnessInput | null): void;
   /**

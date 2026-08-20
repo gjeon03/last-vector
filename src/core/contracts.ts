@@ -12,7 +12,14 @@
  * a reason to say so when you do.
  */
 
-export type Phase = 'boot' | 'title' | 'briefing' | 'countdown' | 'flying' | 'finished';
+export type Phase =
+  | 'boot'
+  | 'title'
+  | 'briefing'
+  | 'countdown'
+  | 'flying'
+  | 'failed'
+  | 'finished';
 
 export interface ScreenAnchor {
   /** Normalised device coords, -1..1, x right / y up. Valid only when `onScreen`. */

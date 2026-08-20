@@ -89,6 +89,8 @@ export class Ship {
   private gLoad = 0;
   private lastVelocity = new THREE.Vector3();
   private shakeImpulse = 0;
+  /** Contacts so far this run, so two identical hits at the same place still differ. */
+  private impacts = 0;
 
   private readonly forward = new THREE.Vector3();
   private readonly right = new THREE.Vector3();
@@ -312,9 +314,18 @@ export class Ship {
     this.smoothedThrottle = clamp01(this.smoothedThrottle) || 0;
   }
 
+  /** Applies normalised structural damage and returns the clamped hull value. */
+  applyHullDamage(amount: number): number {
+    if (Number.isFinite(amount) && amount > 0) this.hull = clamp01(this.hull - amount);
+    return this.hull;
+  }
+
+  /** Starts the deterministic contact sequence for a new run without changing reset physics. */
+  resetRunContacts(): void {
+    this.impacts = 0;
+  }
+
   /** Applies a collision response and returns the severity, 0..1. */
-  /** Contacts so far this run, so two identical hits at the same place still differ. */
-  private impacts = 0;
 
   applyImpact(normal: THREE.Vector3, penetration: number): number {
     const closing = Math.max(0, -this.velocity.dot(normal));
@@ -336,7 +347,7 @@ export class Ship {
     this.angularVelocity.y += (h.y - 0.5) * severity * 2.4;
     this.angularVelocity.z += (h.z - 0.5) * severity * 3.2;
 
-    this.hull = clamp01(this.hull - severity * 0.22);
+    this.applyHullDamage(severity * 0.22);
     this.shakeImpulse = Math.min(1, this.shakeImpulse + severity * 1.2 + 0.15);
     return severity;
   }

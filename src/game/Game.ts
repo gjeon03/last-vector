@@ -61,6 +61,20 @@ const RADIO_LINES: { at: number; speaker: string; text: string }[] = [
   { at: 8, speaker: 'VESPER TERMINUS', text: 'Approach lit. Bring her in.' },
 ];
 
+/** No thrust or control authority after a hull breach; inertia and tumble still integrate. */
+const FAILURE_DRIFT_COMMAND: FlightCommand = {
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
+  throttle: 0,
+  strafeX: 0,
+  strafeY: 0,
+  boost: false,
+  brake: false,
+  stickX: 0,
+  stickY: 0,
+};
+
 interface Vantage {
   name: string;
   /** Normalised course position the camera is anchored to. */
@@ -139,6 +153,8 @@ export class Game {
   private clock = 0;
   private countdown: number | null = null;
   private countdownTimer = 0;
+  /** Cancels the lingering GO card without letting an old run hide a new countdown. */
+  private countdownClearTimer: number | null = null;
   private result: RunResult | null = null;
   private topSpeed = 0;
   private impacts = 0;
@@ -405,7 +421,12 @@ export class Game {
       this.pushLog(`mouse capture refused · ${reason}`, 'bad');
     };
     this.input.onAction = (action) => {
-      if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
+      if (
+        action === 'restart' &&
+        (this.phase === 'flying' || this.phase === 'failed' || this.phase === 'finished')
+      ) {
+        this.restart();
+      }
       if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
         const next: CameraMode = this.settings.value.cameraMode === 'chase' ? 'cockpit' : 'chase';
         this.settings.set('cameraMode', next);
@@ -585,6 +606,12 @@ export class Game {
     this.overlay.setPhase(phase);
   }
 
+  private cancelCountdownClear(): void {
+    if (this.countdownClearTimer === null) return;
+    window.clearTimeout(this.countdownClearTimer);
+    this.countdownClearTimer = null;
+  }
+
   /**
    * @param skipIntro jump straight to flying instead of running the three-second countdown.
    *   The interface never passes this; it exists so an unattended playthrough does not spend
@@ -593,12 +620,14 @@ export class Game {
   beginRun(skipIntro = false): void {
     // Clearing this matters the moment any restart affordance is reachable from the pause
     // menu: without it the new run starts already frozen on the countdown.
+    this.cancelCountdownClear();
     this.paused = false;
     void this.audio.unlock();
     this.course.reset();
     this.gateHistory.length = 0;
     this.logLines.length = 0;
     this.resetShipToStart();
+    this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
     this.topSpeed = 0;
@@ -697,6 +726,7 @@ export class Game {
     this.clearPause();
     /* Pre-existing, and separate from the duck: aborting a pause taken DURING the countdown left
        the countdown element open over the title screen, because nothing here cleared it. */
+    this.cancelCountdownClear();
     this.countdown = null;
     this.overlay.setCountdown(null);
     this.course.reset();
@@ -857,7 +887,10 @@ export class Game {
   }
 
   private simulate(dt: number): void {
-    const command = this.resolveCommand(dt);
+    /* Once failed, do not even sample pilot input for the physics path. The input listeners stay
+       alive so N can still reach the restart action, but stick/throttle/gamepad state cannot add
+       control authority behind the terminal overlay. */
+    const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.resolveCommand(dt);
 
     if (this.phase === 'countdown') {
       this.countdownTimer += dt;
@@ -874,7 +907,15 @@ export class Game {
           this.setPhase('flying');
           this.pushCallout('ENGAGE', FICTION.destinationName, 'good', 1.6);
           this.radio(0);
-          window.setTimeout(() => this.overlay.setCountdown(null), 700);
+          this.cancelCountdownClear();
+          this.countdownClearTimer = window.setTimeout(() => {
+            this.countdownClearTimer = null;
+            /* A restart may already have opened another countdown. Only the run that displayed
+               this GO card is allowed to dismiss it. */
+            if (this.phase === 'flying' && this.countdown === null) {
+              this.overlay.setCountdown(null);
+            }
+          }, 700);
         }
       }
       // The ship holds a slow cruise through the countdown so the frame is never static.
@@ -882,6 +923,8 @@ export class Game {
     } else if (this.phase === 'flying' || this.phase === 'title' || this.phase === 'briefing') {
       this.ship.update(dt, command);
       if (this.phase === 'flying') this.elapsed += dt;
+    } else if (this.phase === 'failed') {
+      this.ship.update(dt, FAILURE_DRIFT_COMMAND);
     } else {
       this.ship.update(dt, { ...command, throttle: 0.3, boost: false });
     }
@@ -893,8 +936,14 @@ export class Game {
     this.resolveCollisions(dt);
 
     if (this.phase === 'flying') {
-      this.course.update(this.ship.position, this.ship.speed, this.elapsed);
-      this.checkArrival();
+      /* All contacts in this frame have now contributed damage. Resolve the terminal outcome once,
+         before course progression, so a lethal strike and terminus crossing in the same frame
+         deterministically produce a breach rather than a saved result. */
+      this.checkFailure();
+      if (this.phase === 'flying') {
+        this.course.update(this.ship.position, this.ship.speed, this.elapsed);
+        this.checkArrival();
+      }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
       if (this.ship.position.distanceTo(this.course.startPosition) > SCALE.gateSpacing * 2.2) {
@@ -985,7 +1034,7 @@ export class Game {
       nearest = Math.min(nearest, dist - rock.radius - shipRadius);
 
       const overlap = rock.radius + shipRadius - dist;
-      if (overlap > 0 && dist > 1e-3) {
+      if (overlap > 0 && dist > 1e-3 && this.phase !== 'failed') {
         // A graze that barely breaks the surface is a scrape, not a strike. `scrape` was
         // synthesised but never called from anywhere, so sliding along a rock was silent.
         if (overlap < shipRadius * 0.6) this.audio.play('scrape', clamp01(overlap / (shipRadius * 0.6)));
@@ -1024,8 +1073,21 @@ export class Game {
     this.finish();
   }
 
+  private checkFailure(): void {
+    if (this.phase !== 'flying' || this.ship.hull > 0) return;
+    this.autopilot = false;
+    this.result = null;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    this.setPhase('failed');
+    this.overlay.showFailure(this.elapsed);
+    this.input.releaseLock();
+  }
+
   private finish(): void {
-    if (this.phase === 'finished') return;
+    if (this.phase !== 'flying') return;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
     const splits = this.course.passes.map((p) => p.time);
     const best = readBestTime(this.course.id);
     const isNewBest = best === null || this.elapsed < best;
@@ -1779,6 +1841,43 @@ export class Game {
     return this.result;
   }
 
+  /** Automation-only structural damage injection for deterministic phase-boundary tests. */
+  damageHull(amount: number): number {
+    if (this.phase !== 'flying') return this.ship.hull;
+    return this.ship.applyHullDamage(amount);
+  }
+
+  /**
+   * Places the ship on a deterministic closing contact with a currently drawn asteroid.
+   * No damage is applied here: the next frame must traverse updateMotion -> resolveCollisions ->
+   * Ship.applyImpact, which is why the playtest uses this alongside the direct phase-boundary
+   * injector above instead of mistaking that injector for evidence of a playable failure path.
+   * Hull and the run's contact sequence survive the physical reset, so repeated staging exercises
+   * cumulative production damage rather than a series of isolated first-hit samples.
+   */
+  stageCollision(): { rockId: number; overlap: number; closingSpeed: number } | null {
+    if (this.phase !== 'flying') return null;
+    this.asteroids.resetMotion();
+    const rock = this.asteroids.activeInstances[this.asteroids.activeInstances.length - 1];
+    if (!rock) return null;
+
+    const overlap = Math.min(6, rock.radius * 0.5);
+    const closingSpeed = 520;
+    this.tmpA.set(0.73, 0.41, -0.54).normalize();
+    this.tmpC.copy(this.tmpA).negate();
+    this.tmpQuat.setFromUnitVectors(this.tmpB.set(0, 0, -1), this.tmpC);
+    this.tmpB.copy(rock.position).addScaledVector(
+      this.tmpA,
+      rock.radius + this.ship.radius - overlap,
+    );
+    const hull = this.ship.hull;
+    this.ship.reset(this.tmpB, this.tmpQuat, closingSpeed);
+    this.ship.hull = hull;
+    this.chase.snapTo(this.ship);
+    for (const trail of this.trails) trail.reset();
+    return { rockId: rock.id, overlap, closingSpeed };
+  }
+
   setHarnessInput(input: HarnessInput | null): void {
     this.harnessInput = input;
   }
@@ -1999,6 +2098,7 @@ export class Game {
   dispose(): void {
     this.disposed = true;
     this.releaseUnlock();
+    this.cancelCountdownClear();
     if (this.resizeSettleTimer !== null) window.clearTimeout(this.resizeSettleTimer);
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('error', this.handleError);
