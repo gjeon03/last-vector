@@ -138,7 +138,10 @@ export class CockpitModel {
     const recess = this.solidMaterial(0x020508, 0.82, 0.04);
     const accent = this.solidMaterial(0x71371d, 0.42, 0.38);
     const fabric = this.solidMaterial(0x211a18, 0.94, 0.02);
-    const glove = this.solidMaterial(0x8e674b, 0.78, 0.01);
+    // Near-black Nomex/rubber reads as flight equipment under the asymmetric cabin lights.
+    // The former warm skin-coloured capsules made both hands look detached from the suit.
+    const glove = this.solidMaterial(0x11171b, 0.72, 0.08);
+    const button = this.solidMaterial(0xd3dde0, 0.46, 0.28);
 
     const cabinBatch = this.batch(cabin);
     const panelBatch = this.batch(panel);
@@ -148,6 +151,8 @@ export class CockpitModel {
     const fabricBatch = this.batch(fabric);
 
     this.buildEnclosure(cabinBatch, panelBatch, trimBatch, recessBatch, accentBatch, fabricBatch);
+    this.buildCanopyGasket(recessBatch);
+    this.buildOverheadKnobs(trimBatch);
 
     // Six material-sorted static meshes replace dozens of independent decorative boxes.
     this.flushBatch(cabinBatch, SOLID_RENDER_ORDER);
@@ -157,7 +162,7 @@ export class CockpitModel {
     this.flushBatch(accentBatch, SOLID_RENDER_ORDER + 4);
     this.flushBatch(fabricBatch, SOLID_RENDER_ORDER + 1);
 
-    this.buildRepeatedControls(accent);
+    this.buildRepeatedControls(accent, button);
     this.buildPilotControls(trim, fabric, glove);
 
     // A single 3-zone display atlas keeps the three large MFDs readable for one draw call.
@@ -192,10 +197,9 @@ export class CockpitModel {
     this.geometries.push(mfdGeometry);
     const mfd = this.registerMesh(new THREE.Mesh(mfdGeometry, mfdMaterial), EMISSIVE_RENDER_ORDER);
     mfd.name = 'three-zone-flight-mfd';
-    // Sit just proud of the recessed instrument face while remaining behind its physical
-    // divider rails. The previous depth placed the emissive canvas behind the recess box, so
-    // the entire three-screen cluster was correctly depth-tested away and read as a blank slab.
-    mfd.position.set(0, -0.425, -0.846);
+    // The display plane sits 10 mm behind the nearest bezel faces and 9 mm ahead of the
+    // instrument backing. This gives the atlas a real shadowed well without depth fighting.
+    mfd.position.set(0, -0.425, -0.866);
     mfd.rotation.x = -0.035;
 
     this.glassMaterial = this.createGlassMaterial();
@@ -334,12 +338,29 @@ export class CockpitModel {
       new THREE.Vector3(0.98, -0.34, -1.07),
       new THREE.Vector3(-0.98, -0.34, -1.07),
     ]);
-    this.addBar(cabin, new THREE.Vector3(-0.82, -0.285, -0.73), new THREE.Vector3(0.82, -0.285, -0.73), 0.04, 0.12);
+    // Keep the close edge slim and slightly raised so the recessed display retains a visible
+    // title/readout band at the narrow forward FOV while still reading as a deep glareshield.
+    this.addBar(cabin, new THREE.Vector3(-0.82, -0.25, -0.73), new THREE.Vector3(0.82, -0.25, -0.73), 0.026, 0.12);
     this.addBox(panel, new THREE.Vector3(0, -0.425, -0.94), new THREE.Vector3(1.21, 0.235, 0.13), new THREE.Euler(-0.03, 0, 0));
-    this.addBox(recess, new THREE.Vector3(0, -0.425, -0.865), new THREE.Vector3(1.13, 0.2, 0.025));
-    this.addBar(trim, new THREE.Vector3(-0.59, -0.535, -0.842), new THREE.Vector3(0.59, -0.535, -0.842), 0.024, 0.032);
-    for (const x of [-0.19, 0.19]) {
-      this.addBox(trim, new THREE.Vector3(x, -0.425, -0.842), new THREE.Vector3(0.018, 0.2, 0.018));
+    // The MFD is not a texture pasted onto the panel: a dark under-bezel and a narrower metal
+    // lip surround three open screen wells. Their front faces sit 10 mm ahead of the canvas.
+    for (const y of [-0.323, -0.527]) {
+      const z = -0.866 + (y + 0.425) * Math.sin(-0.035);
+      this.addBox(recess, new THREE.Vector3(0, y, z - 0.004), new THREE.Vector3(1.155, 0.036, 0.018), new THREE.Euler(-0.035, 0, 0));
+      this.addBox(trim, new THREE.Vector3(0, y, z), new THREE.Vector3(1.135, 0.019, 0.02), new THREE.Euler(-0.035, 0, 0));
+    }
+    for (const x of [-0.553, -0.207, 0.207, 0.553]) {
+      const outer = Math.abs(x) > 0.5;
+      this.addBox(recess, new THREE.Vector3(x, -0.425, -0.87), new THREE.Vector3(outer ? 0.032 : 0.027, 0.22, 0.018), new THREE.Euler(-0.035, 0, 0));
+      this.addBox(trim, new THREE.Vector3(x, -0.425, -0.866), new THREE.Vector3(outer ? 0.019 : 0.015, 0.205, 0.02), new THREE.Euler(-0.035, 0, 0));
+    }
+    // Eight fasteners are merged into the existing accent batch at the frame corners and
+    // divider junctions, preserving one material-sorted static draw.
+    for (const x of [-0.553, -0.207, 0.207, 0.553]) {
+      for (const y of [-0.323, -0.527]) {
+        const z = -0.854 + (y + 0.425) * Math.sin(-0.035);
+        this.addCylinder(accent, new THREE.Vector3(x, y, z), 0.008, 0.008, 0.008, 8, new THREE.Euler(Math.PI * 0.5, 0, 0));
+      }
     }
 
     // Lower canopy sills run away from the pilot, then turn upward into broad angled A-pillars.
@@ -500,7 +521,39 @@ export class CockpitModel {
     }
   }
 
-  private buildRepeatedControls(accent: THREE.Material): void {
+  private buildCanopyGasket(gasket: GeometryBatch): void {
+    // A single very-dark rubber batch traces only the window/structure contact lines. The seal
+    // supplies a thin soft edge between glass and metal while leaving the central sight picture
+    // completely open.
+    for (const side of [-1, 1]) {
+      this.addBar(
+        gasket,
+        new THREE.Vector3(side * 0.78, -0.232, -0.825),
+        new THREE.Vector3(side * 1.335, -0.205, -1.705),
+        0.022,
+        0.022,
+      );
+      this.addBar(
+        gasket,
+        new THREE.Vector3(side * 1.335, -0.205, -1.705),
+        new THREE.Vector3(side * 1.015, 0.765, -1.735),
+        0.027,
+        0.024,
+      );
+      this.addBar(
+        gasket,
+        new THREE.Vector3(side * 1.015, 0.765, -1.735),
+        new THREE.Vector3(side * 0.435, 0.94, -1.055),
+        0.021,
+        0.021,
+      );
+    }
+  }
+
+  private buildRepeatedControls(
+    accent: THREE.Material,
+    buttonMaterial: THREE.MeshStandardMaterial,
+  ): void {
     const switchGeometry = new THREE.BoxGeometry(0.024, 0.045, 0.022);
     this.geometries.push(switchGeometry);
     const switchCount = 30;
@@ -538,9 +591,6 @@ export class CockpitModel {
     boltGeometry.rotateX(Math.PI * 0.5);
     this.geometries.push(boltGeometry);
     const boltPositions: THREE.Vector3[] = [];
-    for (const x of [-0.55, -0.19, 0.19, 0.55]) {
-      boltPositions.push(new THREE.Vector3(x, -0.315, -0.835), new THREE.Vector3(x, -0.535, -0.835));
-    }
     for (const side of [-1, 1]) {
       boltPositions.push(
         new THREE.Vector3(side * 1.39, -0.18, -1.48),
@@ -565,6 +615,71 @@ export class CockpitModel {
     this.buildIndicatorBank(this.indicatorCoolMaterial, -0.26, 6);
     this.buildIndicatorBank(this.indicatorWarmMaterial, 0.26, 6);
     this.buildOverheadStatusLights(this.indicatorCoolMaterial);
+    this.buildMfdButtons(buttonMaterial);
+  }
+
+  private buildMfdButtons(material: THREE.MeshStandardMaterial): void {
+    const geometry = new THREE.BoxGeometry(0.024, 0.014, 0.014);
+    this.geometries.push(geometry);
+    const sectionBounds: readonly [number, number][] = [
+      [-0.535, -0.218],
+      [-0.195, 0.195],
+      [0.218, 0.535],
+    ];
+    const count = sectionBounds.length * 8;
+    const buttons = new THREE.InstancedMesh(geometry, material, count);
+    buttons.name = 'mfd-bezel-buttons';
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    let instance = 0;
+    for (let section = 0; section < sectionBounds.length; section++) {
+      const [left, right] = sectionBounds[section];
+      for (let index = 0; index < 8; index++) {
+        const t = (index + 0.5) / 8;
+        dummy.position.set(THREE.MathUtils.lerp(left, right, t), -0.541, -0.849);
+        dummy.rotation.set(-0.035, 0, 0);
+        dummy.scale.set(index % 3 === 0 ? 1.05 : 0.86, 1, 1);
+        dummy.updateMatrix();
+        buttons.setMatrixAt(instance, dummy.matrix);
+        // Cool navigation keys, neutral soft keys and two warm caution keys create a readable
+        // control rhythm without another emissive material or texture.
+        if ((section === 0 && index === 0) || (section === 2 && index === 7)) {
+          color.setHex(0xa05a32);
+        } else if ((index + section) % 3 === 0) {
+          color.setHex(0x5e9cac);
+        } else {
+          color.setHex(0x546069);
+        }
+        buttons.setColorAt(instance, color);
+        instance++;
+      }
+    }
+    buttons.instanceMatrix.needsUpdate = true;
+    if (buttons.instanceColor) buttons.instanceColor.needsUpdate = true;
+    this.registerMesh(buttons, SOLID_RENDER_ORDER + 8, this.motionRoot, count);
+  }
+
+  private buildOverheadKnobs(trim: GeometryBatch): void {
+    // Eight low-poly rotary knobs join the existing trim batch. Their axis follows the overhead
+    // panel slope, retaining the authored silhouette without adding an isolated draw call.
+    for (let i = 0; i < 8; i++) {
+      const row = Math.floor(i / 4);
+      const column = i % 4;
+      const rowT = row === 0 ? 0.38 : 0.7;
+      this.addCylinder(
+        trim,
+        new THREE.Vector3(
+          -0.36 + column * 0.24,
+          THREE.MathUtils.lerp(0.8, 0.98, rowT),
+          THREE.MathUtils.lerp(-1.44, -0.86, rowT) + 0.018,
+        ),
+        0.018,
+        0.021,
+        0.026,
+        8,
+        new THREE.Euler(Math.PI * 0.5 - 0.34, 0, (column - 1.5) * 0.13),
+      );
+    }
   }
 
   private buildIndicatorBank(material: THREE.Material, centreX: number, count: number): void {
@@ -619,13 +734,30 @@ export class CockpitModel {
     this.flushBatch(stickMetal, SOLID_RENDER_ORDER + 7, this.stickRoot);
 
     const stickPilot = this.batch(glove);
-    this.addSphere(stickPilot, new THREE.Vector3(-0.008, 0.18, 0.028), new THREE.Vector3(0.055, 0.072, 0.05), 12, 8);
-    this.addCylinderBetween(stickPilot, new THREE.Vector3(-0.13, -0.12, 0.2), new THREE.Vector3(-0.018, 0.14, 0.055), 0.048, 10);
+    // Compact right glove: the back of the hand, wrist and ten bent low-poly segments are one
+    // batch. Four fingers visibly cross the camera-facing side of the grip instead of forming a
+    // single capsule around it.
+    this.addSphere(stickPilot, new THREE.Vector3(-0.038, 0.184, 0.043), new THREE.Vector3(0.042, 0.052, 0.031), 10, 6);
+    this.addCylinderBetween(stickPilot, new THREE.Vector3(-0.086, 0.044, 0.132), new THREE.Vector3(-0.048, 0.14, 0.068), 0.031, 8);
+    for (let finger = 0; finger < 4; finger++) {
+      const y = 0.143 + finger * 0.024;
+      const lift = finger === 0 || finger === 3 ? -0.004 : 0.003;
+      const knuckle = new THREE.Vector3(-0.009, y + lift, 0.06);
+      this.addCylinderBetween(stickPilot, new THREE.Vector3(-0.056, y, 0.04), knuckle, 0.008, 6);
+      this.addCylinderBetween(stickPilot, knuckle, new THREE.Vector3(0.028, y - 0.004, 0.018), 0.0075, 6);
+    }
+    const stickThumbKnuckle = new THREE.Vector3(-0.012, 0.188, 0.067);
+    this.addCylinderBetween(stickPilot, new THREE.Vector3(-0.052, 0.214, 0.047), stickThumbKnuckle, 0.0095, 7);
+    this.addCylinderBetween(stickPilot, stickThumbKnuckle, new THREE.Vector3(0.021, 0.171, 0.03), 0.0085, 7);
+    // Rubber grip bands and a broad wrist cuff share the glove draw call.
+    this.addCylinder(stickPilot, new THREE.Vector3(0, 0.151, -0.005), 0.036, 0.036, 0.012, 10);
+    this.addCylinder(stickPilot, new THREE.Vector3(0, 0.219, -0.005), 0.036, 0.036, 0.012, 10);
+    this.addCylinderBetween(stickPilot, new THREE.Vector3(-0.105, 0.004, 0.158), new THREE.Vector3(-0.083, 0.052, 0.127), 0.043, 10);
     this.flushBatch(stickPilot, SOLID_RENDER_ORDER + 8, this.stickRoot);
 
     // A dark cuff visually separates the glove from the warm suit sleeve without another mesh.
     const stickSleeve = this.batch(fabric);
-    this.addCylinderBetween(stickSleeve, new THREE.Vector3(-0.17, -0.18, 0.24), new THREE.Vector3(-0.105, -0.075, 0.16), 0.062, 10);
+    this.addCylinderBetween(stickSleeve, new THREE.Vector3(-0.17, -0.18, 0.24), new THREE.Vector3(-0.105, 0.004, 0.158), 0.061, 10);
     this.flushBatch(stickSleeve, SOLID_RENDER_ORDER + 7, this.stickRoot);
 
     // Left throttle travels through a real arc. The hand and lever share its pivot, while the
@@ -640,12 +772,28 @@ export class CockpitModel {
     this.flushBatch(throttleMetal, SOLID_RENDER_ORDER + 7, this.throttleRoot);
 
     const throttlePilot = this.batch(glove);
-    this.addSphere(throttlePilot, new THREE.Vector3(0.012, 0.17, 0.025), new THREE.Vector3(0.061, 0.065, 0.052), 12, 8);
-    this.addCylinderBetween(throttlePilot, new THREE.Vector3(0.15, -0.14, 0.21), new THREE.Vector3(0.025, 0.13, 0.06), 0.048, 10);
+    // Mirrored articulated left glove. Fingers close around the wider throttle head and leave
+    // enough metal/rubber visible between them to explain what the pilot is holding.
+    this.addSphere(throttlePilot, new THREE.Vector3(0.041, 0.181, 0.043), new THREE.Vector3(0.044, 0.05, 0.032), 10, 6);
+    this.addCylinderBetween(throttlePilot, new THREE.Vector3(0.088, 0.041, 0.134), new THREE.Vector3(0.052, 0.137, 0.07), 0.031, 8);
+    for (let finger = 0; finger < 4; finger++) {
+      const y = 0.145 + finger * 0.023;
+      const lift = finger === 0 || finger === 3 ? -0.004 : 0.003;
+      const knuckle = new THREE.Vector3(0.009, y + lift, 0.063);
+      this.addCylinderBetween(throttlePilot, new THREE.Vector3(0.061, y, 0.041), knuckle, 0.008, 6);
+      this.addCylinderBetween(throttlePilot, knuckle, new THREE.Vector3(-0.047, y - 0.003, 0.019), 0.0075, 6);
+    }
+    const throttleThumbKnuckle = new THREE.Vector3(0.009, 0.188, 0.07);
+    this.addCylinderBetween(throttlePilot, new THREE.Vector3(0.055, 0.213, 0.048), throttleThumbKnuckle, 0.0095, 7);
+    this.addCylinderBetween(throttlePilot, throttleThumbKnuckle, new THREE.Vector3(-0.03, 0.17, 0.034), 0.0085, 7);
+    for (const y of [0.163, 0.194, 0.221]) {
+      this.addBox(throttlePilot, new THREE.Vector3(0, y, 0), new THREE.Vector3(0.096, 0.009, 0.08), new THREE.Euler(0.08, 0, 0));
+    }
+    this.addCylinderBetween(throttlePilot, new THREE.Vector3(0.108, 0.001, 0.161), new THREE.Vector3(0.085, 0.05, 0.13), 0.044, 10);
     this.flushBatch(throttlePilot, SOLID_RENDER_ORDER + 8, this.throttleRoot);
 
     const throttleSleeve = this.batch(fabric);
-    this.addCylinderBetween(throttleSleeve, new THREE.Vector3(0.19, -0.2, 0.25), new THREE.Vector3(0.12, -0.09, 0.17), 0.064, 10);
+    this.addCylinderBetween(throttleSleeve, new THREE.Vector3(0.19, -0.2, 0.25), new THREE.Vector3(0.108, 0.001, 0.161), 0.063, 10);
     this.flushBatch(throttleSleeve, SOLID_RENDER_ORDER + 7, this.throttleRoot);
   }
 
