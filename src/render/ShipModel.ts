@@ -112,6 +112,14 @@ const HULL_FRAG = /* glsl */ `
 
     vec3 color = shadeSurface(N, V, albedo, roughness, metalness, ao);
 
+    // Rear bulkheads face away from the key light in normal play and previously collapsed to
+    // near-black, making a closed cap read as an opening into the hull. Give only aft-facing end
+    // plates a restrained machine-light fill; side skins keep the fully directional lighting.
+    float aftPlate = smoothstep(0.86, 0.99, normalize(vLocalNormal).z)
+      * smoothstep(5.6, 7.0, vLocal.z);
+    vec3 aftPlateColor = uBase * 1.2 + uPanel * 0.05 + uEmissive * 0.035;
+    color = mix(color, aftPlateColor, aftPlate * 0.82);
+
     // There was a view-aligned hero fill here, adding albedo * uFill * (0.25 + fill * 0.75) so
     // the hull would not go to pure silhouette when the star is ahead. It is a
     // constant term across every visible surface, which is the definition of flattening: it
@@ -167,6 +175,8 @@ const CANOPY_FRAG = /* glsl */ `
 const PLUME_VERT = /* glsl */ `
   varying vec2 vUv;
   varying vec3 vLocal;
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
   uniform float uLength;
   uniform float uWidth;
   void main() {
@@ -175,7 +185,10 @@ const PLUME_VERT = /* glsl */ `
     p.xy *= uWidth;
     p.z *= uLength;
     vLocal = p;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    vViewNormal = normalize(normalMatrix * vec3(normal.xy / uWidth, normal.z / uLength));
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    vViewDir = -mv.xyz;
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
@@ -183,6 +196,8 @@ const PLUME_FRAG = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
   varying vec3 vLocal;
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
   uniform vec3 uCore;
   uniform vec3 uFlame;
   uniform float uPower;
@@ -191,36 +206,25 @@ const PLUME_FRAG = /* glsl */ `
   ${GLSL_NOISE}
 
   void main() {
-    /* vUv.y runs 1 at the NOZZLE and 0 at the tail — the opposite of what this comment used to
-     * claim, and every term below was written against the claim rather than the geometry.
-     *
-     * Measured, not argued. three's CylinderGeometry emits uv.y as 1 - v with v = 0 at
-     * radiusTop, so the narrow end carries uv.y = 1; rotateX(-PI/2) then translate(0,0,0.5)
-     * puts that narrow end at local z = 0, which is the nozzle. Reading the built attribute back
-     * confirms it exactly: (z=0, radius=0.10, v=1) and (z=1, radius=0.52, v=0).
-     *
-     * With t = vUv.y the consequences were total, not subtle: body = pow(1-t, 1.7) evaluated to
-     * 0.000 at the nozzle and 1.000 at the tail, so the drive was fully transparent exactly where
-     * it should burn, and the white-hot uCore was painted on the far end where only the cool
-     * uFlame belongs. At full boost the ship showed two nozzle-throat discs and no flame — the
-     * plume cone was there, dense, four metres behind where anyone would look for it. This is the
-     * most-looked-at surface in the game; it is on screen for the whole run.
-     */
+    // The shell is authored with vUv.y = 1 at the nozzle and 0 at the tail. Keep the corrected
+    // nozzle-to-tail direction explicit: every axial term below expects t = 0 at the nozzle.
     float t = clamp(1.0 - vUv.y, 0.0, 1.0);
-    float radial = abs(vUv.x - 0.5) * 2.0;
 
-    // Shock diamonds: periodic brightening along the plume, drifting outward.
-    float diamonds = 0.55 + 0.45 * sin(t * 34.0 - uTime * 22.0);
+    // Keep the wrapped circumference continuous; using it as a fake radius cuts a view-dependent
+    // seam into the shell. Fine variation is deliberately too small to break the body apart.
+    float around = 0.94 + 0.06 * sin(vUv.x * 6.2831853 + uTime * 2.7);
+    float diamonds = 0.88 + 0.12 * sin(t * 30.0 - uTime * 20.0);
     float turb = fbm(vec3(vLocal.xy * 3.4, t * 6.0 - uTime * 5.0), 3) * 0.5 + 0.5;
 
-    float body = pow(1.0 - t, 1.7);
-    float edge = 1.0 - smoothstep(0.25, 1.0, radial);
-    float density = body * edge * (0.55 + turb * 0.55) * mix(1.0, diamonds, 0.45);
+    float body = pow(1.0 - t, 1.25) * (1.0 - smoothstep(0.76, 1.0, t));
+    float facing = abs(dot(normalize(vViewNormal), normalize(vViewDir)));
+    float softSurface = 0.55 + 0.45 * pow(facing, 0.55);
+    float density = body * softSurface * around * (0.86 + turb * 0.2) * diamonds;
 
-    vec3 col = mix(uFlame, uCore, pow(1.0 - t, 2.4) * (1.0 - radial * 0.55));
-    col *= density * uPower * 2.6;
+    vec3 col = mix(uFlame, uCore, pow(1.0 - t, 1.8));
+    col *= uPower * 2.0;
 
-    gl_FragColor = vec4(col, clamp(density * uPower, 0.0, 1.0));
+    gl_FragColor = vec4(col, clamp(density * 0.72, 0.0, 1.0));
   }
 `;
 
@@ -281,32 +285,28 @@ export class ShipModel {
         uPower: { value: 1 },
       },
       vertexShader: /* glsl */ `
-        varying vec3 vNormal;
-        varying vec3 vView;
+        varying vec2 vUv;
         void main() {
-          vNormal = normalize(normalMatrix * normal);
+          vUv = uv;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          vView = normalize(-mv.xyz);
           gl_Position = projectionMatrix * mv;
         }
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        varying vec3 vNormal;
-        varying vec3 vView;
+        varying vec2 vUv;
         uniform vec3 uColor;
         uniform vec3 uFlame;
         uniform float uPower;
         void main() {
-          // Two lobes, and deliberately landing under 1.0 before the tonemap so the bloom
-          // chain carries the brightness instead of the disc clipping to flat white. A clipped
-          // emissive has no shape, so it reads as a hole rather than as a light source — and it
-          // throws away the cyan machine-light the whole direction is built on.
-          float facing = max(dot(normalize(vNormal), normalize(vView)), 0.0);
-          float core = pow(facing, 3.5);
-          float halo = pow(facing, 1.1);
+          // A CircleGeometry has one normal, so the old view-facing term was constant across the
+          // whole throat and tonemapped into a flat white coin. A radial core keeps the nozzle
+          // cyan, gives bloom a compact source, and feathers directly into the plume behind it.
+          float radius = length((vUv - 0.5) * 2.0);
+          float halo = 1.0 - smoothstep(0.18, 1.0, radius);
+          float core = 1.0 - smoothstep(0.0, 0.48, radius);
           vec3 col = mix(uFlame, uColor, core) * (halo * 0.55 + core * 0.85);
-          gl_FragColor = vec4(col * uPower, 1.0);
+          gl_FragColor = vec4(col * uPower * 0.62, halo);
         }
       `,
       transparent: true,
@@ -415,7 +415,7 @@ export class ShipModel {
         tipThickness: 0.08,
         z: 5.0,
         y: 0,
-        side: 1,
+        side,
       });
       // Cant the fins outward and up: 35 degrees reads as a real tail from behind.
       const mesh = this.add(fin, this.hullMat);
@@ -434,20 +434,28 @@ export class ShipModel {
         { z: 6.4, width: 0.58, height: 0.56, squareness: 4.0 },
         { z: 7.4, width: 0.62, height: 0.6, squareness: 3.4 },
       ];
-      const pod = this.add(loft({ stations, radialSegments: 22, capStart: true }), this.hullMat);
+      // Close the rear cross-section as a real bulkhead. The emissive throat sits just behind it;
+      // without this cap, off-axis chase views could see through the uncovered nozzle annulus.
+      const pod = this.add(
+        loft({ stations, radialSegments: 22, capStart: true, capEnd: true }),
+        this.hullMat,
+      );
       pod.position.set(side * 2.55, -0.14, 0);
 
       // Pylon linking pod to fuselage.
       const pylon = this.add(
         buildWing({
-          rootChord: 3.0,
-          tipChord: 2.4,
+          // The main wing carries the forward connection; this shoulder continues aft so the
+          // fuselage and pod stay joined through the nozzle deck instead of exposing sky between
+          // the main-wing trailing edge and the 7 m tail.
+          rootChord: 4.6,
+          tipChord: 3.6,
           span: 1.25,
-          sweep: 0.3,
+          sweep: 0.2,
           dihedral: 0,
           rootThickness: 0.18,
           tipThickness: 0.14,
-          z: 1.4,
+          z: 4.6,
           y: -0.14,
           side,
         }),
@@ -458,16 +466,17 @@ export class ShipModel {
       const nozzleZ = 7.5;
       this.nozzles.push({ position: new THREE.Vector3(side * 2.55, -0.14, nozzleZ), radius: 0.58 });
 
-      // Nozzle throat: a bright disc that stays visible even at idle.
-      // Sized to sit inside the nozzle throat. Any larger and the bloom swallows the pod.
-      const glowGeo = new THREE.CircleGeometry(0.42, 24);
+      // Nozzle throat: a compact radial glow that stays visible even at idle.
+      const glowGeo = new THREE.CircleGeometry(0.38, 24);
       const glow = this.add(glowGeo, this.glowMat);
       glow.position.set(side * 2.55, -0.14, nozzleZ + 0.02);
       glow.renderOrder = 3;
       this.glowMeshes.push(glow);
 
-      // Plume: a cone opening backwards from the nozzle.
-      const plumeGeo = new THREE.CylinderGeometry(0.1, 0.52, 1, 20, 1, true);
+      // A short tapered shell is stable from both axial and side views. Its maximum length stays
+      // in front of the chase camera's near plane, so perspective cannot inflate it into a pair
+      // of screen-corner triangles. UV.y remains 1 at the nozzle and 0 at the tail.
+      const plumeGeo = new THREE.CylinderGeometry(0.38, 0.012, 1, 16, 1, true);
       plumeGeo.rotateX(-Math.PI / 2);
       plumeGeo.translate(0, 0, 0.5);
       const plumeMat = new THREE.ShaderMaterial({
@@ -508,8 +517,8 @@ export class ShipModel {
     this.canopyMat.uniforms.uTime.value = time;
     this.canopyMat.uniforms.uCameraPos.value.copy(cameraPosition);
 
-    const length = 3.0 + power * 6.2 + boost * 13;
-    const width = 0.78 + power * 0.2 + boost * 0.42;
+    const length = 3.4 + power * 0.4 + boost * 0.2;
+    const width = 0.95 + power * 0.15 + boost * 0.25;
     for (const mat of this.plumeMats) {
       mat.uniforms.uPower.value = Math.max(0.05, power * 0.55 + boost * 0.45);
       mat.uniforms.uLength.value = length * (0.94 + Math.sin(time * 31 + mat.id) * 0.06);
@@ -521,7 +530,7 @@ export class ShipModel {
         boost,
       );
     }
-    this.glowMat.uniforms.uPower.value = 0.55 + power * 0.5 + boost * 0.7;
+    this.glowMat.uniforms.uPower.value = 0.38 + power * 0.3 + boost * 0.35;
   }
 
   setVisible(visible: boolean): void {

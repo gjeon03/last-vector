@@ -73,7 +73,7 @@ export function loft(options: LoftOptions): THREE.BufferGeometry {
       const b = a + 1;
       const c = a + stride;
       const d = c + 1;
-      indices.push(a, c, b, b, c, d);
+      indices.push(a, b, c, b, d, c);
     }
   }
 
@@ -166,10 +166,51 @@ export function buildWing(options: WingOptions): THREE.BufferGeometry {
       const b = a + 1;
       const c = a + stride;
       const d = c + 1;
-      if (options.side > 0) indices.push(a, c, b, b, c, d);
-      else indices.push(a, b, c, b, d, c);
+      if (options.side > 0) indices.push(a, b, c, b, d, c);
+      else indices.push(a, c, b, b, c, d);
     }
   }
+
+  // Duplicate the cap rings so their normals stay perpendicular to the end planes instead of
+  // being averaged with the wing skin. The section's final vertex duplicates its first, so each
+  // fan only copies the `seg` unique points and wraps explicitly at the leading edge.
+  const addCap = (spanStep: number, outwardX: number): void => {
+    const t = spanStep / spanSteps;
+    const thick = THREE.MathUtils.lerp(options.rootThickness, options.tipThickness, t);
+    const x = options.side * Math.cos(options.dihedral) * options.span * t;
+    const y = options.y + Math.sin(options.dihedral) * options.span * t;
+    const zc = options.z + options.sweep * t;
+    const sourceBase = spanStep * stride;
+    const capBase = positions.length / 3;
+    const uvHalfHeight = Math.max(Math.abs(thick), 1e-6);
+
+    for (let j = 0; j < seg; j++) {
+      const source = sourceBase + j;
+      const px = positions[source * 3];
+      const py = positions[source * 3 + 1];
+      const pz = positions[source * 3 + 2];
+      positions.push(px, py, pz);
+
+      const upper = j <= half;
+      const chordU = upper ? j / half : (seg - j) / half;
+      const capV = THREE.MathUtils.clamp(0.5 + (py - y) / (2 * uvHalfHeight), 0, 1);
+      uvs.push(chordU, capV);
+    }
+
+    const centre = positions.length / 3;
+    positions.push(x, y, zc);
+    uvs.push(0.5, 0.5);
+
+    for (let j = 0; j < seg; j++) {
+      const current = capBase + j;
+      const next = capBase + ((j + 1) % seg);
+      if (outwardX > 0) indices.push(centre, current, next);
+      else indices.push(centre, next, current);
+    }
+  };
+
+  addCap(0, -options.side);
+  addCap(spanSteps, options.side);
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

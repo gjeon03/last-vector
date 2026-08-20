@@ -13,10 +13,15 @@ const REQUIRED_METHODS = [
   'telemetry',
   'phase',
   'setAutopilot',
+  'setInput',
+  'activeInput',
   'seekCourse',
   'vantage',
+  'clearVantage',
   'vantages',
   'vantageSubjects',
+  'pose',
+  'cameraMode',
   'step',
   'present',
   'setDriven',
@@ -111,8 +116,44 @@ async function runScreenshotMatrix({ report, session, options }) {
     return evidence;
   });
 
+  if (setupOutcome.ok) {
+    const cockpitShots = [
+      { id: 'forward', name: 'Cockpit forward flight', input: { throttle: 0.72 }, frames: 12 },
+      { id: 'banked', name: 'Cockpit banked turn', input: { throttle: 0.72, roll: 0.9 }, frames: 42 },
+      { id: 'boost', name: 'Cockpit overdrive', input: { throttle: 1, boost: true }, frames: 90 },
+    ];
+    for (const shot of cockpitShots) {
+      const path = resolve(imageDirectory, `cockpit-${shot.id}.png`);
+      const outcome = await report.check({
+        id: `SCREENSHOT.cockpit-${shot.id}`,
+        name: shot.name,
+        criteria: [],
+        assertion:
+          'The authored-vantage override is cleared, cockpit is the applied camera mode with a '
+          + 'sub-0.25 m near plane and a pose within six metres of the ship, the requested flight '
+          + 'state is present, and the deterministic PNG passes the same image-quality bars as the authored matrix.',
+      }, async () => captureCell(page, options, {
+        position: 0.18,
+        path,
+        cockpit: shot,
+        chaseNear: setupOutcome.evidence.chaseNear,
+      }));
+      if (outcome.ok) {
+        report.addArtifact('screenshot', path, {
+          cameraMode: 'cockpit',
+          flightState: shot.id,
+          width: options.viewport.width,
+          height: options.viewport.height,
+          bytes: outcome.evidence.bytes,
+        });
+      }
+    }
+  }
+
   await bestEffort(page, 'setPaused', [false]);
   await bestEffort(page, 'setAutopilot', [false]);
+  await bestEffort(page, 'setInput', [null]);
+  await bestEffort(page, 'setSettings', [{ cameraMode: 'chase' }]);
   await bestEffort(page, 'setDriven', [false]);
 }
 
@@ -121,10 +162,18 @@ async function prepareMatrix(page, options) {
   await callHarness(page, 'ready', [], options.timeoutMs);
   // Film grain is uncorrelated between processes at +/-4/255, so with it on these PNGs differ
   // byte-wise between runs and the suite cannot serve as a pixel baseline for anyone.
-  await callHarness(page, 'setSettings', [{ quality: options.quality, renderScale: 1, showFps: false, filmGrain: false }]);
+  await callHarness(page, 'setSettings', [{
+    quality: options.quality,
+    renderScale: 1,
+    showFps: false,
+    filmGrain: false,
+    cameraMode: 'chase',
+  }]);
   const settings = await callHarness(page, 'settings');
-  verify(settings?.quality === options.quality && settings?.renderScale === 1, 'Screenshot quality settings did not apply.', {
-    requested: { quality: options.quality, renderScale: 1 },
+  verify(settings?.quality === options.quality
+    && settings?.renderScale === 1
+    && settings?.cameraMode === 'chase', 'Screenshot quality and chase-camera settings did not apply.', {
+    requested: { quality: options.quality, renderScale: 1, cameraMode: 'chase' },
     actual: settings,
   });
 
@@ -154,6 +203,10 @@ async function prepareMatrix(page, options) {
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
   await stepUntilFlying(page, options.timeoutMs);
   await callHarness(page, 'setAutopilot', [false]);
+  await callHarness(page, 'clearVantage');
+  await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  const chasePose = await callHarness(page, 'pose');
+  verify(chasePose?.camera?.near > 0, 'Chase camera did not report a valid near plane.', { chasePose });
   await callHarness(page, 'setPaused', [true]);
 
   return {
@@ -166,6 +219,7 @@ async function prepareMatrix(page, options) {
     selectedVantages,
     positions: options.positions,
     viewport: options.viewport,
+    chaseNear: chasePose.camera.near,
   };
 }
 
@@ -177,8 +231,15 @@ async function captureCell(page, options, cell) {
   await page.evaluate(() => { document.documentElement.dataset.lvCapture = '1'; });
   await callHarness(page, 'setPaused', [false]);
   await callHarness(page, 'seekCourse', [cell.position]);
-  await callHarness(page, 'vantage', [cell.vantage]);
-  await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  if (cell.cockpit) {
+    await callHarness(page, 'clearVantage');
+    await callHarness(page, 'setSettings', [{ cameraMode: 'cockpit' }]);
+    await callHarness(page, 'setInput', [cell.cockpit.input]);
+    await callHarness(page, 'step', [cell.cockpit.frames, 1 / 60], options.timeoutMs);
+  } else {
+    await callHarness(page, 'vantage', [cell.vantage]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  }
   // Let the HUD finish fading in before photographing it.
   //
   // `.lv-hud` drives its own opacity from a `--a` custom property that starts at 0 and ramps.
@@ -190,6 +251,9 @@ async function captureCell(page, options, cell) {
   await callHarness(page, 'present', [], options.timeoutMs);
   await callHarness(page, 'setPaused', [true]);
   const telemetry = await callHarness(page, 'telemetry');
+  const activeInput = await callHarness(page, 'activeInput');
+  const pose = await callHarness(page, 'pose');
+  const cameraMode = await callHarness(page, 'cameraMode');
   const bytes = await page.screenshot({
     path: cell.path,
     type: 'png',
@@ -206,9 +270,14 @@ async function captureCell(page, options, cell) {
     file: cell.path,
     bytes: bytes.length,
     position: cell.position,
-    vantage: cell.vantage,
+    vantage: cell.vantage ?? null,
+    cockpitState: cell.cockpit?.id ?? null,
+    cameraMode,
+    camera: pose?.camera ?? null,
+    cameraDistanceFromShip: pose ? vectorDistance(pose.position, pose.camera.position) : null,
     viewport: options.viewport,
     telemetry: compactTelemetry(telemetry),
+    activeInput,
     hudAlpha,
     image: stats,
   };
@@ -243,6 +312,30 @@ async function captureCell(page, options, cell) {
   // Every other statistic here reduces the pixel to Rec.709 luminance first, so a channel-swapped,
   // hue-rotated or fully desaturated build passes all ten cells unchanged.
   verify(stats.chromaMean >= 0.02, `Frame is effectively greyscale (mean chroma ${stats.chromaMean}).`, evidence);
+  if (cell.cockpit) {
+    verify(cameraMode === 'cockpit', 'Cockpit capture fell back to a different applied camera mode.', evidence);
+    verify(finitePositive(pose?.camera?.near) && pose.camera.near < 0.25,
+      `Cockpit near plane is ${pose?.camera?.near}; close geometry will clip.`, evidence);
+    verify(pose.camera.near < cell.chaseNear / 4,
+      'Cockpit near plane is not materially closer than the measured chase near plane.', evidence);
+    verify(evidence.cameraDistanceFromShip < 6,
+      `Cockpit camera is ${evidence.cameraDistanceFromShip} m from the ship.`, evidence);
+    if (cell.cockpit.id === 'forward') {
+      verify(telemetry.boosting === false
+        && activeInput.boost === false
+        && Math.abs(activeInput.pitch) < 1e-9
+        && Math.abs(activeInput.yaw) < 1e-9
+        && Math.abs(activeInput.roll) < 1e-9,
+      'Forward cockpit evidence was not captured under a straight, non-boosted command.', evidence);
+    } else if (cell.cockpit.id === 'banked') {
+      verify(Math.abs(telemetry.roll) > 0.12,
+        `Banked cockpit evidence has only ${telemetry.roll} rad of roll.`, evidence);
+    } else if (cell.cockpit.id === 'boost') {
+      verify(telemetry.boosting === true,
+        'Overdrive cockpit evidence was captured without boost engaged.', evidence);
+    }
+    await callHarness(page, 'setInput', [null]);
+  }
   // The frame has to contain the thing it is a picture of. Every other assertion here is a
   // global luminance statistic, and nebula plus starfield satisfies the whole battery — which is
   // how two stills with no subject in them passed, one of them the destination.
@@ -326,4 +419,12 @@ function formatPosition(position) {
 function slug(value) {
   const safe = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   return safe || 'vantage';
+}
+
+function vectorDistance(a, b) {
+  return Math.hypot(...a.map((value, index) => value - b[index]));
+}
+
+function finitePositive(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }

@@ -113,15 +113,19 @@ export const FLIGHT: Record<
   number
 > = {
   /** Metres per second. */
-  cruiseSpeed: 420,
-  boostSpeed: 980,
-  maxSpeed: 1080,
+  // A uniform 10% lift keeps the authority and autopilot ratios intact while making both the
+  // ordinary line and an overdrive burst visibly cover more ground. Measured 12-15% passes
+  // crossed the existing controller's safe cornering envelope; 10% retains a clean reference run.
+  cruiseSpeed: 462,
+  boostSpeed: 1078,
+  maxSpeed: 1188,
   /** Seconds to reach cruise from rest at full throttle. */
   spoolTime: 2.4,
   boostCapacity: 100,
-  boostDrain: 34,
-  boostRegen: 17,
-  boostRegenDelay: 0.9,
+  // About 3.2 s from a full tank to the latch floor, followed by a noticeably shorter recovery.
+  boostDrain: 29,
+  boostRegen: 22,
+  boostRegenDelay: 0.65,
 };
 
 /**

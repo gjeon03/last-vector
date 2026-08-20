@@ -5,7 +5,7 @@
  * This is a stable contract: the playtest tooling under `scripts/playtest/` depends on it.
  */
 
-import type { Phase, RunResult, Settings, Telemetry } from './contracts.ts';
+import type { CameraMode, Phase, RunResult, Settings, Telemetry } from './contracts.ts';
 
 export interface HarnessInput {
   /**
@@ -79,6 +79,8 @@ export interface HarnessPose {
   camera: {
     position: [number, number, number];
     forward: [number, number, number];
+    /** Active perspective near plane, metres. Cockpit mode needs a substantially closer plane. */
+    near: number;
   };
 }
 
@@ -90,6 +92,9 @@ export interface GatePassRecord {
   radialDistance: number;
   speed: number;
   cleared: boolean;
+  /** Normalised overdrive reserve immediately before and after the gate's 25% reward. */
+  boostEnergyBefore: number;
+  boostEnergyAfter: number;
 }
 
 export interface HarnessApi {
@@ -130,6 +135,8 @@ export interface HarnessApi {
   seekCourse(t: number): void;
   /** Park a free camera at a named cinematic vantage point for screenshots. */
   vantage(name: string): void;
+  /** Return from an authored vantage to the player's selected flight camera. */
+  clearVantage(): void;
   /** Names accepted by `vantage`. */
   vantages(): string[];
   /**
@@ -200,6 +207,8 @@ export interface HarnessApi {
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;
   setSettings(patch: Partial<Settings>): void;
+  /** The flight camera mode currently applied by the game, not merely the stored preference. */
+  cameraMode(): CameraMode;
   /**
    * Freezes SIMULATION only. Does NOT open the pause menu, release pointer lock or duck the
    * drive, so it reaches a state no player can occupy: paused, pointer still locked, audio at
@@ -265,6 +274,22 @@ export interface HazardReport {
    * the collider. Identity of the recorded list does.
    */
   colliderSharesDrawnList: boolean | null;
+  /** Deterministic, gameplay-only moving subset; never varies with the quality population. */
+  motion: {
+    count: number;
+    cap: number;
+    elapsed: number;
+    /** Peak metres any moving rock has left its authored position since the last motion reset. */
+    maxDisplacement: number;
+    displacementLimit: number;
+    /** Peak player-proximity retreat since reset; outward from the line and separately bounded. */
+    maxPlayerResponse: number;
+    playerResponseLimit: number;
+    /** Minimum distance change caused by reaction; non-negative means it never approaches. */
+    minPlayerDistanceDelta: number;
+    /** Stable ids and quantised positions, suitable for reset/seed determinism assertions. */
+    signature: string;
+  };
 }
 
 declare global {

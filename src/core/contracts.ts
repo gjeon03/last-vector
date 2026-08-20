@@ -188,6 +188,7 @@ export interface HudHost {
 }
 
 export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
+export type CameraMode = 'chase' | 'cockpit';
 
 export interface Settings {
   quality: QualityLevel;
@@ -215,6 +216,7 @@ export interface Settings {
   cameraShake: number;
   showFps: boolean;
   assistLevel: 'arcade' | 'standard' | 'raw';
+  cameraMode: CameraMode;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -232,6 +234,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cameraShake: 1,
   showFps: false,
   assistLevel: 'standard',
+  cameraMode: 'chase',
 };
 
 export type SfxEvent =

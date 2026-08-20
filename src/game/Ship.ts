@@ -345,6 +345,18 @@ export class Ship {
     return clamp01(this.energy / FLIGHT.boostCapacity);
   }
 
+  /** Adds overdrive reserve immediately and returns the normalised before/after evidence. */
+  rechargeBoost(amount: number): { before: number; after: number } {
+    const before = this.energy01;
+    if (Number.isFinite(amount) && amount > 0) {
+      this.energy = Math.min(FLIGHT.boostCapacity, this.energy + amount);
+      // A gate reward is meant to be usable now. It is already a deliberate one-shot refill, so
+      // it may release the ordinary regeneration latch as soon as there is a usable reserve.
+      if (this.boostLocked && this.energy > FLIGHT.boostCapacity * 0.08) this.boostLocked = false;
+    }
+    return { before, after: this.energy01 };
+  }
+
   get throttleSmoothed(): number {
     return this.smoothedThrottle;
   }

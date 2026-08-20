@@ -18,11 +18,14 @@ const REQUIRED_METHODS = [
   'pose',
   'setAutopilot',
   'gateHistory',
+  'hazard',
   'step',
   'setDriven',
   'setFixedTimestep',
   'setSettings',
   'settings',
+  'cameraMode',
+  'clearVantage',
   'errors',
 ];
 
@@ -210,18 +213,103 @@ async function runPlaytest({ report, session, options }) {
     };
   });
 
+  await report.check({
+    id: 'CAMERA.cockpit-toggle-persistence',
+    name: 'The real view key applies and persists the cockpit camera',
+    criteria: [criterion('M7', 'partial', 'Drives the real KeyV action during active flight, then verifies the applied camera geometry and the SettingsStore reload path.')],
+    assertion:
+      'During active flight a real KeyV changes chase to cockpit without changing any ship state; '
+      + 'cockpit places the camera within six metres of the ship and uses a near plane below 0.25 m; '
+      + 'the selection survives reload; a second real KeyV restores the chase boom and original '
+      + 'near plane, again without directly changing ship state.',
+  }, async () => {
+    const e = await collectCameraEvidence(page, options);
+    verify(e.phaseAtFirstToggle === 'flying' && e.phaseAtSecondToggle === 'flying',
+      'KeyV was not exercised during active flight.', e);
+    verify(e.initial.mode === 'chase' && e.initial.settingsMode === 'chase',
+      'The probe did not begin with both applied and stored modes set to chase.', e);
+    verify(e.afterFirstKey.mode === 'cockpit' && e.afterFirstKey.settingsMode === 'cockpit',
+      'A real KeyV did not change both the applied camera and stored setting to cockpit.', e);
+    verify(e.afterFirstKey.shipUnchanged,
+      'Changing to cockpit directly mutated ship position, orientation, velocity, or angular velocity.', e);
+    verify(e.cockpit.distanceFromShip < 6,
+      `Cockpit camera is ${e.cockpit.distanceFromShip} m from the ship; this is still a chase pose.`, e);
+    verify(e.cockpit.shipForwardAlignment > 0.995,
+      'Cockpit camera is close to the ship but is not aimed with the ship nose.', e);
+    verify(e.cockpit.near > 0 && e.cockpit.near < 0.25,
+      `Cockpit near plane is ${e.cockpit.near} m; close cockpit geometry will clip.`, e);
+    verify(e.initial.distanceFromShip > e.cockpit.distanceFromShip * 2.5,
+      'Cockpit did not materially move the camera in from the chase boom.', e);
+    verify(e.initial.near > e.cockpit.near * 4,
+      'Cockpit did not materially tighten the camera near plane.', e);
+    verify(e.persisted.settingsMode === 'cockpit' && e.persisted.mode === 'cockpit',
+      'The cockpit selection did not survive the SettingsStore reload path.', e);
+    verify(e.persisted.shipMatchesChaseTrace,
+      'An identical 45-frame flight trace produced different ship state in cockpit and chase modes.', e);
+    verify(e.afterSecondKey.mode === 'chase' && e.afterSecondKey.settingsMode === 'chase',
+      'A second real KeyV did not restore both applied and stored chase mode.', e);
+    verify(e.afterSecondKey.shipUnchanged,
+      'Returning to chase directly mutated ship position, orientation, velocity, or angular velocity.', e);
+    verify(Math.abs(e.restored.near - e.initial.near) <= 1e-9,
+      `Returning to chase restored near ${e.restored.near}, not the original ${e.initial.near}.`, e);
+    verify(e.restored.distanceFromShip > e.persisted.distanceFromShip * 2.5,
+      'Returning to chase did not restore the external boom pose.', e);
+    verify(Math.abs(e.restored.distanceFromShip - e.initial.distanceFromShip) < 4,
+      'The restored chase boom is materially different from the initial chase pose.', e);
+    verify(vectorDistance(e.restored.forward, e.initial.forward) < 0.02,
+      'The restored chase camera did not recover the initial forward aim.', e);
+    return e;
+  });
+
+  await report.check({
+    id: 'FEEL.speed-ceilings',
+    name: 'Cruise and overdrive deliver the faster flight envelope',
+    criteria: [criterion('M2', 'partial', 'Measures the shipped flight model under sustained throttle at a fixed timestep.')],
+    assertion:
+      'After settling at full cruise the ship exceeds 450 m/s; a two-second overdrive then exceeds '
+      + '1050 m/s, while telemetry advertises a cap of at least 1180 m/s.',
+  }, async () => {
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [{ throttle: 1, boost: false }]);
+    await callHarness(page, 'step', [480, 1 / 60]);
+    const cruise = await callHarness(page, 'telemetry');
+    await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
+    await callHarness(page, 'step', [120, 1 / 60]);
+    const boosted = await callHarness(page, 'telemetry');
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setDriven', [false]);
+    const evidence = {
+      cruiseSpeed: cruise.speed,
+      boostedSpeed: boosted.speed,
+      advertisedMaxSpeed: boosted.maxSpeed,
+      simulatedSeconds: { cruise: 8, boost: 2 },
+    };
+    verify(finiteNumber(cruise.speed) && cruise.speed > 450,
+      `Settled cruise was ${cruise.speed} m/s; the faster cruise envelope is absent.`, evidence);
+    verify(finiteNumber(boosted.speed) && boosted.speed > 1050,
+      `Two-second overdrive reached only ${boosted.speed} m/s.`, evidence);
+    verify(finiteNumber(boosted.maxSpeed) && boosted.maxSpeed >= 1180,
+      `Advertised maximum is still ${boosted.maxSpeed} m/s.`, evidence);
+    return evidence;
+  });
+
   const playthroughOutcome = await capture(async () => collectPlaythrough(page, options));
 
   await report.check({
     id: 'M3.sequential-gates',
     name: 'Autopilot clears every gate in order',
     criteria: [criterion('M3', 'full', 'Uses a fixed-timestep scripted playthrough and validates monotonic gate progression plus the final result counts.')],
-    assertion: 'At fixed 1/60 s timestep, skill-1 autopilot reaches a result with gatesTotal > 0, clears every gate exactly once in index order, records finite pass evidence, and emits one split per gate.',
+    assertion: 'At fixed 1/60 s timestep, skill-1 autopilot reaches a clean S-rank result with gatesTotal > 0, clears every gate exactly once in index order, records finite pass evidence, and emits one split per gate.',
   }, async () => {
     const evidence = unwrap(playthroughOutcome);
     const result = evidence.result;
     verify(result && Number.isInteger(result.gatesTotal) && result.gatesTotal > 0, 'Finished result has no positive gate total.', evidence);
     verify(result.gatesCleared === result.gatesTotal, 'Not every gate was cleared.', evidence);
+    verify(result.cleanRun === true, 'Skill-1 autopilot hit a hazard at the faster flight envelope.', evidence);
+    verify(result.rank === 'S', `Skill-1 autopilot finished at rank ${result.rank} instead of S.`, evidence);
     verify(Array.isArray(result.splits) && result.splits.length === result.gatesTotal, 'Split count does not match gate total.', evidence);
     verify(evidence.gateIndices.every((value, index, values) => index === 0 || value >= values[index - 1]), 'Gate indices moved backwards.', evidence);
     verify(Array.isArray(evidence.gateHistory) && evidence.gateHistory.length === result.gatesTotal, 'Gate history count does not match gate total.', evidence);
@@ -249,6 +337,27 @@ async function runPlaytest({ report, session, options }) {
     verify(finiteNumber(evidence.result.totalTime) && evidence.result.totalTime > 0, 'Run result totalTime is not positive and finite.', evidence);
     verify(typeof evidence.result.destinationName === 'string' && evidence.result.destinationName.trim().length > 0, 'Run result has no destination name.', evidence);
     return evidence;
+  });
+
+  await report.check({
+    id: 'FEEL.gate-boost-recharge',
+    name: 'Every cleared gate immediately restores overdrive reserve',
+    criteria: [criterion('M3', 'full', 'Uses before/after reserve evidence captured synchronously inside the real gate-pass callback.')],
+    assertion:
+      'Every deterministic autopilot pass records normalised reserve immediately before and after '
+      + 'the crossing; after equals min(1, before + 0.25), and at least one pass receives 20% or more.',
+  }, async () => {
+    const evidence = unwrap(playthroughOutcome);
+    const passes = evidence.gateHistory;
+    verify(Array.isArray(passes) && passes.length > 0, 'No gate-pass recharge evidence was recorded.', evidence);
+    verify(passes.every((pass) => finiteNumber(pass.boostEnergyBefore)
+      && finiteNumber(pass.boostEnergyAfter)
+      && Math.abs(pass.boostEnergyAfter - Math.min(1, pass.boostEnergyBefore + 0.25)) <= 1e-6),
+    'A gate did not apply the 25%-capacity recharge synchronously.', { passes });
+    const deltas = passes.map((pass) => pass.boostEnergyAfter - pass.boostEnergyBefore);
+    verify(deltas.some((delta) => delta >= 0.2),
+      'Every gate reward was clipped near full, so the playthrough did not prove a material recharge.', { passes, deltas });
+    return { passes, deltas };
   });
 
   // Regression guard. The overdrive latch has failed twice in two different ways: it re-lit
@@ -322,10 +431,14 @@ async function runPlaytest({ report, session, options }) {
   }, async () => {
     /* One simulated frame guarantees resolveCollisions has recorded a list — it runs
        unconditionally in simulate(), attract mode included. */
-    await callHarness(page, 'step', [2]);
     const byQuality = {};
     for (const quality of ['low', 'medium', 'high', 'ultra']) {
       await callHarness(page, 'setSettings', [{ quality }]);
+      // Reset to one simulation origin: a moving course cannot be compared at four different
+      // timestamps and called a quality difference.
+      await callHarness(page, 'startRun', [{ skipIntro: true }]);
+      await callHarness(page, 'setAutopilot', [false]);
+      await callHarness(page, 'setInput', [{ throttle: 0, brake: true }]);
       await callHarness(page, 'step', [2]);
       // Sample count is pinned: hazard() is sample-count sensitive, and three reviewers quoting
       // its digits without stating theirs produced three different answers for one property.
@@ -342,9 +455,58 @@ async function runPlaytest({ report, session, options }) {
     }
     const gameplay = new Set(Object.values(byQuality).map((h) => h.gameplayRocks));
     verify(gameplay.size === 1, 'Gameplay rock count changes with quality.', { byQuality });
+    const moving = new Set(Object.values(byQuality).map((h) => `${h.motion.count}/${h.motion.signature}`));
+    verify(moving.size === 1, 'The moving gameplay subset changes with quality.', { byQuality });
     const drawn = Object.values(byQuality).map((h) => h.activeRocks);
     verify(drawn[0] < drawn[drawn.length - 1], 'Quality no longer changes the drawn population at all.', { byQuality });
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setDriven', [false]);
     return { samples: 900, byQuality };
+  });
+
+  await report.check({
+    id: 'M3.moving-hazard-bounds',
+    name: 'Moving hazards are deterministic, bounded, and resettable',
+    criteria: [criterion('M3', 'full', 'Compares real simulated hazard positions across reset and quality, and asserts measured displacement/reaction bounds.')],
+    assertion:
+      'Only the fixed gameplay subset moves; after identical three-second traces low and ultra '
+      + 'produce the same signature, a new run reproduces it, sway is non-zero but below the '
+      + 'declared small bound, and player response never exceeds two metres.',
+  }, async () => {
+    const trace = async (quality) => {
+      await callHarness(page, 'setSettings', [{ quality }]);
+      await callHarness(page, 'startRun', [{ skipIntro: true }]);
+      await callHarness(page, 'setAutopilot', [false]);
+      await callHarness(page, 'setInput', [{ throttle: 0, brake: true }]);
+      const reset = await callHarness(page, 'hazard', [60]);
+      await callHarness(page, 'step', [180, 1 / 60]);
+      const moved = await callHarness(page, 'hazard', [60]);
+      return { reset: reset.motion, moved: moved.motion };
+    };
+    await callHarness(page, 'setDriven', [true]);
+    const low = await trace('low');
+    const lowReplay = await trace('low');
+    const ultra = await trace('ultra');
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setDriven', [false]);
+
+    const playerRunMotion = unwrap(playthroughOutcome).finalHazard.motion;
+    const evidence = { low, lowReplay, ultra, playerRunMotion };
+    verify(low.reset.maxDisplacement === 0 && low.reset.elapsed === 0,
+      'A new run did not restore the authored moving-hazard state.', evidence);
+    verify(low.moved.count === low.moved.cap && low.moved.count > 0 && low.moved.cap <= 16,
+      'Moving hazards are not the expected small fixed-cap set.', evidence);
+    verify(low.moved.signature === lowReplay.moved.signature && low.moved.signature === ultra.moved.signature,
+      'Identical traces changed across reset or quality.', evidence);
+    verify(low.moved.maxDisplacement > 0
+      && low.moved.maxDisplacement <= low.moved.displacementLimit + 1e-6,
+    'Moving-hazard displacement is absent or exceeds its hard bound.', evidence);
+    verify(playerRunMotion.maxPlayerResponse > 0
+      && playerRunMotion.maxPlayerResponse <= playerRunMotion.playerResponseLimit + 1e-6,
+    'The real playthrough did not observe a bounded player-proximity response.', evidence);
+    verify(playerRunMotion.minPlayerDistanceDelta >= -1e-6,
+      'A proximity response moved a hazard closer to the player.', evidence);
+    return evidence;
   });
 
   await report.check({
@@ -408,12 +570,34 @@ async function runPlaytest({ report, session, options }) {
       if (sample.boosting) run += 1;
       else if (run > 0) { bursts.push(run * 0.2); run = 0; }
     }
-    if (run > 0) bursts.push(run * 0.2);
+    // A burst still active when the 24 s observation window closes is right-censored: its
+    // measured prefix is not its duration and must not fail the minimum-duration assertion.
+    const trailingBurst = run > 0 ? run * 0.2 : null;
 
-    const evidence = { samples: samples.length, bursts, shortest: bursts.length ? Math.min(...bursts) : null };
+    const gaps = [];
+    let gap = 0;
+    let seenBurst = false;
+    for (const sample of samples) {
+      if (sample.boosting) {
+        if (seenBurst && gap > 0) gaps.push(gap * 0.2);
+        seenBurst = true;
+        gap = 0;
+      } else if (seenBurst) gap += 1;
+    }
+    const evidence = {
+      samples: samples.length,
+      bursts,
+      recoveryGaps: gaps,
+      trailingBurst,
+      firstBurst: bursts[0] ?? null,
+      shortest: bursts.length ? Math.min(...bursts) : null,
+    };
     verify(bursts.length > 0, 'Boost never engaged while the key was held.', evidence);
     verify(bursts.length <= 8, `Boost re-ignited ${bursts.length} times in 24 s; the latch is stuttering.`, evidence);
     verify(bursts.every((d) => d >= 0.6), `Shortest boost burst was ${evidence.shortest} s; bursts under 0.6 s read as a fault.`, evidence);
+    verify(evidence.firstBurst >= 3, `A full reserve lasted only ${evidence.firstBurst} s; the longer burst is absent.`, evidence);
+    verify(gaps.length > 0 && Math.min(...gaps) <= 2.6,
+      `Fast recovery was not observed; gaps were ${gaps.join(', ')} s.`, evidence);
     return evidence;
   });
   void boostOutcome;
@@ -510,6 +694,7 @@ async function collectPlaythrough(page, options) {
 
     const result = await callHarness(page, 'result');
     const gateHistory = await callHarness(page, 'gateHistory');
+    const finalHazard = await callHarness(page, 'hazard', [60]);
     const evidence = {
       seed: options.seed,
       fixedTimestep: 1 / 60,
@@ -522,6 +707,7 @@ async function collectPlaythrough(page, options) {
       finalPhase,
       finalTelemetry: compactTelemetry(telemetry),
       gateHistory,
+      finalHazard,
       result,
     };
     verify(finalPhase === 'finished', `Playthrough exceeded ${options.maxSimSeconds} simulated seconds before finishing.`, evidence);
@@ -599,6 +785,88 @@ async function collectKeyboardEvidence(page, options) {
   };
 }
 
+async function collectCameraEvidence(page, options) {
+  verify(page, 'Browser page is unavailable.');
+  const prepareFlight = async () => {
+    // Force a fresh driven-mode transition so both sides of the reload comparison get the same
+    // world-clock origin as well as the same fixed step.
+    await callHarness(page, 'setDriven', [false]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [{ throttle: 0, brake: true }]);
+    await callHarness(page, 'clearVantage');
+    await stepUntilFlying(page, options.timeoutMs);
+    // Let either camera settle at the run's deterministic start before measuring its boom.
+    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+  };
+
+  try {
+    await callHarness(page, 'ready', [], options.timeoutMs);
+    await callHarness(page, 'setSettings', [{ cameraMode: 'chase' }]);
+    await prepareFlight();
+
+    const initialPose = await callHarness(page, 'pose');
+    const initialShip = shipSnapshot(initialPose);
+    const initial = {
+      ...cameraSample(initialPose),
+      mode: await callHarness(page, 'cameraMode'),
+      settingsMode: (await callHarness(page, 'settings')).cameraMode,
+    };
+    const phaseAtFirstToggle = await callHarness(page, 'phase');
+    const beforeFirstKey = shipSnapshot(initialPose);
+    await page.keyboard.press('v');
+    const immediatelyAfterFirstKey = await callHarness(page, 'pose');
+    const afterFirstKey = {
+      mode: await callHarness(page, 'cameraMode'),
+      settingsMode: (await callHarness(page, 'settings')).cameraMode,
+      shipUnchanged: sameShipSnapshot(beforeFirstKey, shipSnapshot(immediatelyAfterFirstKey)),
+    };
+    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    const cockpit = cameraSample(await callHarness(page, 'pose'));
+
+    // KeyV must route through SettingsStore, so a cold Game instance must recover cockpit mode.
+    await reloadHarness(page, options.timeoutMs);
+    const persistedSettings = await callHarness(page, 'settings');
+    await prepareFlight();
+    const persistedPose = await callHarness(page, 'pose');
+    const persisted = {
+      ...cameraSample(persistedPose),
+      mode: await callHarness(page, 'cameraMode'),
+      settingsMode: persistedSettings.cameraMode,
+      shipMatchesChaseTrace: sameShipSnapshot(initialShip, shipSnapshot(persistedPose)),
+    };
+
+    const phaseAtSecondToggle = await callHarness(page, 'phase');
+    const beforeSecondKey = shipSnapshot(persistedPose);
+    await page.keyboard.press('v');
+    const immediatelyAfterSecondKey = await callHarness(page, 'pose');
+    const afterSecondKey = {
+      mode: await callHarness(page, 'cameraMode'),
+      settingsMode: (await callHarness(page, 'settings')).cameraMode,
+      shipUnchanged: sameShipSnapshot(beforeSecondKey, shipSnapshot(immediatelyAfterSecondKey)),
+    };
+    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    const restored = cameraSample(await callHarness(page, 'pose'));
+
+    return {
+      phaseAtFirstToggle,
+      phaseAtSecondToggle,
+      initial,
+      afterFirstKey,
+      cockpit,
+      persisted,
+      afterSecondKey,
+      restored,
+    };
+  } finally {
+    await bestEffort(page, 'setSettings', [{ cameraMode: 'chase' }]);
+    await bestEffort(page, 'setInput', [null]);
+    await bestEffort(page, 'setDriven', [false]);
+  }
+}
+
 async function stepUntilFlying(page, timeoutMs) {
   let simulatedFrames = 0;
   while (simulatedFrames <= 600) {
@@ -619,6 +887,7 @@ function compactTelemetry(telemetry) {
     maxSpeed: telemetry.maxSpeed,
     throttle: telemetry.throttle,
     boosting: telemetry.boosting,
+    energy: telemetry.energy,
     roll: telemetry.roll,
     pitch: telemetry.pitch,
     gate: telemetry.gate,
@@ -636,7 +905,41 @@ function validPose(pose) {
     [pose.velocity, 3],
     [pose.angularVelocity, 3],
     [pose.forward, 3],
-  ].every(([vector, length]) => Array.isArray(vector) && vector.length === length && vector.every(finiteNumber));
+    [pose.camera?.position, 3],
+    [pose.camera?.forward, 3],
+  ].every(([vector, length]) => Array.isArray(vector) && vector.length === length && vector.every(finiteNumber))
+    && finiteNumber(pose.camera?.near) && pose.camera.near > 0;
+}
+
+function shipSnapshot(pose) {
+  return {
+    position: pose.position,
+    quaternion: pose.quaternion,
+    velocity: pose.velocity,
+    angularVelocity: pose.angularVelocity,
+    forward: pose.forward,
+  };
+}
+
+function sameShipSnapshot(a, b) {
+  return Object.keys(a).every((key) =>
+    Array.isArray(a[key])
+    && Array.isArray(b[key])
+    && a[key].length === b[key].length
+    && a[key].every((value, index) => Object.is(value, b[key][index])));
+}
+
+function cameraSample(pose) {
+  verify(validPose(pose), 'Camera probe received a malformed pose.', pose);
+  return {
+    position: pose.camera.position,
+    forward: pose.camera.forward,
+    near: pose.camera.near,
+    distanceFromShip: vectorDistance(pose.position, pose.camera.position),
+    shipForwardAlignment: pose.camera.forward.reduce(
+      (sum, value, index) => sum + value * pose.forward[index], 0,
+    ),
+  };
 }
 
 function vectorDistance(a, b) {

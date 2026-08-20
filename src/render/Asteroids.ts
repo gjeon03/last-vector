@@ -178,6 +178,8 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
 }
 
 export interface AsteroidInstance {
+  /** Stable construction index, used only for deterministic harness evidence. */
+  id: number;
   position: THREE.Vector3;
   /**
    * Close enough to the racing line to be part of the course. Gameplay rock is always drawn
@@ -206,6 +208,50 @@ const GAMEPLAY_BAND = 900;
 interface AsteroidBatch {
   mesh: THREE.InstancedMesh;
   instances: AsteroidInstance[];
+}
+
+interface MovingHazard {
+  instance: AsteroidInstance;
+  basePosition: THREE.Vector3;
+  baseQuaternion: THREE.Quaternion;
+  motionAxis: THREE.Vector3;
+  fallbackReactionAxis: THREE.Vector3;
+  phase: number;
+  rate: number;
+  mesh: THREE.InstancedMesh | null;
+  matrixIndex: number;
+  displacement: number;
+  playerResponse: number;
+}
+
+interface TumblingAsteroid {
+  instance: AsteroidInstance;
+  mesh: THREE.InstancedMesh;
+  matrixIndex: number;
+}
+
+/** A fixed gameplay set: quality settings may never add motion or remove a moving collider. */
+const MOVING_HAZARD_CAP = 12;
+const HAZARD_SWAY_LIMIT = 6;
+const PLAYER_RESPONSE_LIMIT = 2;
+// The response axis follows the player's actual approach, so it is not guaranteed perpendicular
+// to the authored sway axis. The triangle-inequality sum is the only honest all-approach bound.
+const TOTAL_DISPLACEMENT_LIMIT = HAZARD_SWAY_LIMIT + PLAYER_RESPONSE_LIMIT;
+const PLAYER_RESPONSE_RANGE = 2400;
+/** Cosmetic rotation is bounded too; sixteen gameplay rocks per silhouette variant. */
+const TUMBLING_PER_VARIANT = 16;
+
+export interface AsteroidMotionReport {
+  count: number;
+  cap: number;
+  elapsed: number;
+  maxDisplacement: number;
+  displacementLimit: number;
+  maxPlayerResponse: number;
+  playerResponseLimit: number;
+  /** Smallest per-frame change in player distance caused by the proximity response. */
+  minPlayerDistanceDelta: number;
+  signature: string;
 }
 
 export interface AsteroidFieldOptions {
@@ -262,9 +308,19 @@ export class AsteroidField {
   private readonly variantGeometries: AsteroidGeometry[] = [];
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
+  private readonly tmpMotionPosition = new THREE.Vector3();
+  private readonly tmpReactionAxis = new THREE.Vector3();
+  private readonly movingHazards: MovingHazard[] = [];
+  private readonly tumblingAsteroids: TumblingAsteroid[] = [];
+  private motionElapsed = 0;
+  private peakMotionDisplacement = 0;
+  private peakPlayerResponse = 0;
+  private minPlayerDistanceDelta = Infinity;
 
   constructor(options: AsteroidFieldOptions) {
     const rng = new Rng(options.seed);
+    // Independent stream: adding motion metadata cannot perturb placement of later rocks.
+    const motionRng = new Rng(options.seed ^ 0x6d8f3a21);
 
     this.material = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
@@ -350,6 +406,7 @@ export class AsteroidField {
       }
 
       const instance: AsteroidInstance = {
+        id: this.instances.length,
         position: candidate,
         gameplay: nearestLine <= GAMEPLAY_BAND,
         radius: collisionRadius,
@@ -423,6 +480,7 @@ export class AsteroidField {
         if (blocked) continue;
 
         const instance: AsteroidInstance = {
+          id: this.instances.length,
           position: candidate,
           gameplay: true,
           radius: collisionRadius,
@@ -436,6 +494,45 @@ export class AsteroidField {
         };
         this.instances.push(instance);
         perVariant[variant].push(instance);
+
+        // Only authored gameplay hazards can move. Reserve the full all-direction displacement
+        // margin here: the runtime proximity response points away from the player's actual
+        // position, which is fair from every approach but is not always the course's radial.
+        let motionSafe = true;
+        const motionMargin = TOTAL_DISPLACEMENT_LIMIT + 0.25;
+        for (const zone of options.keepClear ?? []) {
+          if (candidate.distanceTo(zone.center) < zone.radius + collisionRadius + motionMargin) {
+            motionSafe = false;
+            break;
+          }
+        }
+        if (motionSafe) {
+          for (const other of segs) {
+            if (distanceToSegment(candidate, other.a, other.b)
+                < other.radius + collisionRadius + motionMargin) {
+              motionSafe = false;
+              break;
+            }
+          }
+        }
+        if (motionSafe && this.movingHazards.length < MOVING_HAZARD_CAP) {
+          const fallbackReactionAxis = candidate.clone().sub(along).normalize();
+          const motionAxis = new THREE.Vector3().crossVectors(axis, fallbackReactionAxis).normalize();
+          if (motionRng.bool()) motionAxis.negate();
+          this.movingHazards.push({
+            instance,
+            basePosition: candidate.clone(),
+            baseQuaternion: instance.quaternion.clone(),
+            motionAxis,
+            fallbackReactionAxis,
+            phase: motionRng.range(0, Math.PI * 2),
+            rate: motionRng.range(0.22, 0.38),
+            mesh: null,
+            matrixIndex: -1,
+            displacement: 0,
+            playerResponse: 0,
+          });
+        }
       }
     }
 
@@ -456,6 +553,14 @@ export class AsteroidField {
         const value = rng.range(0.62, 1.12);
         tint.setRGB(value, value * rng.range(0.96, 1.02), value * rng.range(0.93, 1.02), THREE.LinearSRGBColorSpace);
         mesh.setColorAt(i, tint);
+        const moving = this.movingHazards.find((entry) => entry.instance === inst);
+        if (moving) {
+          moving.mesh = mesh;
+          moving.matrixIndex = i;
+        }
+        if (inst.gameplay && i < TUMBLING_PER_VARIANT) {
+          this.tumblingAsteroids.push({ instance: inst, mesh, matrixIndex: i });
+        }
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -466,27 +571,105 @@ export class AsteroidField {
   }
 
   /**
-   * Tumbling is updated only for rocks near the player. At 40 km the rotation of a 30 m rock
-   * is invisible, and skipping them keeps the per-frame matrix writes bounded.
+   * Advances only the fixed moving gameplay subset, then writes those exact positions into the
+   * instance buffers. Game calls this before collision resolution, so collision and render
+   * consume one state for the frame. No population-sized scan or per-frame allocation occurs.
    */
+  updateMotion(dt: number, playerPosition: THREE.Vector3): void {
+    this.motionElapsed += dt;
+    for (const moving of this.movingHazards) {
+      const sway = (HAZARD_SWAY_LIMIT * 0.5)
+        * (Math.sin(moving.phase + this.motionElapsed * moving.rate) - Math.sin(moving.phase));
+      this.tmpMotionPosition.copy(moving.basePosition).addScaledVector(moving.motionAxis, sway);
+      this.tmpReactionAxis.copy(this.tmpMotionPosition).sub(playerPosition);
+      const distance = this.tmpReactionAxis.length();
+      const proximity = Math.max(0, 1 - distance / PLAYER_RESPONSE_RANGE);
+      // A small retreat, never homing: react directly away from the player's current position.
+      // The construction-time axis is used only for the degenerate coincident-centres case.
+      const response = PLAYER_RESPONSE_LIMIT * proximity * proximity;
+      if (distance > 1e-6) this.tmpReactionAxis.multiplyScalar(1 / distance);
+      else this.tmpReactionAxis.copy(moving.fallbackReactionAxis);
+
+      moving.instance.position.copy(this.tmpMotionPosition)
+        .addScaledVector(this.tmpReactionAxis, response);
+      moving.displacement = moving.instance.position.distanceTo(moving.basePosition);
+      moving.playerResponse = response;
+      this.peakMotionDisplacement = Math.max(this.peakMotionDisplacement, moving.displacement);
+      this.peakPlayerResponse = Math.max(this.peakPlayerResponse, response);
+      this.minPlayerDistanceDelta = Math.min(
+        this.minPlayerDistanceDelta,
+        moving.instance.position.distanceTo(playerPosition) - distance,
+      );
+
+      if (moving.mesh && moving.matrixIndex >= 0) {
+        this.tmpMatrix.compose(
+          moving.instance.position,
+          moving.instance.quaternion,
+          this.tmpScale.setScalar(moving.instance.scale),
+        );
+        moving.mesh.setMatrixAt(moving.matrixIndex, this.tmpMatrix);
+        moving.mesh.instanceMatrix.needsUpdate = true;
+      }
+    }
+  }
+
+  /** Restores the exact authored state for a new run or deterministic harness seek. */
+  resetMotion(): void {
+    this.motionElapsed = 0;
+    this.peakMotionDisplacement = 0;
+    this.peakPlayerResponse = 0;
+    this.minPlayerDistanceDelta = Infinity;
+    for (const moving of this.movingHazards) {
+      moving.instance.position.copy(moving.basePosition);
+      moving.instance.quaternion.copy(moving.baseQuaternion);
+      moving.displacement = 0;
+      moving.playerResponse = 0;
+      if (moving.mesh && moving.matrixIndex >= 0) {
+        this.tmpMatrix.compose(
+          moving.instance.position,
+          moving.instance.quaternion,
+          this.tmpScale.setScalar(moving.instance.scale),
+        );
+        moving.mesh.setMatrixAt(moving.matrixIndex, this.tmpMatrix);
+        moving.mesh.instanceMatrix.needsUpdate = true;
+      }
+    }
+  }
+
+  /** Allocates only when the automation harness explicitly asks for evidence. */
+  getMotionReport(): AsteroidMotionReport {
+    return {
+      count: this.movingHazards.length,
+      cap: MOVING_HAZARD_CAP,
+      elapsed: +this.motionElapsed.toFixed(6),
+      maxDisplacement: +this.peakMotionDisplacement.toFixed(6),
+      displacementLimit: +TOTAL_DISPLACEMENT_LIMIT.toFixed(6),
+      maxPlayerResponse: +this.peakPlayerResponse.toFixed(6),
+      playerResponseLimit: PLAYER_RESPONSE_LIMIT,
+      minPlayerDistanceDelta: Number.isFinite(this.minPlayerDistanceDelta)
+        ? +this.minPlayerDistanceDelta.toFixed(6)
+        : 0,
+      signature: this.movingHazards.map(({ instance }) => (
+        `${instance.id}:${instance.position.x.toFixed(4)},${instance.position.y.toFixed(4)},${instance.position.z.toFixed(4)}`
+      )).join('|'),
+    };
+  }
+
+  /** Cosmetic tumble uses a fixed construction-time subset, then distance-culls that subset. */
   update(dt: number, cameraPosition: THREE.Vector3): void {
     this.material.uniforms.uCameraPos.value.copy(cameraPosition);
     // At 4 km a 30 m rock's rotation is sub-pixel, so tumbling only runs near the player.
     const spinRadiusSq = 4200 * 4200;
     const spin = this.spinScratch;
 
-    for (const batch of this.batches) {
-      let dirty = false;
-      for (let i = 0; i < batch.instances.length; i++) {
-        const inst = batch.instances[i];
-        if (inst.position.distanceToSquared(cameraPosition) > spinRadiusSq) continue;
-        spin.setFromAxisAngle(inst.spinAxis, inst.spinRate * dt);
-        inst.quaternion.multiply(spin).normalize();
-        this.tmpMatrix.compose(inst.position, inst.quaternion, this.tmpScale.setScalar(inst.scale));
-        batch.mesh.setMatrixAt(i, this.tmpMatrix);
-        dirty = true;
-      }
-      if (dirty) batch.mesh.instanceMatrix.needsUpdate = true;
+    for (const entry of this.tumblingAsteroids) {
+      const inst = entry.instance;
+      if (inst.position.distanceToSquared(cameraPosition) > spinRadiusSq) continue;
+      spin.setFromAxisAngle(inst.spinAxis, inst.spinRate * dt);
+      inst.quaternion.multiply(spin).normalize();
+      this.tmpMatrix.compose(inst.position, inst.quaternion, this.tmpScale.setScalar(inst.scale));
+      entry.mesh.setMatrixAt(entry.matrixIndex, this.tmpMatrix);
+      entry.mesh.instanceMatrix.needsUpdate = true;
     }
   }
 

@@ -77,6 +77,7 @@ const CONTROLS: readonly ControlRow[] = [
   { groups: [['Q', 'E']], action: 'Strafe left / right' },
   { groups: [['R', 'F']], action: 'Strafe up / down' },
   { groups: [['↑', '↓', '←', '→']], action: 'Pitch / yaw without the mouse' },
+  { groups: [['V']], action: 'Toggle chase / cockpit view' },
   { groups: [['ESC']], action: 'Pause' },
   { groups: [['N']], action: 'Restart the run' },
 ];
@@ -131,6 +132,16 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
           ['arcade', 'ARCADE'],
           ['standard', 'STANDARD'],
           ['raw', 'RAW'],
+        ],
+      },
+      {
+        kind: 'enum',
+        key: 'cameraMode',
+        label: 'Default camera',
+        hint: 'Press V during flight to switch views.',
+        options: [
+          ['chase', 'CHASE'],
+          ['cockpit', 'COCKPIT'],
         ],
       },
       {

@@ -145,6 +145,7 @@ function sanitise(raw: Partial<Settings>): Settings {
   s.cameraShake = clamp01(s.cameraShake);
   if (!(s.quality in PROFILES)) s.quality = 'high';
   if (!['arcade', 'standard', 'raw'].includes(s.assistLevel)) s.assistLevel = 'standard';
+  if (!['chase', 'cockpit'].includes(s.cameraMode)) s.cameraMode = 'chase';
   /* A hand-edited or truncated blob must not leave this as a string or a number, since it decides
      whether a later quality change overwrites the player's render scale. */
   s.renderScaleTouched = s.renderScaleTouched === true;

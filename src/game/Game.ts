@@ -3,6 +3,7 @@ import { Ship } from './Ship.ts';
 import { ChaseCamera } from './ChaseCamera.ts';
 import { Course } from './Course.ts';
 import { ShipModel } from '../render/ShipModel.ts';
+import { CockpitModel } from '../render/CockpitModel.ts';
 import { PostFX, type GradeParams } from '../render/PostFX.ts';
 import { Starfield } from '../render/Starfield.ts';
 import { Star } from '../render/Star.ts';
@@ -29,6 +30,7 @@ import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../co
 import { hashSeed } from '../core/rng.ts';
 import type {
   AudioBus,
+  CameraMode,
   Callout,
   LogLine,
   Phase,
@@ -127,6 +129,7 @@ export class Game {
   private readonly course: Course;
   private readonly ship = new Ship();
   private readonly shipModel: ShipModel;
+  private readonly cockpitModel: CockpitModel;
   private readonly shipRoot = new THREE.Group();
   private readonly shipMeshHolder = new THREE.Group();
   private readonly trails: Trail[] = [];
@@ -370,6 +373,9 @@ export class Game {
     this.shipRoot.add(this.shipMeshHolder);
     this.mainScene.add(this.shipRoot);
 
+    this.cockpitModel = new CockpitModel();
+    this.mainScene.add(this.cockpitModel.object);
+
     // Trails live in world space rather than under the ship, because the whole point of them
     // is that they stay where the ship *was*.
     for (let i = 0; i < this.shipModel.nozzles.length; i++) {
@@ -400,6 +406,20 @@ export class Game {
     };
     this.input.onAction = (action) => {
       if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
+      if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
+        const next: CameraMode = this.settings.value.cameraMode === 'chase' ? 'cockpit' : 'chase';
+        this.settings.set('cameraMode', next);
+        // Keep the public camera contract synchronous with the key action. The pose itself is
+        // resolved in updateVisuals, but projection state (notably the cockpit near plane) must
+        // not report the previous mode for a driven frame after the persisted setting has moved.
+        if (this.activeVantage === null && !this.cinematic) this.chase.setCameraMode(next);
+        this.pushCallout(
+          next === 'cockpit' ? 'COCKPIT VIEW' : 'CHASE VIEW',
+          next === 'cockpit' ? 'PILOT CAMERA ACTIVE' : 'EXTERIOR CAMERA ACTIVE',
+          'neutral',
+          1.1,
+        );
+      }
     };
 
     this.audio = new AudioEngine();
@@ -552,6 +572,7 @@ export class Game {
 
   private resetShipToStart(): void {
     this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
+    this.asteroids.resetMotion();
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     for (const trail of this.trails) trail.reset();
@@ -866,6 +887,9 @@ export class Game {
     }
 
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
+    // Motion belongs to simulation, not visual update. The collision pass below and the render
+    // later in this same frame therefore read the same positions.
+    this.asteroids.updateMotion(dt, this.ship.position);
     this.resolveCollisions(dt);
 
     if (this.phase === 'flying') {
@@ -1060,6 +1084,8 @@ export class Game {
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     this.shipMeshHolder.rotation.copy(this.ship.visualLean);
 
+    const cockpitActive =
+      this.activeVantage === null && !this.cinematic && this.settings.value.cameraMode === 'cockpit';
     if (this.activeVantage) {
       this.applyVantage(this.activeVantage);
     } else if (this.cinematic) {
@@ -1069,8 +1095,11 @@ export class Game {
         boost: boostBlend,
         impact: this.damageFlash,
         proximity: this.proximity,
-      });
+      }, this.settings.value.cameraMode);
     }
+
+    this.cockpitModel.setVisible(cockpitActive);
+    if (cockpitActive) this.cockpitModel.update(this.chase.camera, this.clock, boostBlend);
 
     this.farCamera.quaternion.copy(this.chase.camera.quaternion);
     this.farCamera.fov = this.chase.camera.fov;
@@ -1121,13 +1150,16 @@ export class Game {
         .add(this.ship.position);
       this.trails[i].update(this.tmpA, camPos, trailIntensity, 1 + boostBlend * 1.6);
     }
-    this.shipModel.setVisible(!this.cinematic || this.activeVantage !== null || this.phase !== 'boot');
+    this.shipModel.setVisible(
+      (!this.cinematic || this.activeVantage !== null || this.phase !== 'boot') && !cockpitActive,
+    );
 
     this.updateGrade(dt, speed01, boostBlend);
     this.updateTelemetry(dt);
   }
 
   private updateCinematicCamera(dt: number): void {
+    this.chase.setCameraMode('chase');
     this.cinematicTime += dt;
     // A slow, wide orbit around the ship while it cruises: the title screen is a beauty shot.
     const angle = this.cinematicTime * 0.11;
@@ -1441,12 +1473,15 @@ export class Game {
 
   private bindCourseEvents(): void {
     this.course.onPass = (event) => {
+      const recharge = this.ship.rechargeBoost(FLIGHT.boostCapacity * 0.25);
       this.gateHistory.push({
         index: event.index,
         time: event.time,
         radialDistance: event.radialDistance,
         speed: event.speed,
         cleared: true,
+        boostEnergyBefore: recharge.before,
+        boostEnergyAfter: recharge.after,
       });
       this.telemetry.splits = this.course.passes.map((p) => p.time);
       const precision = 1 - event.offset;
@@ -1729,6 +1764,13 @@ export class Game {
     return this.phase;
   }
 
+  getCameraMode(): CameraMode {
+    // Report the camera's applied projection state, not the saved preference. In harness-driven
+    // mode a setting can change between rendered frames, and those two values intentionally
+    // differ until updateVisuals applies the new pose/near plane.
+    return this.chase.getCameraMode();
+  }
+
   getTelemetry(): Telemetry {
     return this.telemetry;
   }
@@ -1749,6 +1791,7 @@ export class Game {
   seekCourse(t: number): void {
     this.course.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
     this.ship.reset(this.tmpA, this.tmpQuat, FLIGHT.cruiseSpeed);
+    this.asteroids.resetMotion();
     this.chase.snapTo(this.ship);
     for (const trail of this.trails) trail.reset();
     // Re-arm the course so gate state matches where the ship actually is.
@@ -1766,6 +1809,7 @@ export class Game {
     if (!v) throw new Error(`unknown vantage: ${name}`);
     this.activeVantage = v;
     this.cinematic = false;
+    this.asteroids.resetMotion();
     // Put the course into the state a player would actually be in at this point on the route,
     // so a screenshot shows a lit, armed cairn rather than a dormant prop.
     if (v.gateIndex !== undefined) {
@@ -1838,6 +1882,7 @@ export class Game {
         return {
           position: [cam.position.x, cam.position.y, cam.position.z] as [number, number, number],
           forward: [f.x, f.y, f.z] as [number, number, number],
+          near: cam.near,
         };
       })(),
     };
@@ -1893,6 +1938,7 @@ export class Game {
       tightFraction: +(clearances.filter((c) => c < 200).length / clearances.length).toFixed(3),
       colliderSharesDrawnList:
         this.lastCollisionList === null ? null : this.lastCollisionList === this.asteroids.activeInstances,
+      motion: this.asteroids.getMotionReport(),
     };
   }
 
@@ -1974,6 +2020,7 @@ export class Game {
     this.terminus.dispose();
     this.course.dispose();
     this.shipModel.dispose();
+    this.cockpitModel.dispose();
     for (const trail of this.trails) trail.dispose();
     this.renderer.dispose();
   }

@@ -150,7 +150,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.0.0',
+    version: '1.1.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -161,6 +161,7 @@ function installHarness(game: Game): void {
     setAutopilot: (enabled, options) => game.setAutopilot(enabled, options?.skill ?? 1),
     seekCourse: (t) => game.seekCourse(t),
     vantage: (name) => game.setVantage(name),
+    clearVantage: () => game.clearVantage(),
     vantages: () => game.vantageNames(),
     vantageSubjects: () => game.vantageSubjects(),
     setDriven: (driven: boolean) => {
@@ -198,6 +199,7 @@ function installHarness(game: Game): void {
     },
     settings: () => game.settings.value,
     setSettings: (patch: Partial<Settings>) => game.settings.patch(patch),
+    cameraMode: () => game.getCameraMode(),
     setPaused: (paused) => game.setPaused(paused),
     pauseMenu: (on) => game.pauseMenu(on),
     setFixedTimestep: (dt) => game.setFixedTimestep(dt),
