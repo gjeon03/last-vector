@@ -86,6 +86,31 @@ export interface HarnessPose {
   };
 }
 
+/**
+ * Read-only proof that the first-person interior is a physical, state-fed scene rather than a
+ * screen-space frame. Geometry counts are cockpit-only, not totals for the world render.
+ */
+export interface HarnessCockpitDebugState {
+  visible: boolean;
+  fov: number;
+  near: number;
+  perspectiveScale: [number, number, number];
+  drawCalls: number;
+  triangles: number;
+  minCameraDistance: number;
+  motionX: number;
+  motionY: number;
+  motionZ: number;
+  motionPitch: number;
+  motionYaw: number;
+  motionRoll: number;
+  stickPitch: number;
+  stickYaw: number;
+  stickRoll: number;
+  throttleAngle: number;
+  mfdUpdates: number;
+}
+
 export interface GatePassRecord {
   index: number;
   /** Run time at the crossing, seconds. */
@@ -211,6 +236,8 @@ export interface HarnessApi {
   setSettings(patch: Partial<Settings>): void;
   /** The flight camera mode currently applied by the game, not merely the stored preference. */
   cameraMode(): CameraMode;
+  /** Physical cockpit pose, controls, instrument cadence, and cockpit-only render cost. */
+  cockpitDebug(): HarnessCockpitDebugState;
   /**
    * Freezes SIMULATION only. Does NOT open the pause menu, release pointer lock or duck the
    * drive, so it reaches a state no player can occupy: paused, pointer still locked, audio at

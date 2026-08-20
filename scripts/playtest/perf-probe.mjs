@@ -11,6 +11,7 @@ const REQUIRED_METHODS = [
   'ready',
   'startRun',
   'phase',
+  'cameraMode',
   'setAutopilot',
   'step',
   'setDriven',
@@ -45,17 +46,23 @@ async function runPerfProbe({ report, session, options }) {
     id: 'PERF.settings',
     name: 'Performance quality settings are applied',
     criteria: [],
-    assertion: `setSettings applies quality=${options.quality}, renderScale=1, and showFps=false before sampling.`,
+    assertion: `setSettings applies quality=${options.quality}, renderScale=1, showFps=false, and the cockpit camera before sampling.`,
   }, async () => {
-    await callHarness(page, 'setSettings', [{ quality: options.quality, renderScale: 1, showFps: false }]);
+    await callHarness(page, 'setSettings', [{
+      quality: options.quality,
+      renderScale: 1,
+      showFps: false,
+      cameraMode: 'cockpit',
+    }]);
     const settings = await callHarness(page, 'settings');
     const evidence = {
-      requested: { quality: options.quality, renderScale: 1, showFps: false },
+      requested: { quality: options.quality, renderScale: 1, showFps: false, cameraMode: 'cockpit' },
       actual: settings,
     };
     verify(settings?.quality === options.quality, 'Quality setting did not apply.', evidence);
     verify(settings?.renderScale === 1, 'Render scale setting did not apply.', evidence);
     verify(settings?.showFps === false, 'FPS overlay setting did not apply.', evidence);
+    verify(settings?.cameraMode === 'cockpit', 'Cockpit camera setting did not apply.', evidence);
     return evidence;
   });
 
@@ -110,7 +117,7 @@ async function runPerfProbe({ report, session, options }) {
     criteria: [criterion('M5', 'full', 'Combines this 1080p FPS threshold with M5.runtime-errors in the same run.')],
     assertion:
       `At a 1920x1080 CSS-pixel viewport and deviceScaleFactor ${options.deviceScaleFactor}, ` +
-      `__LV.profile(${options.profileSeconds}) sustains the ` +
+      `the applied cockpit camera and its live MFD sustain the ` +
       '60 Hz budget: mean frame time <= 16.9 ms, p95 <= 20 ms, no frame over 33 ms, and the adaptive ' +
       'renderer did not buy that budget by collapsing internal resolution (renderScale >= 0.58, the adaptive controller own floor).',
   }, async () => {
@@ -127,6 +134,8 @@ async function runPerfProbe({ report, session, options }) {
       'Performance probe did not run at the requested resolution and device scale factor.',
       evidence,
     );
+    verify(evidence.cameraMode === 'cockpit',
+      `Performance probe sampled ${evidence.cameraMode} instead of the cockpit camera.`, evidence);
 
     // NOT `fps >= 60`. The compositor caps presentation at the display refresh, and the sample
     // window is wall-clock, so a perfectly vsynced run measures 59.99 and a strict >= 60 can
@@ -155,6 +164,7 @@ async function collectProfile(page, options) {
   try {
     await stepUntilFlying(page, options.timeoutMs);
     await callHarness(page, 'step', [120], options.timeoutMs);
+    const cameraMode = await callHarness(page, 'cameraMode');
     const profileTimeoutMs = Math.max(options.timeoutMs, (options.profileSeconds + 5) * 1_000);
     const sample = await callHarness(page, 'profile', [options.profileSeconds], profileTimeoutMs);
     return {
@@ -163,6 +173,7 @@ async function collectProfile(page, options) {
       fixedTimestep: 1 / 60,
       viewport: options.viewport,
       deviceScaleFactor: options.deviceScaleFactor,
+      cameraMode,
       // Recorded, not asserted. Two of round 2's performance blockers were measured at load
       // average 19-36 and one verifier's magnitudes at 91-260; without this number in the
       // evidence, a failure cannot be told apart from a busy machine.

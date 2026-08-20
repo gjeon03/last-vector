@@ -3,7 +3,11 @@ import { Ship } from './Ship.ts';
 import { ChaseCamera } from './ChaseCamera.ts';
 import { Course } from './Course.ts';
 import { ShipModel } from '../render/ShipModel.ts';
-import { CockpitModel } from '../render/CockpitModel.ts';
+import {
+  CockpitModel,
+  type CockpitDebugState,
+  type CockpitState,
+} from '../render/CockpitModel.ts';
 import { PostFX, type GradeParams } from '../render/PostFX.ts';
 import { Starfield } from '../render/Starfield.ts';
 import { Star } from '../render/Star.ts';
@@ -222,6 +226,25 @@ export class Game {
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly scratchEuler = new THREE.Euler();
+  /** Dedicated heading scratch so cockpit gate alignment cannot alias another visual calculation. */
+  private readonly cockpitForward = new THREE.Vector3();
+  /** Reused every frame: the cockpit reacts to flight state without adding per-frame garbage. */
+  private readonly cockpitState: CockpitState = {
+    dt: 0,
+    speed: 0,
+    speed01: 0,
+    throttle: 0,
+    energy: 1,
+    hull: 1,
+    proximity: 0,
+    impact: 0,
+    alignment: 1,
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    boost: 0,
+    brake: false,
+  };
   private readonly sunScreen = new THREE.Vector2(0.5, 0.5);
   private readonly blurCentre = new THREE.Vector2(0.5, 0.5);
   private readonly grade: GradeParams;
@@ -1099,7 +1122,27 @@ export class Game {
     }
 
     this.cockpitModel.setVisible(cockpitActive);
-    if (cockpitActive) this.cockpitModel.update(this.chase.camera, this.clock, boostBlend);
+    if (cockpitActive) {
+      const command = this.input.command;
+      const gate = this.course.nextGate;
+      this.ship.getForward(this.cockpitForward);
+      const state = this.cockpitState;
+      state.dt = dt;
+      state.speed = this.ship.speed;
+      state.speed01 = speed01;
+      state.throttle = this.ship.throttleSmoothed;
+      state.energy = this.ship.energy01;
+      state.hull = this.ship.hull;
+      state.proximity = this.proximity;
+      state.impact = this.damageFlash;
+      state.alignment = gate ? gate.alignment(this.cockpitForward) : 1;
+      state.pitch = command.pitch;
+      state.yaw = command.yaw;
+      state.roll = command.roll;
+      state.boost = boostBlend;
+      state.brake = command.brake;
+      this.cockpitModel.update(this.chase.camera, this.clock, state);
+    }
 
     this.farCamera.quaternion.copy(this.chase.camera.quaternion);
     this.farCamera.fov = this.chase.camera.fov;
@@ -1769,6 +1812,11 @@ export class Game {
     // mode a setting can change between rendered frames, and those two values intentionally
     // differ until updateVisuals applies the new pose/near plane.
     return this.chase.getCameraMode();
+  }
+
+  /** Read-only cockpit evidence for deterministic integration and render-budget checks. */
+  getCockpitDebug(): CockpitDebugState {
+    return this.cockpitModel.getDebugState();
   }
 
   getTelemetry(): Telemetry {

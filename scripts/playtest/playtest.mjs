@@ -25,6 +25,7 @@ const REQUIRED_METHODS = [
   'setSettings',
   'settings',
   'cameraMode',
+  'cockpitDebug',
   'clearVantage',
   'errors',
 ];
@@ -223,7 +224,9 @@ async function runPlaytest({ report, session, options }) {
       + 'and settles about 8 degrees wider than chase for identical ordinary and full-boost ship '
       + 'traces without exceeding 124 degrees; '
       + 'the selection survives reload; a second real KeyV restores the chase boom and original '
-      + 'near plane, again without directly changing ship state.',
+      + 'near plane, again without directly changing ship state; cockpit debug evidence proves '
+      + 'unit physical scale at both FOV endpoints, a <=24 draw-call / <=6000-triangle interior, '
+      + 'and finite motion, controls, and MFD cadence that respond to deterministic pilot input.',
   }, async () => {
     const e = await collectCameraEvidence(page, options);
     verify(e.phaseAtFirstToggle === 'flying' && e.phaseAtSecondToggle === 'flying',
@@ -274,6 +277,73 @@ async function runPlaytest({ report, session, options }) {
       `For the identical base-100 full-boost trace cockpit settled at ${e.boostedCockpit.fov} degrees versus chase ${e.boostedChase.fov}; the cockpit view is not about 8 degrees wider.`, e);
     verify(e.boostedCockpit.fov <= 124 + 0.01,
       `Full-boost cockpit FOV exceeded its 124 degree ceiling: ${e.boostedCockpit.fov}.`, e);
+
+    const debugSamples = [
+      ['first cockpit', e.cockpitDebug],
+      ['persisted cockpit', e.persistedCockpitDebug],
+      ['boosted cockpit', e.boostedCockpitDebug],
+      ['commanded cockpit', e.commandedCockpitDebug],
+      ['minimum-FOV cockpit', e.minimumFovCockpitDebug],
+    ];
+    const numericDebugFields = [
+      'fov', 'near', 'drawCalls', 'triangles', 'minCameraDistance',
+      'motionX', 'motionY', 'motionZ', 'motionPitch', 'motionYaw', 'motionRoll',
+      'stickPitch', 'stickYaw', 'stickRoll', 'throttleAngle', 'mfdUpdates',
+    ];
+    for (const [label, debug] of debugSamples) {
+      verify(debug?.visible === true, `${label} debug state says the cockpit is hidden.`, e);
+      verify(
+        Array.isArray(debug?.perspectiveScale)
+          && debug.perspectiveScale.length === 3
+          && debug.perspectiveScale.every(finiteNumber),
+        `${label} returned a malformed physical scale.`, e,
+      );
+      verify(
+        numericDebugFields.every((field) => finiteNumber(debug?.[field])),
+        `${label} returned non-finite motion, control, instrument, or geometry evidence.`, e,
+      );
+      verify(debug.drawCalls > 0 && debug.drawCalls <= 24,
+        `${label} uses ${debug.drawCalls} cockpit draw calls; the accepted ceiling is 24.`, e);
+      verify(debug.triangles > 0 && debug.triangles <= 6_000,
+        `${label} uses ${debug.triangles} cockpit triangles; the accepted ceiling is 6000.`, e);
+      verify(debug.near > 0 && debug.minCameraDistance > debug.near + 0.005,
+        `${label} has cockpit geometry ${debug.minCameraDistance} m ahead of the eye, which does not clear its ${debug.near} m near plane by 5 mm.`, e);
+    }
+    for (const [label, debug] of [
+      ['minimum setting FOV', e.minimumFovCockpitDebug],
+      ['maximum setting / full-boost FOV', e.boostedCockpitDebug],
+    ]) {
+      verify(debug.perspectiveScale.every((value) => Math.abs(value - 1) <= 1e-9),
+        `${label} compensated its physical cockpit scale to ${debug.perspectiveScale.join('/')}.`, e);
+    }
+    verify(Math.abs(e.persistedCockpitDebug.fov - e.persisted.fov) <= 0.05
+      && Math.abs(e.boostedCockpitDebug.fov - e.boostedCockpit.fov) <= 0.05
+      && Math.abs(e.minimumFovCockpitDebug.fov - e.minimumFovCockpit.fov) <= 0.05,
+    'Cockpit debug FOV does not match the applied flight camera at one of the tested endpoints.', e);
+
+    const beforeControls = e.boostedCockpitDebug;
+    const afterControls = e.commandedCockpitDebug;
+    const stickDelta = Math.hypot(
+      afterControls.stickPitch - beforeControls.stickPitch,
+      afterControls.stickYaw - beforeControls.stickYaw,
+      afterControls.stickRoll - beforeControls.stickRoll,
+    );
+    const motionDelta = Math.hypot(
+      afterControls.motionX - beforeControls.motionX,
+      afterControls.motionY - beforeControls.motionY,
+      afterControls.motionZ - beforeControls.motionZ,
+      afterControls.motionPitch - beforeControls.motionPitch,
+      afterControls.motionYaw - beforeControls.motionYaw,
+      afterControls.motionRoll - beforeControls.motionRoll,
+    );
+    verify(stickDelta > 0.01,
+      'Deterministic pitch/yaw/roll input did not move the cockpit controls.', e);
+    verify(Math.abs(afterControls.throttleAngle - beforeControls.throttleAngle) > 0.01,
+      'Changing throttle from full to 0.18 did not move the cockpit throttle.', e);
+    verify(motionDelta > 0.0001,
+      'Deterministic manoeuvre input did not produce any cockpit head-rig motion.', e);
+    verify(afterControls.mfdUpdates > beforeControls.mfdUpdates,
+      'The cockpit MFD cadence did not advance across 45 simulated frames.', e);
     return e;
   });
 
@@ -844,6 +914,7 @@ async function collectCameraEvidence(page, options) {
     };
     await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
     const cockpit = cameraSample(await callHarness(page, 'pose'));
+    const cockpitDebug = await callHarness(page, 'cockpitDebug');
 
     // KeyV must route through SettingsStore, so a cold Game instance must recover cockpit mode.
     await reloadHarness(page, options.timeoutMs);
@@ -856,6 +927,7 @@ async function collectCameraEvidence(page, options) {
       settingsMode: persistedSettings.cameraMode,
       shipMatchesChaseTrace: sameShipSnapshot(initialShip, shipSnapshot(persistedPose)),
     };
+    const persistedCockpitDebug = await callHarness(page, 'cockpitDebug');
 
     const phaseAtSecondToggle = await callHarness(page, 'phase');
     const beforeSecondKey = shipSnapshot(persistedPose);
@@ -897,6 +969,29 @@ async function collectCameraEvidence(page, options) {
         shipSnapshot(boostedCockpitPose),
       ),
     };
+    const boostedCockpitDebug = await callHarness(page, 'cockpitDebug');
+
+    // The model must consume the live command/state feed, not merely expose a static frame that
+    // happens to sit at the right camera pose. Move every rotational control and the throttle far
+    // enough to clear the cockpit's own smoothing, then sample the physical controls and MFD clock.
+    await callHarness(page, 'setInput', [{
+      throttle: 0.18,
+      pitch: 0.7,
+      yaw: -0.55,
+      roll: 0.8,
+      boost: false,
+      brake: true,
+    }]);
+    await callHarness(page, 'step', [45, 1 / 60], options.timeoutMs);
+    const commandedCockpitDebug = await callHarness(page, 'cockpitDebug');
+
+    // Exercise the lower SettingsStore FOV endpoint as a real camera state. The upper endpoint is
+    // the base-100 boosted trace above; physical cockpit scale must remain one at both lenses.
+    await callHarness(page, 'setSettings', [{ fov: 60 }]);
+    await callHarness(page, 'setInput', [{ throttle: 0, brake: true }]);
+    await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
+    const minimumFovCockpit = cameraSample(await callHarness(page, 'pose'));
+    const minimumFovCockpitDebug = await callHarness(page, 'cockpitDebug');
 
     return {
       phaseAtFirstToggle,
@@ -904,11 +999,17 @@ async function collectCameraEvidence(page, options) {
       initial,
       afterFirstKey,
       cockpit,
+      cockpitDebug,
       persisted,
+      persistedCockpitDebug,
       afterSecondKey,
       restored,
       boostedChase,
       boostedCockpit,
+      boostedCockpitDebug,
+      commandedCockpitDebug,
+      minimumFovCockpit,
+      minimumFovCockpitDebug,
     };
   } finally {
     await bestEffort(page, 'setSettings', [{
