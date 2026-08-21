@@ -461,7 +461,8 @@ async function runPlaytest({ report, session, options }) {
     criteria: [criterion('M6', 'full', 'Drives the title -> briefing -> countdown -> flying path through the DOM, which no harness-driven check exercises.')],
     assertion:
       'From a cold load the phase is title; clicking BEGIN RUN reaches the briefing; the briefing '
-      + 'names the mouse, SHIFT and SPACE; clicking ENGAGE reaches the countdown and then flying.',
+      + 'names mouse steering, arrow-key steering, SHIFT boost, SPACE brake and the V first-person '
+      + 'cockpit toggle; clicking ENGAGE reaches the countdown and then flying.',
   }, async () => {
     await reloadHarness(page, options);
     const atLoad = await callHarness(page, 'phase');
@@ -485,16 +486,66 @@ async function runPlaytest({ report, session, options }) {
     await click('BEGIN RUN');
     await page.waitForFunction(() => window.__LV?.phase() === 'briefing', null, { timeout: options.timeoutMs });
 
-    // The one screen whose entire job is to teach the verbs has to name them.
-    const briefingText = await page.evaluate(() => document.body.innerText.toUpperCase());
-    const missingVerbs = ['MOUSE', 'SHIFT', 'SPACE'].filter((verb) => !briefingText.includes(verb));
-    verify(missingVerbs.length === 0, `Briefing does not name: ${missingVerbs.join(', ')}.`, { missingVerbs });
+    // Read only the open primer and preserve each binding/action pair. Searching document.body
+    // could pass from the hidden full CONTROLS screen even when the first-run panel omitted a row.
+    const primerRows = await page.evaluate(() => Array.from(
+      document.querySelectorAll('.lv-screen--briefing[data-open="1"] .lv-primer-list li'),
+      (row) => ({
+        keys: Array.from(row.querySelectorAll('kbd'), (key) => key.textContent?.trim() ?? ''),
+        action: row.lastElementChild?.textContent?.trim().toUpperCase() ?? '',
+      }),
+    ));
+    const requiredPrimerRows = [
+      { keys: ['MOUSE'], action: 'STEER' },
+      { keys: ['SHIFT', 'LMB'], action: 'BOOST' },
+      { keys: ['SPACE', 'RMB'], action: 'BRAKE' },
+      { keys: ['↑', '↓', '←', '→'], action: 'WITHOUT MOUSE' },
+      { keys: ['V'], action: 'TOGGLE FIRST-PERSON COCKPIT' },
+    ];
+    const missingPrimerRows = requiredPrimerRows.filter((required) => !primerRows.some((actual) =>
+      required.keys.every((key) => actual.keys.includes(key)) && actual.action.includes(required.action)));
+    verify(missingPrimerRows.length === 0,
+      `Briefing omits required control rows: ${missingPrimerRows.map((row) => row.action).join(', ')}.`,
+      { primerRows, missingPrimerRows });
+
+    // Portrait turns the desktop columns into a scroll stack. The primer is the lesson the
+    // player needs before ENGAGE, so it must begin in the initial viewport rather than below the
+    // fiction, and the launch action must remain available outside the inner scroller.
+    await page.setViewportSize({ width: 375, height: 667 });
+    const portraitLayout = await page.evaluate(() => {
+      const view = document.querySelector('.lv-screen--briefing[data-open="1"]');
+      const panel = view?.querySelector('.lv-brief');
+      const cols = view?.querySelector('.lv-brief-cols');
+      const primer = view?.querySelector('.lv-primer');
+      const engage = Array.from(view?.querySelectorAll('button') ?? [])
+        .find((button) => button.textContent?.includes('ENGAGE'));
+      if (!panel || !cols || !primer || !engage) return null;
+      const panelBox = panel.getBoundingClientRect();
+      const colsBox = cols.getBoundingClientRect();
+      const primerBox = primer.getBoundingClientRect();
+      const engageBox = engage.getBoundingClientRect();
+      return {
+        panelInside: panelBox.left >= 0 && panelBox.top >= 0
+          && panelBox.right <= innerWidth && panelBox.bottom <= innerHeight,
+        primerInitiallyVisible: primerBox.top >= colsBox.top - 1 && primerBox.top < colsBox.bottom,
+        engageInside: engageBox.left >= 0 && engageBox.top >= 0
+          && engageBox.right <= innerWidth && engageBox.bottom <= innerHeight,
+        documentOverflow: document.documentElement.scrollWidth > innerWidth
+          || document.documentElement.scrollHeight > innerHeight,
+        cols: { clientHeight: cols.clientHeight, scrollHeight: cols.scrollHeight },
+      };
+    });
+    verify(portraitLayout?.panelInside && portraitLayout.primerInitiallyVisible
+      && portraitLayout.engageInside && !portraitLayout.documentOverflow,
+    'Portrait briefing hides the control primer or ENGAGE action outside the initial viewport.',
+    { portraitLayout });
+    await page.setViewportSize(options.viewport);
 
     await click('ENGAGE');
     await page.waitForFunction(() => ['countdown', 'flying'].includes(window.__LV?.phase()), null, { timeout: options.timeoutMs });
     await page.waitForFunction(() => window.__LV?.phase() === 'flying', null, { timeout: options.timeoutMs });
 
-    return { atLoad, reachedBriefing: true, verbsNamed: ['MOUSE', 'SHIFT', 'SPACE'], reachedFlying: true };
+    return { atLoad, reachedBriefing: true, primerRows, portraitLayout, reachedFlying: true };
   });
 
   // hazard() and channelExcursion() were added to the harness with docstrings naming the exact

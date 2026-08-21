@@ -65,8 +65,9 @@ interface ControlRow {
 }
 
 /**
- * Authoritative bindings, mirrored from src/core/Input.ts. Boost and brake are the two verbs
- * the game is actually about, so they lead the primer alongside steering and throttle.
+ * Authoritative bindings, mirrored from src/core/Input.ts. The primer includes both steering
+ * paths and the view toggle: a first-run player must not conclude that mouse capture is required
+ * or miss the cockpit that makes the ship readable from the pilot's seat.
  */
 const CONTROLS: readonly ControlRow[] = [
   { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
@@ -76,8 +77,18 @@ const CONTROLS: readonly ControlRow[] = [
   { groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
   { groups: [['Q', 'E']], action: 'Strafe left / right' },
   { groups: [['R', 'F']], action: 'Strafe up / down' },
-  { groups: [['↑', '↓', '←', '→']], action: 'Pitch / yaw without the mouse' },
-  { groups: [['V']], action: 'Toggle chase / cockpit view' },
+  {
+    groups: [['↑', '↓', '←', '→']],
+    action: 'Pitch / yaw without the mouse',
+    primer: true,
+    short: 'Steer without mouse',
+  },
+  {
+    groups: [['V']],
+    action: 'Toggle chase / first-person cockpit (launch / flight)',
+    primer: true,
+    short: 'Toggle first-person cockpit',
+  },
   { groups: [['ESC']], action: 'Pause' },
   { groups: [['N']], action: 'Restart the run' },
 ];

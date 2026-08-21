@@ -1601,6 +1601,12 @@
   .lv-brief-cols {
     grid-template-columns: 1fr;
   }
+
+  /* On a portrait or narrow display the three desktop columns become one scroll stack. Put the
+     controls first so the first-run lesson does not begin below five stats and three paragraphs. */
+  .lv-primer {
+    order: -1;
+  }
 }
 
 .lv-stats {
