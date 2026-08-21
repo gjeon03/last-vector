@@ -65,6 +65,17 @@ const RADIO_LINES: { at: number; speaker: string; text: string }[] = [
   { at: 8, speaker: 'VESPER TERMINUS', text: 'Approach lit. Bring her in.' },
 ];
 
+/** Shader precompilation is optional polish; a slow or unsupported driver must still boot. */
+const COCKPIT_PREWARM_TIMEOUT_MS = 1500;
+const COCKPIT_PREWARM_POLL_MS = 10;
+
+interface ShaderProgramReadiness {
+  isReady(): boolean;
+}
+
+const hasShaderProgramReadiness = (value: unknown): value is ShaderProgramReadiness =>
+  typeof (value as { isReady?: unknown } | null)?.isReady === 'function';
+
 interface Vantage {
   name: string;
   /** Normalised course position the camera is anchored to. */
@@ -253,6 +264,8 @@ export class Game {
   private disposed = false;
   private contextLost = false;
   private frameFailures = 0;
+  /** Cancels the loader-only shader readiness poll before renderer/material disposal. */
+  private cancelCockpitPrewarm: (() => void) | null = null;
   private firstFrameResolve: (() => void) | null = null;
   private readonly firstFrame: Promise<void>;
 
@@ -1703,10 +1716,18 @@ export class Game {
     // Preventing the default is what allows a restore event to ever fire.
     event.preventDefault();
     this.contextLost = true;
+    this.cancelCockpitPrewarm?.();
     this.paused = true;
     this.audio.suspend();
     this.input.releaseLock();
     this.errors.push('webgl context lost');
+    // A context can disappear while loader-only shader prewarming is still pending. No render can
+    // resolve ready() after that, so settle the boot wait here and let main.ts keep the fatal UI.
+    if (this.firstFrameResolve) {
+      const resolve = this.firstFrameResolve;
+      this.firstFrameResolve = null;
+      resolve();
+    }
     this.onContextLost?.();
   };
 
@@ -1744,10 +1765,101 @@ export class Game {
   // automation surface
   // ---------------------------------------------------------------------------------
 
+  /**
+   * Compiles the cockpit's cold material variants while the loader still covers the canvas.
+   *
+   * The cockpit owns the only Three lights in the near scene. Compiling `mainScene` itself while
+   * the cockpit is visible therefore collects those lights exactly once and warms the same
+   * scene-context variants as the first live cockpit frame. Compiling only the cockpit root
+   * misses two programs used by other near-scene materials under that light state. The active
+   * render target is equally load-bearing: the cockpit is normally drawn into PostFX's linear
+   * HalfFloat target, and Three includes output colour-space state in its program cache key.
+   */
+  private async prewarmCockpitShaders(): Promise<void> {
+    const wasVisible = this.cockpitModel.object.visible;
+    const previousTarget = this.renderer.getRenderTarget();
+    const previousCubeFace = this.renderer.getActiveCubeFace();
+    const previousMipmapLevel = this.renderer.getActiveMipmapLevel();
+    const programs = new Set<ShaderProgramReadiness>();
+
+    try {
+      this.cockpitModel.setVisible(true);
+      this.renderer.setRenderTarget(this.post.sceneTarget);
+      const programsBefore = new Set(this.renderer.info.programs ?? []);
+      const materials = this.renderer.compile(this.mainScene, this.chase.camera);
+
+      // Three's public declarations omit WebGLProgram.isReady(), but compileAsync itself uses
+      // this same renderer-owned method. Track both each material's current program and every
+      // newly cached program so transparent two-pass variants are not missed.
+      for (const material of materials) {
+        const state = this.renderer.properties.get(material) as { currentProgram?: unknown };
+        if (hasShaderProgramReadiness(state.currentProgram)) programs.add(state.currentProgram);
+      }
+      for (const program of this.renderer.info.programs ?? []) {
+        if (!programsBefore.has(program) && hasShaderProgramReadiness(program)) programs.add(program);
+      }
+    } catch {
+      // Shader prewarming is an optimisation, never a launch requirement. The first real render
+      // remains the browser/driver fallback on implementations where compilation fails.
+    } finally {
+      this.cockpitModel.setVisible(wasVisible);
+      this.renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+    }
+
+    if (programs.size > 0) await this.waitForCockpitPrograms(programs);
+  }
+
+  /**
+   * A cancellable counterpart to Three's compileAsync poll. Three's implementation owns an
+   * unexposed recursive timer, so racing its promise cannot stop driver queries after our timeout
+   * and can call isReady() on deleted programs after dispose(). Owning the timer here makes both
+   * terminal paths synchronous and leaves no background work behind.
+   */
+  private waitForCockpitPrograms(programs: ReadonlySet<ShaderProgramReadiness>): Promise<void> {
+    return new Promise((resolve) => {
+      const deadline = performance.now() + COCKPIT_PREWARM_TIMEOUT_MS;
+      let timerId: number | null = null;
+      let finished = false;
+
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        if (timerId !== null) {
+          window.clearTimeout(timerId);
+          timerId = null;
+        }
+        if (this.cancelCockpitPrewarm === finish) this.cancelCockpitPrewarm = null;
+        resolve();
+      };
+      const poll = (): void => {
+        timerId = null;
+        if (this.disposed || this.contextLost || performance.now() >= deadline) {
+          finish();
+          return;
+        }
+        try {
+          for (const program of programs) {
+            if (!program.isReady()) {
+              timerId = window.setTimeout(poll, COCKPIT_PREWARM_POLL_MS);
+              return;
+            }
+          }
+        } catch {
+          // A driver that cannot report readiness falls back to compilation on first use.
+        }
+        finish();
+      };
+
+      this.cancelCockpitPrewarm?.();
+      this.cancelCockpitPrewarm = finish;
+      poll();
+    });
+  }
+
   start(): void {
     this.bindCourseEvents();
     this.fadeTarget = 1;
-    let last = performance.now();
+    let last = 0;
     const loop = (now: number): void => {
       if (this.disposed) return;
       const dt = (now - last) / 1000;
@@ -1771,7 +1883,14 @@ export class Game {
         }
       }
     };
-    requestAnimationFrame(loop);
+    const beginLoop = (): void => {
+      if (this.disposed) return;
+      // Do not charge loader-only shader work to the first simulation/performance sample.
+      last = performance.now();
+      requestAnimationFrame(loop);
+    };
+    // A rejected/timeout prewarm must not hold the loader or prevent the normal render fallback.
+    void this.prewarmCockpitShaders().then(beginLoop, beginLoop);
   }
 
   private driven = false;
@@ -2046,6 +2165,7 @@ export class Game {
 
   dispose(): void {
     this.disposed = true;
+    this.cancelCockpitPrewarm?.();
     this.releaseUnlock();
     if (this.resizeSettleTimer !== null) window.clearTimeout(this.resizeSettleTimer);
     window.removeEventListener('resize', this.handleResize);

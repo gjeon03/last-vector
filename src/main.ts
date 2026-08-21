@@ -90,6 +90,17 @@ async function boot(): Promise<void> {
     return;
   }
 
+  // Install this before any awaited boot work. A context loss during shader/audio prewarm used to
+  // happen before the handler existed, leaving ready() unresolved behind an immortal loader.
+  let graphicsFailed = false;
+  game.onContextLost = () => {
+    graphicsFailed = true;
+    fail(
+      'GRAPHICS CONTEXT LOST',
+      'The browser dropped the WebGL context — usually a driver reset, a GPU switch, or another tab exhausting video memory. Reload the page to continue.',
+    );
+  };
+
   loader.setProgress(0.8, 'lighting the cairns');
   await nextPaint();
 
@@ -125,15 +136,9 @@ async function boot(): Promise<void> {
 
   game.start();
   await game.ready();
+  if (graphicsFailed) return;
   loader.setProgress(1, 'ready');
   loader.done();
-
-  game.onContextLost = () => {
-    fail(
-      'GRAPHICS CONTEXT LOST',
-      'The browser dropped the WebGL context — usually a driver reset, a GPU switch, or another tab exhausting video memory. Reload the page to continue.',
-    );
-  };
 
   installHarness(game);
 }
