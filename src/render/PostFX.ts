@@ -282,12 +282,35 @@ const GODRAY_FRAG = /* glsl */ `
   uniform int uSamples;
   varying vec2 vUv;
 
+  /**
+   * Interleaved gradient noise (Jimenez). A per-pixel value in [0,1) that is a pure function of
+   * the pixel's own coordinate — deterministic across processes, which white noise from a
+   * time-varying seed would not be, and which this project's cross-process screenshot
+   * comparisons depend on.
+   */
+  float ign(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+  }
+
   // Occlusion comes free from the depth buffer: only pixels at the far plane are "sky",
   // so any geometry between the camera and the star carves a real shadow into the shafts.
   void main() {
     if (uVisible <= 0.001) { gl_FragColor = vec4(0.0); return; }
     vec2 delta = (vUv - uSun) * (uDensity / float(uSamples));
-    vec2 uv = vUv;
+    /* The ray START is dithered by up to one step, and without it this pass draws BEADS.
+     *
+     * The march is a fixed count of taps between the pixel and the star, so at the shipped 26
+     * samples and density 0.72 a pixel half a screen out steps about 26 px at a time — wider
+     * than ACHRA's own core. Every tap that lands on the disc therefore deposits a separate
+     * copy of it, and the shaft renders as a row of discrete circles marching away from the
+     * star: visible in the committed field-dive still, where the chain crosses the megastructure
+     * and reads as lens dirt rather than as light.
+     *
+     * More samples would also fix it and cost linearly; offsetting each pixel's start by its own
+     * fraction of a step costs one hash and converts the banding into noise that the bloom chain
+     * and the /uSamples average then smooth out. The high profile stays at its tuned 26 taps.
+     */
+    vec2 uv = vUv - delta * ign(gl_FragCoord.xy);
     float illumination = 1.0;
     vec3 accum = vec3(0.0);
     for (int i = 0; i < 64; i++) {
