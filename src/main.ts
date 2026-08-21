@@ -162,6 +162,8 @@ function installHarness(game: Game): void {
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
+    damageHull: (amount) => game.damageHull(amount),
+    stageCollision: () => game.stageCollision(),
     setInput: (input: HarnessInput | null) => game.setHarnessInput(input),
     setAutopilot: (enabled, options) => game.setAutopilot(enabled, options?.skill ?? 1),
     seekCourse: (t) => game.seekCourse(t),

@@ -13,6 +13,8 @@ const REQUIRED_METHODS = [
   'telemetry',
   'phase',
   'result',
+  'damageHull',
+  'stageCollision',
   'setInput',
   'activeInput',
   'pose',
@@ -446,6 +448,149 @@ async function runPlaytest({ report, session, options }) {
     return { passes, deltas };
   });
 
+  await report.check({
+    id: 'GAME.hull-failure-retry',
+    name: 'Hull breach is a terminal, retryable, record-safe run state',
+    criteria: [criterion('M4', 'full', 'Exercises both terminal outcomes at the exact simulation boundary, blocks harness/autopilot and real-keyboard authority after failure, and covers the real restart key, failure UI, and persisted-record invariants.')],
+    assertion:
+      'Repeated staged drawn-asteroid contacts strictly lower finite hull through the production '
+      + 'collision path until the run fails at exactly zero. Positive hull remains flying; same-frame damage that reaches exactly zero transitions once '
+      + 'to failed on the next step. Failure freezes elapsed/hull/result, rejects damage, harness '
+      + 'override/autopilot authority (including brake false versus true), and the real '
+      + 'ArrowUp/ArrowLeft/W/D/E/R/Shift plus Space-code brake Input path; it presents only '
+      + 'HULL BREACH / TIME / RETRY and never writes a PB. A real N starts '
+      + 'one fresh countdown (hull 1, elapsed 0, null result) that repeated N presses cannot reset. '
+      + 'Lethal damage on the known finish frame wins over arrival, and an old GO-dismiss timeout '
+      + 'cannot hide a newly restarted countdown.',
+  }, async () => {
+    const exactFinishFrame = unwrap(playthroughOutcome).simulatedFrames;
+    const evidence = await collectHullFailureEvidence(page, options, exactFinishFrame);
+
+    verify(evidence.realCollision.impacts.length > 1
+      && evidence.realCollision.impacts.length <= evidence.realCollision.maxImpacts
+      && evidence.realCollision.impacts.every((impact) => impact.staged !== null
+        && Number.isInteger(impact.staged.rockId)
+        && impact.staged.overlap > 0
+        && impact.staged.closingSpeed === 520),
+    'The production-collision loop did not stage bounded drawn-asteroid contacts.', evidence);
+    verify(evidence.realCollision.impacts.every((impact) =>
+      finiteNumber(impact.beforeHull)
+      && finiteNumber(impact.after.hull)
+      && impact.after.hull >= 0
+      && impact.after.hull < impact.beforeHull),
+    'A staged production collision failed to reduce hull strictly, finitely, and without crossing below zero.', evidence);
+    verify(evidence.realCollision.impacts.slice(0, -1).every((impact) => impact.after.phase === 'flying')
+      && evidence.realCollision.final.phase === 'failed'
+      && evidence.realCollision.final.hull === 0
+      && evidence.realCollision.finalResult === null,
+    'Repeated production collisions did not remain flying until a terminal failed / hull 0 / null-result breach.', evidence);
+
+    verify(evidence.smallPositive.injectedHull > 0,
+      'The positive-boundary setup did not leave a positive hull value.', evidence);
+    verify(evidence.smallPositive.afterStep.phase === 'flying'
+      && evidence.smallPositive.afterStep.hull > 0,
+    'A small positive hull value incorrectly ended the run.', evidence);
+
+    verify(evidence.lethal.phaseBeforeResolution === 'flying'
+      && evidence.lethal.damageReturns.at(-1) === 0,
+    'Same-frame damage did not clamp hull to exactly zero while leaving phase resolution to step().', evidence);
+    verify(evidence.lethal.afterResolution.phase === 'failed'
+      && evidence.lethal.afterResolution.hull === 0,
+    'The step after exact-zero hull did not expose failed / hull 0.', evidence);
+    verify(evidence.lethal.phaseMutations.length === 1
+      && evidence.lethal.phaseMutations[0] === 'failed'
+      && evidence.lethal.ui.rootPhase === 'failed',
+    'The failure boundary did not produce exactly one DOM data-phase transition to failed.', evidence);
+    verify(evidence.lethal.afterResolutionResult === null,
+      'A failed run exposed a successful RunResult.', evidence);
+
+    verify(evidence.lethal.damageAfterFailure === 0,
+      'damageHull changed (or misreported) already-zero hull after failure.', evidence);
+    verify(evidence.lethal.preFailureInput.pitch === 1
+      && evidence.lethal.preFailureInput.yaw === -1
+      && evidence.lethal.preFailureInput.roll === 1
+      && evidence.lethal.preFailureInput.throttle === 1
+      && evidence.lethal.preFailureInput.boost === true,
+    'The cockpit regression did not seed a strongly deflected pre-failure Input.command.', evidence);
+    verify(evidence.lethal.afterStrong.phase === 'failed'
+      && evidence.lethal.afterStrong.hull === evidence.lethal.afterResolution.hull
+      && evidence.lethal.afterStrong.elapsed === evidence.lethal.afterResolution.elapsed
+      && evidence.lethal.afterStrongResult === evidence.lethal.afterResolutionResult,
+    'Elapsed, hull, result, or phase changed while the failure state was being observed.', evidence);
+    verify(['pitch', 'yaw', 'roll', 'throttle', 'strafeX', 'strafeY']
+      .every((field) => evidence.lethal.afterStrongInput[field] === 0)
+      && evidence.lethal.afterStrongInput.boost === false
+      && evidence.lethal.afterStrongInput.brake === false,
+    'activeInput exposed stale pilot authority instead of the neutral command applied after failure.', evidence);
+    verify(['stickPitch', 'stickYaw', 'stickRoll']
+      .every((field) => Math.abs(evidence.lethal.afterStrongCockpit[field]) <= 1e-6),
+    'The cockpit controls remained visibly deflected by stale pre-failure input.', evidence);
+    verify(sameShipSnapshot(
+      shipSnapshot(evidence.lethal.afterStrongPose),
+      shipSnapshot(evidence.lethal.neutralAfterPose),
+    ),
+      'Strong harness stick/throttle/strafe/boost with brake false, versus neutral brake true, plus autopilot changed the failed ship trace.', evidence);
+    verify(evidence.keyboardInput.keys.join(',') === 'w,d,e,r,Shift,ArrowUp,ArrowLeft'
+      && evidence.keyboardInput.brakeCode === 'Space'
+      && evidence.keyboardInput.heldFrames === 120
+      && evidence.keyboardInput.keyed.phase === 'failed'
+      && evidence.keyboardInput.neutral.phase === 'failed'
+      && evidence.keyboardInput.keyed.hull === 0
+      && evidence.keyboardInput.neutral.hull === 0
+      && evidence.keyboardInput.keyedResult === null
+      && evidence.keyboardInput.neutralResult === null,
+    'The real-keyboard comparison did not hold the declared flight keys and Space brake code across matching failed traces.', evidence);
+    verify(sameShipSnapshot(
+      shipSnapshot(evidence.keyboardInput.keyedPose),
+      shipSnapshot(evidence.keyboardInput.neutralPose),
+    ),
+    'Real ArrowUp/ArrowLeft/W/D/E/R/Shift plus Space-code brake input changed ship physics after failure.', evidence);
+
+    const failureText = evidence.lethal.ui.text.toUpperCase();
+    verify(evidence.lethal.ui.screenOpen === '1'
+      && evidence.lethal.ui.bodyState === 'failure'
+      && ['HULL BREACH', 'TIME', 'RETRY'].every((token) => failureText.includes(token)),
+    'The visible terminal UI does not identify the breach, failure time, and retry action.', evidence);
+    verify(evidence.lethal.ui.buttonLabels.length === 1
+      && evidence.lethal.ui.buttonLabels[0] === 'RETRY'
+      && evidence.lethal.ui.buttonShortcuts[0] === 'n',
+    'Failure UI does not expose exactly one RETRY button with the N shortcut.', evidence);
+
+    verify(evidence.restart.immediate.phase === 'countdown'
+      && evidence.restart.immediate.hull === 1
+      && evidence.restart.immediate.elapsed === 0
+      && evidence.restart.immediateResult === null,
+    'A real N did not reset into countdown / hull 1 / elapsed 0 / null result.', evidence);
+    verify(evidence.restart.midpointPhase === 'countdown'
+      && evidence.restart.afterSpam.phase === 'flying',
+    'Repeated real N presses restarted the countdown instead of letting the original one finish.', evidence);
+
+    verify(Number.isInteger(evidence.finishPriority.exactFinishFrame)
+      && evidence.finishPriority.exactFinishFrame > 1
+      && evidence.finishPriority.before.phase === 'flying'
+      && evidence.finishPriority.beforeResult === null,
+    'The deterministic finish frame could not be replayed to the immediately preceding flying frame.', evidence);
+    verify(evidence.finishPriority.after.phase === 'failed'
+      && evidence.finishPriority.after.hull === 0
+      && evidence.finishPriority.afterResult === null,
+    'A lethal hit on the exact ordinary finish frame lost to successful arrival.', evidence);
+
+    verify(evidence.staleGo.go.phase === 'flying'
+      && evidence.staleGo.goUi.screenOpen === '1'
+      && evidence.staleGo.goUi.number === 'GO',
+    'The timer regression setup did not reach the visible GO card.', evidence);
+    verify(evidence.staleGo.restartDelayMs >= 0 && evidence.staleGo.restartDelayMs < 700,
+      'Failure/retry did not occur while the old 700 ms GO-dismiss timer was still pending.', evidence);
+    verify(evidence.staleGo.afterWait.phase === 'countdown'
+      && evidence.staleGo.afterWaitUi.screenOpen === '1'
+      && evidence.staleGo.afterWaitUi.number === '3',
+    'An old run\'s GO-dismiss timer hid the newly restarted countdown.', evidence);
+
+    verify(evidence.bestAfter === evidence.bestBefore,
+      'A failed run changed the persisted personal-best payload.', evidence);
+    return evidence;
+  });
+
   // Regression guard. The overdrive latch has failed twice in two different ways: it re-lit
   // for a fraction of a second every two seconds at a 20% re-arm level, and before that it
   // re-lit for a single frame whenever regeneration crossed a hair above empty. Both read as a
@@ -568,6 +713,10 @@ async function runPlaytest({ report, session, options }) {
   }, async () => {
     /* One simulated frame guarantees resolveCollisions has recorded a list — it runs
        unconditionally in simulate(), attract mode included. */
+    /* Freeze rAF before the first quality sample. Resetting each run resets asteroid motion, but
+       without driven mode real frames can still slip between startRun() and step(); low was once
+       sampled at 0.082233 s while the other profiles were sampled at 0.033333 s. */
+    await callHarness(page, 'setDriven', [true]);
     const byQuality = {};
     for (const quality of ['low', 'medium', 'high', 'ultra']) {
       await callHarness(page, 'setSettings', [{ quality }]);
@@ -802,6 +951,9 @@ async function collectInputEvidence(page, options) {
 async function collectPlaythrough(page, options) {
   verify(page, 'Browser page is unavailable.');
   await reloadHarness(page, options.timeoutMs);
+  /* Take rAF out of the equation before the run starts. Otherwise frames can slip between the
+     separate startRun/setAutopilot calls, making a quoted finish frame process-speed dependent. */
+  await callHarness(page, 'setDriven', [true]);
   await callHarness(page, 'setFixedTimestep', [1 / 60]);
   await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
@@ -823,7 +975,14 @@ async function collectPlaythrough(page, options) {
         gateIndices.push(telemetry.gate.index);
       }
       if (finalPhase === 'finished') break;
-      const frames = Math.min(chunkFrames, maxFrames - simulatedFrames);
+      if (finalPhase === 'failed') {
+        throw new Error(`Autopilot suffered a hull breach after ${simulatedFrames} frames.`);
+      }
+      /* Once the final gate is clear, finish one frame at a time. The resulting exact frame is
+         reusable by the failure-priority check without adding a seek-to-terminus test hook. */
+      const allGatesCleared = Number.isInteger(telemetry?.gate?.total)
+        && telemetry.gate.index >= telemetry.gate.total;
+      const frames = Math.min(allGatesCleared ? 1 : chunkFrames, maxFrames - simulatedFrames);
       if (frames <= 0) break;
       await callHarness(page, 'step', [frames], options.timeoutMs);
       simulatedFrames += frames;
@@ -853,6 +1012,387 @@ async function collectPlaythrough(page, options) {
     await bestEffort(page, 'setAutopilot', [false]);
     await bestEffort(page, 'setDriven', [false]);
   }
+}
+
+async function collectHullFailureEvidence(page, options, exactFinishFrame) {
+  verify(page, 'Browser page is unavailable.');
+  verify(Number.isInteger(exactFinishFrame) && exactFinishFrame > 1,
+    'The completed playthrough did not publish a reusable exact finish frame.', { exactFinishFrame });
+
+  const neutral = {
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    throttle: 0,
+    strafeX: 0,
+    strafeY: 0,
+    boost: false,
+    brake: true,
+  };
+  const strong = {
+    pitch: 1,
+    yaw: -1,
+    roll: 1,
+    throttle: 1,
+    strafeX: 1,
+    strafeY: -1,
+    boost: true,
+    brake: false,
+  };
+  const damageSequence = [0.3, 0.3, 0.4, 0.5];
+  const readBest = () => page.evaluate(() => localStorage.getItem('last-vector.best.v1'));
+  const prepareFlying = async () => {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [neutral]);
+    await callHarness(page, 'step', [6, 1 / 60], options.timeoutMs);
+  };
+  const injectLethalSequence = async () => {
+    const values = [];
+    for (const amount of damageSequence) {
+      values.push(await callHarness(page, 'damageHull', [amount]));
+    }
+    return values;
+  };
+
+  await reloadHarness(page, options.timeoutMs);
+  await callHarness(page, 'ready', [], options.timeoutMs);
+  await callHarness(page, 'setDriven', [true]);
+  await callHarness(page, 'setFixedTimestep', [1 / 60]);
+  const bestBefore = await readBest();
+
+  try {
+    /* First prove the complete playable path. stageCollision only arranges each contact; every
+       single step must traverse moving hazards, collision resolution and Ship.applyImpact. A
+       bounded loop forces the real damage path to reach the same failure state as the direct
+       boundary injector, and kills implementations that clamp damage at a positive floor. */
+    await prepareFlying();
+    const maxImpacts = 12;
+    const collisionImpacts = [];
+    for (let index = 0; index < maxImpacts; index += 1) {
+      const before = compactTelemetry(await callHarness(page, 'telemetry'));
+      if (before.phase !== 'flying') break;
+      const staged = await callHarness(page, 'stageCollision');
+      await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+      collisionImpacts.push({
+        index,
+        staged,
+        beforeHull: before.hull,
+        after: compactTelemetry(await callHarness(page, 'telemetry')),
+        result: await callHarness(page, 'result'),
+      });
+    }
+    const realCollision = {
+      maxImpacts,
+      impacts: collisionImpacts,
+      simulatedFrames: collisionImpacts.length,
+      final: compactTelemetry(await callHarness(page, 'telemetry')),
+      finalResult: await callHarness(page, 'result'),
+    };
+
+    /* Boundary below zero: damage is immediate, terminal resolution belongs to the next step. */
+    await prepareFlying();
+    const injectedHull = await callHarness(page, 'damageHull', [0.999]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const smallPositive = {
+      injectedHull,
+      afterStep: compactTelemetry(await callHarness(page, 'telemetry')),
+    };
+
+    /* Observe the public DOM phase attribute, not a private transition counter. Four injections
+       happen without an intervening frame and the final two both see the clamped zero boundary. */
+    await prepareFlying();
+    // Seed Input.command with a visibly deflected live-flight sample before the terminal step.
+    // Failed physics bypasses Input.update(), so this is the stale value the cockpit must reject.
+    await callHarness(page, 'setInput', [strong]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const preFailureInput = await callHarness(page, 'activeInput');
+    await page.evaluate(() => {
+      const root = document.querySelector('.lv-root');
+      if (!root) throw new Error('Missing .lv-root for phase transition observation.');
+      const values = [];
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          if (record.type === 'attributes') values.push(root.getAttribute('data-phase'));
+        }
+      });
+      observer.observe(root, { attributes: true, attributeFilter: ['data-phase'] });
+      window.__lvFailurePhaseTrace = { observer, values };
+    });
+    const damageReturns = await injectLethalSequence();
+    const phaseBeforeResolution = await callHarness(page, 'phase');
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const phaseMutations = await page.evaluate(async () => {
+      await Promise.resolve();
+      const trace = window.__lvFailurePhaseTrace;
+      trace?.observer.disconnect();
+      const values = trace?.values.slice() ?? [];
+      delete window.__lvFailurePhaseTrace;
+      return values;
+    });
+    const afterResolution = compactTelemetry(await callHarness(page, 'telemetry'));
+    const afterResolutionResult = await callHarness(page, 'result');
+    const ui = await failureUiSnapshot(page);
+
+    await callHarness(page, 'setSettings', [{ cameraMode: 'cockpit' }]);
+    await callHarness(page, 'setInput', [strong]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+    const damageAfterFailure = await callHarness(page, 'damageHull', [1]);
+    await callHarness(page, 'step', [120, 1 / 60], options.timeoutMs);
+    const afterStrong = compactTelemetry(await callHarness(page, 'telemetry'));
+    const afterStrongResult = await callHarness(page, 'result');
+    const afterStrongInput = await callHarness(page, 'activeInput');
+    const afterStrongPose = await callHarness(page, 'pose');
+    const afterStrongCockpit = await callHarness(page, 'cockpitDebug');
+    await callHarness(page, 'setSettings', [{ cameraMode: 'chase' }]);
+
+    /* Replay the same failure trace with neutral input. Equality of the physical ship snapshot is
+       stronger than reading activeInput: it proves neither the override nor autopilot gained
+       authority while preserving the intended inertial drift. This independently covers the
+       brake axis too: `strong` commands brake false while `neutral` commands brake true. */
+    await prepareFlying();
+    await callHarness(page, 'setInput', [strong]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await injectLethalSequence();
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'setInput', [neutral]);
+    await callHarness(page, 'step', [120, 1 / 60], options.timeoutMs);
+    const neutralAfterPose = await callHarness(page, 'pose');
+
+    /* Repeat the same terminal trace through Input's real keyboard route. The earlier comparison
+       proves override/autopilot cannot steer a failed ship, but would stay green if an
+       implementation neutralised only those automation paths and still called resolveCommand()
+       for a human. Keep all keys physically down across the simulated window, then release every
+       one in finally so a failed assertion cannot contaminate the later real KeyN retry. */
+    const keyboardKeys = ['w', 'd', 'e', 'r', 'Shift', 'ArrowUp', 'ArrowLeft'];
+    await prepareFlying();
+    await injectLethalSequence();
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setAutopilot', [false]);
+    const heldKeys = [];
+    let brakeHeld = false;
+    let keyedPose;
+    let keyedTelemetry;
+    let keyedResult;
+    try {
+      for (const key of keyboardKeys) {
+        await page.keyboard.down(key);
+        heldKeys.push(key);
+      }
+      /* A normal Space on the failure dialog activates RETRY before Input can be observed. Keep
+         the UI-facing key unidentified while sending the production `code: Space` that
+         Input.handleKeyDown uses for brake. */
+      await page.evaluate(() => {
+        window.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Unidentified',
+          code: 'Space',
+          bubbles: true,
+          cancelable: true,
+        }));
+      });
+      brakeHeld = true;
+      await callHarness(page, 'step', [120, 1 / 60], options.timeoutMs);
+      keyedPose = await callHarness(page, 'pose');
+      keyedTelemetry = compactTelemetry(await callHarness(page, 'telemetry'));
+      keyedResult = await callHarness(page, 'result');
+    } finally {
+      const releaseErrors = [];
+      if (brakeHeld) {
+        try {
+          await page.evaluate(() => {
+            window.dispatchEvent(new KeyboardEvent('keyup', {
+              key: 'Unidentified',
+              code: 'Space',
+              bubbles: true,
+              cancelable: true,
+            }));
+          });
+        } catch (error) {
+          releaseErrors.push(`Space: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      for (const key of heldKeys.reverse()) {
+        try {
+          await page.keyboard.up(key);
+        } catch (error) {
+          releaseErrors.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (releaseErrors.length > 0) {
+        throw new Error(`Could not release failure-input keys: ${releaseErrors.join('; ')}`);
+      }
+    }
+
+    await prepareFlying();
+    await injectLethalSequence();
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'step', [120, 1 / 60], options.timeoutMs);
+    const keyboardNeutralPose = await callHarness(page, 'pose');
+    const keyboardNeutralTelemetry = compactTelemetry(await callHarness(page, 'telemetry'));
+    const keyboardNeutralResult = await callHarness(page, 'result');
+    const keyboardInput = {
+      keys: keyboardKeys,
+      brakeCode: 'Space',
+      heldFrames: 120,
+      keyedPose,
+      keyed: keyedTelemetry,
+      keyedResult,
+      neutralPose: keyboardNeutralPose,
+      neutral: keyboardNeutralTelemetry,
+      neutralResult: keyboardNeutralResult,
+    };
+
+    /* Use the shipped KeyN route. Sample one frame so telemetry reflects Ship.reset(), then place
+       the repeated presses halfway through the three-second countdown. If any press restarts it,
+       the final 92 frames are insufficient to reach flight. */
+    await page.keyboard.press('n');
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const immediate = compactTelemetry(await callHarness(page, 'telemetry'));
+    const immediateResult = await callHarness(page, 'result');
+    await callHarness(page, 'step', [89, 1 / 60], options.timeoutMs);
+    const midpointPhase = await callHarness(page, 'phase');
+    for (let i = 0; i < 4; i += 1) await page.keyboard.press('n');
+    await callHarness(page, 'step', [92, 1 / 60], options.timeoutMs);
+    const afterSpam = compactTelemetry(await callHarness(page, 'telemetry'));
+
+    /* Re-run the exact deterministic trace to one frame before its known successful finish, then
+       inject lethal damage into that final frame. Failure resolution runs before course arrival. */
+    await callHarness(page, 'setDriven', [false]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+    await stepHarnessFrames(page, exactFinishFrame - 1, options.timeoutMs);
+    const finishBefore = compactTelemetry(await callHarness(page, 'telemetry'));
+    const finishBeforeResult = await callHarness(page, 'result');
+    await callHarness(page, 'damageHull', [1]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const finishAfter = compactTelemetry(await callHarness(page, 'telemetry'));
+    const finishAfterResult = await callHarness(page, 'result');
+
+    /* Reproduce the cross-run timer boundary: enter GO from a real countdown, fail before its
+       700 ms dismissal fires, restart through KeyN, then wait beyond the old deadline with driven
+       simulation held. The new countdown must remain visibly open at 3. */
+    await callHarness(page, 'setDriven', [false]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'startRun', [{ skipIntro: false }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [neutral]);
+    let goFrames = 0;
+    while ((await callHarness(page, 'phase')) === 'countdown' && goFrames < 240) {
+      await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+      goFrames += 1;
+    }
+    const go = compactTelemetry(await callHarness(page, 'telemetry'));
+    const goUi = await countdownUiSnapshot(page);
+    const goAt = await page.evaluate(() => performance.now());
+    await callHarness(page, 'damageHull', [1]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await page.keyboard.press('n');
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const restartedAt = await page.evaluate(() => performance.now());
+    await page.waitForTimeout(800);
+    const afterWait = compactTelemetry(await callHarness(page, 'telemetry'));
+    const afterWaitUi = await countdownUiSnapshot(page);
+
+    const bestAfter = await readBest();
+    return {
+      bestBefore,
+      bestAfter,
+      realCollision,
+      smallPositive,
+      lethal: {
+        damageSequence,
+        preFailureInput,
+        damageReturns,
+        phaseBeforeResolution,
+        phaseMutations,
+        afterResolution,
+        afterResolutionResult,
+        ui,
+        damageAfterFailure,
+        afterStrong,
+        afterStrongResult,
+        afterStrongInput,
+        afterStrongPose,
+        afterStrongCockpit,
+        neutralAfterPose,
+      },
+      keyboardInput,
+      restart: { immediate, immediateResult, midpointPhase, afterSpam, spammedN: 4 },
+      finishPriority: {
+        exactFinishFrame,
+        before: finishBefore,
+        beforeResult: finishBeforeResult,
+        after: finishAfter,
+        afterResult: finishAfterResult,
+      },
+      staleGo: {
+        goFrames,
+        go,
+        goUi,
+        restartDelayMs: restartedAt - goAt,
+        waitedMs: 800,
+        afterWait,
+        afterWaitUi,
+      },
+    };
+  } finally {
+    await page.evaluate(() => {
+      window.__lvFailurePhaseTrace?.observer.disconnect();
+      delete window.__lvFailurePhaseTrace;
+    }).catch(() => {});
+    await bestEffort(page, 'setInput', [null]);
+    await bestEffort(page, 'setAutopilot', [false]);
+    await bestEffort(page, 'setDriven', [false]);
+  }
+}
+
+async function stepHarnessFrames(page, totalFrames, timeoutMs) {
+  let remaining = totalFrames;
+  while (remaining > 0) {
+    const frames = Math.min(120, remaining);
+    await callHarness(page, 'step', [frames, 1 / 60], timeoutMs);
+    remaining -= frames;
+    const phase = await callHarness(page, 'phase');
+    if (phase === 'failed' || phase === 'finished') {
+      throw new Error(`Run reached terminal phase "${phase}" with ${remaining} requested frames remaining.`);
+    }
+  }
+}
+
+async function failureUiSnapshot(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector('.lv-root');
+    const screen = document.querySelector('.lv-screen--results');
+    const body = screen?.querySelector('.lv-res-body');
+    const buttons = body ? [...body.querySelectorAll('button')] : [];
+    return {
+      rootPhase: root?.getAttribute('data-phase') ?? null,
+      screenOpen: screen?.getAttribute('data-open') ?? null,
+      bodyState: body?.getAttribute('data-state') ?? null,
+      text: body?.textContent ?? '',
+      buttonLabels: buttons.map((button) =>
+        button.querySelector('.lv-btn-t')?.textContent?.trim().toUpperCase() ?? ''),
+      buttonShortcuts: buttons.map((button) => button.getAttribute('aria-keyshortcuts')),
+    };
+  });
+}
+
+async function countdownUiSnapshot(page) {
+  return page.evaluate(() => {
+    const screen = document.querySelector('.lv-screen--countdown');
+    return {
+      screenOpen: screen?.getAttribute('data-open') ?? null,
+      number: screen?.querySelector('.lv-count-n')?.textContent?.trim().toUpperCase() ?? null,
+      label: screen?.querySelector('.lv-count-k')?.textContent?.trim().toUpperCase() ?? null,
+    };
+  });
 }
 
 /**
@@ -1077,7 +1617,9 @@ async function stepUntilFlying(page, timeoutMs) {
   while (simulatedFrames <= 600) {
     const phase = await callHarness(page, 'phase');
     if (phase === 'flying') return;
-    if (phase === 'finished') throw new Error('Run finished before the input probe reached flying.');
+    if (phase === 'failed' || phase === 'finished') {
+      throw new Error(`Run reached terminal phase "${phase}" before the input probe reached flying.`);
+    }
     await callHarness(page, 'step', [30], timeoutMs);
     simulatedFrames += 30;
   }
@@ -1093,6 +1635,7 @@ function compactTelemetry(telemetry) {
     throttle: telemetry.throttle,
     boosting: telemetry.boosting,
     energy: telemetry.energy,
+    hull: telemetry.hull,
     roll: telemetry.roll,
     pitch: telemetry.pitch,
     gate: telemetry.gate,

@@ -974,6 +974,8 @@ export class Screens {
   showResult(r: RunResult): void {
     const body = this.nResultBody;
     body.textContent = '';
+    delete body.dataset['state'];
+    this.views.get('results')?.setAttribute('aria-label', 'Run complete');
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
     const head = el('header', 'lv-res-head');
@@ -1149,6 +1151,45 @@ export class Screens {
     );
     body.appendChild(actions);
 
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /**
+   * Reuses the results shell for a terminal hull breach without presenting a failed run as a
+   * result. There is deliberately one way out: restart. The N chip matches Input's real restart
+   * binding, so the visible shortcut and the action path cannot disagree.
+   */
+  showFailure(elapsed: number): void {
+    const body = this.nResultBody;
+    body.textContent = '';
+    body.dataset['state'] = 'failure';
+    this.views.get('results')?.setAttribute('aria-label', 'Hull breach');
+
+    const head = el('header', 'lv-res-head');
+    head.style.setProperty('--n', '0');
+    head.appendChild(el('h2', 'lv-res-title', 'HULL BREACH'));
+
+    const timeBlock = el('div', 'lv-res-timeblock');
+    timeBlock.style.setProperty('--n', '1');
+    timeBlock.append(
+      el('div', 'lv-res-k', 'TIME'),
+      el('div', 'lv-res-time', formatTime(elapsed)),
+    );
+
+    const actions = el('div', 'lv-actions lv-actions--res');
+    actions.style.setProperty('--n', '2');
+    actions.appendChild(
+      this.button('RETRY', 'is-primary', () => this.host.restart(), undefined, 'N'),
+    );
+
+    body.append(head, timeBlock, actions);
+
+    /* setPhase may have opened this shared view before its failure body was populated. Refresh
+       navigation after mutation so keyboard focus lands on RETRY instead of a detached result
+       action from the previous run. */
     if (this.view === 'results') {
       this.collectNav(this.views.get('results')!);
       this.focusNav(0, false);

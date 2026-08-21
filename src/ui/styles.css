@@ -2234,6 +2234,20 @@ kbd {
   animation-delay: calc(var(--n) * 0.05s);
 }
 
+/* A breach borrows the result typography but stays a short, single-action terminal state. */
+.lv-res-body[data-state='failure'] {
+  width: min(100%, 44rem);
+  margin: clamp(48px, 14vh, 140px) auto 0;
+}
+
+.lv-res-body[data-state='failure'] .lv-res-title {
+  color: var(--c-bad);
+}
+
+.lv-res-body[data-state='failure'] .lv-res-timeblock {
+  margin-top: clamp(28px, 5vmin, 72px);
+}
+
 .lv-res-head {
   display: flex;
   align-items: flex-end;
