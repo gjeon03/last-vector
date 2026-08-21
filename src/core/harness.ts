@@ -111,6 +111,57 @@ export interface HarnessCockpitDebugState {
   mfdUpdates: number;
 }
 
+/**
+ * Read-only proof for the exterior ship and its paired drive plume. Counts describe only the
+ * ship model, so world debris density cannot make this regression contract fluctuate.
+ */
+export interface HarnessShipVisualDebugState {
+  visible: boolean;
+  drawCalls: number;
+  triangles: number;
+  plumeTriangles: number;
+  materials: number;
+  nozzleAnchors: ReadonlyArray<ShipNozzleAnchor>;
+  /** Final model-world projection points for screenshot-space engine ROI measurement. */
+  engineProjection: ReadonlyArray<ShipEngineProjection>;
+  plume: {
+    power: number;
+    boost: number;
+    length: number;
+    width: number;
+    coreStretch: number;
+    coreGain: number;
+    ignite: number;
+    release: number;
+    cells: number;
+    cellFreq: number;
+    glowPower: number;
+  };
+}
+
+export interface ShipEngineProjection {
+  mouthNdc: readonly [number, number, number];
+  mouthRimNdc: readonly [number, number, number];
+  coreNdc: readonly [number, number, number];
+  coreRimNdc: readonly [number, number, number];
+  sheathMidNdc: readonly [number, number, number];
+  sheathMidRimNdc: readonly [number, number, number];
+  tailNdc: readonly [number, number, number];
+  /** The same points after inverting the boost lens warp into final screenshot coordinates. */
+  mouthScreenNdc: readonly [number, number, number];
+  mouthRimScreenNdc: readonly [number, number, number];
+  coreScreenNdc: readonly [number, number, number];
+  coreRimScreenNdc: readonly [number, number, number];
+  sheathMidScreenNdc: readonly [number, number, number];
+  sheathMidRimScreenNdc: readonly [number, number, number];
+  tailScreenNdc: readonly [number, number, number];
+}
+
+export interface ShipNozzleAnchor {
+  position: readonly [number, number, number];
+  radius: number;
+}
+
 export interface GatePassRecord {
   index: number;
   /** Run time at the crossing, seconds. */
@@ -200,6 +251,8 @@ export interface HarnessApi {
   present(): Promise<void>;
   /** Physical state of the ship this frame. */
   pose(): HarnessPose;
+  /** Exterior ship/plume topology and the scalar VFX state currently presented. */
+  shipDebug(): HarnessShipVisualDebugState;
   /** The pilot command actually applied this frame, after overrides and assists. */
   activeInput(): Required<HarnessInput>;
   /** Every gate crossing so far, in order. Survives until the next `startRun`. */

@@ -155,7 +155,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.2.0',
+    version: '1.3.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -188,6 +188,7 @@ function installHarness(game: Game): void {
       await waitFrames(2);
     },
     pose: () => game.getPose(),
+    shipDebug: () => game.getShipDebug(),
     activeInput: () => game.getActiveInput(),
     gateHistory: () => game.getGateHistory(),
     hazard: (samples?: number) => game.getHazard(samples),

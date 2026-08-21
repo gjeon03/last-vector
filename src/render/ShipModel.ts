@@ -139,20 +139,25 @@ const CANOPY_FRAG = /* glsl */ `
 
 const PLUME_VERT = /* glsl */ `
   attribute vec3 aNozzle;
+  attribute float aShell;
   varying vec2 vUv;
   varying vec3 vLocal;
   varying vec3 vViewNormal;
   varying vec3 vViewDir;
+  varying float vShell;
   uniform float uLength;
   uniform float uWidth;
+  uniform float uCoreStretch;
   void main() {
     vUv = uv;
+    vShell = aShell;
     vec3 local = position - aNozzle;
     local.xy *= uWidth;
-    local.z *= uLength;
+    local.z *= uLength * mix(1.0, uCoreStretch, aShell);
     vec3 p = aNozzle + local;
     vLocal = local;
-    vViewNormal = normalize(normalMatrix * vec3(normal.xy / uWidth, normal.z / uLength));
+    float axialStretch = uLength * mix(1.0, uCoreStretch, aShell);
+    vViewNormal = normalize(normalMatrix * vec3(normal.xy / uWidth, normal.z / axialStretch));
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vViewDir = -mv.xyz;
     gl_Position = projectionMatrix * mv;
@@ -165,10 +170,17 @@ const PLUME_FRAG = /* glsl */ `
   varying vec3 vLocal;
   varying vec3 vViewNormal;
   varying vec3 vViewDir;
+  varying float vShell;
   uniform vec3 uCore;
   uniform vec3 uFlame;
   uniform float uPower;
   uniform float uTime;
+  uniform float uBoost;
+  uniform float uCoreGain;
+  uniform float uIgnite;
+  uniform float uRelease;
+  uniform float uCells;
+  uniform float uCellFreq;
 
   ${GLSL_NOISE}
 
@@ -177,10 +189,38 @@ const PLUME_FRAG = /* glsl */ `
     // nozzle-to-tail direction explicit: every axial term below expects t = 0 at the nozzle.
     float t = clamp(1.0 - vUv.y, 0.0, 1.0);
 
+    // A narrow, merged shell carries the white-hot exhaust core. It deliberately exits before
+    // the noise path: boost adds detail through a few stationary shock cells, not extra draws or
+    // an expensive second turbulent layer.
+    if (vShell > 0.5) {
+      float tailFade = 1.0 - smoothstep(0.7, 1.0, t);
+      float stream = pow(1.0 - t, 0.62) * tailFade;
+      float throat = 1.0 - smoothstep(0.0, 0.19, t);
+      float cellWave = 0.5 + 0.5 * cos(t * uCellFreq * 2.4);
+      float cellWindow = smoothstep(0.12, 0.2, t) * (1.0 - smoothstep(0.68, 0.84, t));
+      float shockCells = uCells * pow(cellWave, 9.0) * cellWindow;
+      float midBand = smoothstep(0.1, 0.24, t) * (1.0 - smoothstep(0.68, 0.9, t));
+      float ignition = uIgnite * uIgnite;
+      float transient = (1.0 + ignition * 3.2) * (1.0 - uRelease * 0.16);
+      // Keep the mouth restrained so it cannot bloom over the outer sheath, then concentrate
+      // drive energy in the middle of the narrow shell where the core can be read independently.
+      float radiance = (stream * 0.14 + throat * 0.08 + midBand * 0.78 + shockCells * 0.55)
+        * transient;
+      float density = (stream * 0.15 + throat * 0.18 + midBand * 0.52 + shockCells * 0.78)
+        * (0.72 + uIgnite * 0.06);
+      vec3 coreColor = mix(uFlame, uCore, 0.64 + throat * 0.36);
+      float whiten = clamp(0.3 + uBoost * 0.25 + uIgnite * 0.35, 0.0, 0.9);
+      coreColor = mix(coreColor, vec3(1.0), whiten);
+      gl_FragColor = vec4(
+        coreColor * uPower * uCoreGain * radiance,
+        clamp(density * 0.72, 0.0, 1.0)
+      );
+      return;
+    }
+
     // Keep the wrapped circumference continuous; using it as a fake radius cuts a view-dependent
     // seam into the shell. Fine variation is deliberately too small to break the body apart.
     float around = 0.94 + 0.06 * sin(vUv.x * 6.2831853 + uTime * 2.7);
-    float diamonds = 0.88 + 0.12 * sin(t * 30.0 - uTime * 20.0);
     float turb = fbm(vec3(vLocal.xy * 3.4, t * 6.0 - uTime * 5.0), 3) * 0.5 + 0.5;
 
     // Release the translucent shell just behind the hardware. Full density at t=0 projected the
@@ -188,13 +228,13 @@ const PLUME_FRAG = /* glsl */ `
     float rootRelease = smoothstep(0.025, 0.11, t);
     float body = rootRelease * pow(1.0 - t, 1.25) * (1.0 - smoothstep(0.76, 1.0, t));
     float facing = abs(dot(normalize(vViewNormal), normalize(vViewDir)));
-    float softSurface = 0.55 + 0.45 * pow(facing, 0.55);
-    float density = body * softSurface * around * (0.86 + turb * 0.2) * diamonds;
+    float softSurface = 0.3 + 0.7 * pow(facing, 1.15);
+    float density = body * softSurface * around * (0.86 + turb * 0.2);
 
     vec3 col = mix(uFlame, uCore, pow(1.0 - t, 1.8));
-    col *= uPower * 2.0;
+    col *= uPower * 0.12 * (1.0 + uIgnite * 0.015);
 
-    gl_FragColor = vec4(col, clamp(density * 0.72, 0.0, 1.0));
+    gl_FragColor = vec4(col, clamp(density * 0.18 * (1.0 - uRelease * 0.12), 0.0, 1.0));
   }
 `;
 
@@ -206,6 +246,32 @@ export interface ShipNozzle {
   /** Local-space position of the nozzle mouth. */
   position: THREE.Vector3;
   radius: number;
+}
+
+/** Allocation-on-demand snapshot used by the deterministic exterior VFX probe. */
+export interface ShipVisualDebugState {
+  readonly visible: boolean;
+  readonly drawCalls: number;
+  readonly triangles: number;
+  readonly plumeTriangles: number;
+  readonly materials: number;
+  readonly nozzleAnchors: ReadonlyArray<{
+    readonly position: readonly [number, number, number];
+    readonly radius: number;
+  }>;
+  readonly plume: {
+    readonly power: number;
+    readonly boost: number;
+    readonly length: number;
+    readonly width: number;
+    readonly coreStretch: number;
+    readonly coreGain: number;
+    readonly ignite: number;
+    readonly release: number;
+    readonly cells: number;
+    readonly cellFreq: number;
+    readonly glowPower: number;
+  };
 }
 
 type SurfaceZone = 0 | 1 | 2 | 3;
@@ -259,6 +325,10 @@ export class ShipModel {
   private readonly plumeParts: THREE.BufferGeometry[] = [];
   private readonly idleCore = new THREE.Color(PALETTE.engineCore);
   private readonly boostCore = new THREE.Color(PALETTE.engineBoost);
+  private lastPlumeTime = Number.NaN;
+  private previousBoost = 0;
+  private ignition = 0;
+  private release = 0;
 
   constructor(options: ShipVisualOptions) {
     this.object.name = 'kestrel-c7-cold-frame-warm-skin';
@@ -298,6 +368,9 @@ export class ShipModel {
         uColor: { value: new THREE.Color(PALETTE.engineCore) },
         uFlame: { value: new THREE.Color(PALETTE.engineFlame) },
         uPower: { value: 1 },
+        uCoreGain: { value: 1 },
+        uIgnite: { value: 0 },
+        uRelease: { value: 0 },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -313,15 +386,25 @@ export class ShipModel {
         uniform vec3 uColor;
         uniform vec3 uFlame;
         uniform float uPower;
+        uniform float uCoreGain;
+        uniform float uIgnite;
+        uniform float uRelease;
         void main() {
           // A CircleGeometry has one normal, so the old view-facing term was constant across the
           // whole throat and tonemapped into a flat white coin. A radial core keeps the nozzle
           // cyan, gives bloom a compact source, and feathers directly into the plume behind it.
           float radius = length((vUv - 0.5) * 2.0);
-          float halo = 1.0 - smoothstep(0.12, 0.8, radius);
-          float core = 1.0 - smoothstep(0.0, 0.34, radius);
-          vec3 col = mix(uFlame, uColor, 0.72 + core * 0.28) * (halo * 0.42 + core * 0.72);
-          gl_FragColor = vec4(col * uPower * 0.48, halo * 0.82);
+          float coreDisc = 1.0 - smoothstep(0.42, 0.68, radius);
+          float core = 1.0 - smoothstep(0.0, 0.26, radius);
+          float hotSpot = core * core;
+          float ignition = uIgnite * uIgnite;
+          float transient = (1.0 + ignition * 4.5) * (1.0 - uRelease * 0.16);
+          vec3 col = mix(uFlame, uColor, 0.68 + hotSpot * 0.32);
+          float emission = coreDisc * 0.68 + hotSpot * 0.16;
+          gl_FragColor = vec4(
+            col * emission * uPower * uCoreGain * transient,
+            clamp(coreDisc * 0.68 + hotSpot * 0.12, 0.0, 1.0)
+          );
         }
       `,
       transparent: true,
@@ -334,8 +417,15 @@ export class ShipModel {
         uCore: { value: this.idleCore.clone() },
         uFlame: { value: new THREE.Color(PALETTE.engineFlame) },
         uPower: { value: 0 },
+        uBoost: { value: 0 },
         uLength: { value: 6 },
         uWidth: { value: 1 },
+        uCoreStretch: { value: 0.7 },
+        uCoreGain: { value: 1 },
+        uIgnite: { value: 0 },
+        uRelease: { value: 0 },
+        uCells: { value: 0 },
+        uCellFreq: { value: 10 },
         uTime: { value: 0 },
       },
       vertexShader: PLUME_VERT,
@@ -394,15 +484,19 @@ export class ShipModel {
     this.glowParts.push(geometry);
   }
 
-  private addPlume(geometry: THREE.BufferGeometry, nozzle: THREE.Vector3): void {
+  private addPlume(geometry: THREE.BufferGeometry, nozzle: THREE.Vector3, shell: 0 | 1): void {
     geometry.translate(nozzle.x, nozzle.y, nozzle.z);
-    const centres = new Float32Array(geometry.getAttribute('position').count * 3);
+    const vertexCount = geometry.getAttribute('position').count;
+    const centres = new Float32Array(vertexCount * 3);
     for (let vertex = 0; vertex < centres.length; vertex += 3) {
       centres[vertex] = nozzle.x;
       centres[vertex + 1] = nozzle.y;
       centres[vertex + 2] = nozzle.z;
     }
     geometry.setAttribute('aNozzle', new THREE.BufferAttribute(centres, 3));
+    const shells = new Float32Array(vertexCount);
+    shells.fill(shell);
+    geometry.setAttribute('aShell', new THREE.BufferAttribute(shells, 1));
     this.plumeParts.push(geometry);
   }
 
@@ -853,7 +947,15 @@ export class ShipModel {
       const plumeGeo = new THREE.CylinderGeometry(0.38, 0.012, 1, 16, 1, true);
       plumeGeo.rotateX(-Math.PI / 2);
       plumeGeo.translate(0, 0, 0.5);
-      this.addPlume(plumeGeo, nozzle);
+      this.addPlume(plumeGeo, nozzle, 0);
+
+      // The high-energy core shares the exact plume material and merged draw. Twelve radial
+      // segments add only 24 triangles per engine while providing enough section detail for
+      // three-to-four stationary shock cells to read at chase-camera distance.
+      const coreGeo = new THREE.CylinderGeometry(0.17, 0.02, 1, 12, 1, true);
+      coreGeo.rotateX(-Math.PI / 2);
+      coreGeo.translate(0, 0, 0.5);
+      this.addPlume(coreGeo, nozzle, 1);
     }
   }
 
@@ -979,6 +1081,38 @@ export class ShipModel {
     this.addSolid(geometry, zone);
   }
 
+  /** Clears temporal overdrive state for a new run without reallocating VFX resources. */
+  resetPlumeState(time: number, boost = 0): void {
+    const safeBoost = Number.isFinite(boost) ? THREE.MathUtils.clamp(boost, 0, 1) : 0;
+    this.lastPlumeTime = time;
+    this.previousBoost = safeBoost;
+    this.ignition = 0;
+    this.release = 0;
+
+    this.plumeMat.uniforms.uBoost.value = safeBoost;
+    this.plumeMat.uniforms.uIgnite.value = 0;
+    this.plumeMat.uniforms.uRelease.value = 0;
+    this.plumeMat.uniforms.uCells.value = safeBoost * 0.34;
+    this.plumeMat.uniforms.uCellFreq.value = 10 - safeBoost * 1.6;
+    this.plumeMat.uniforms.uCore.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
+    this.glowMat.uniforms.uIgnite.value = 0;
+    this.glowMat.uniforms.uRelease.value = 0;
+    this.glowMat.uniforms.uColor.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
+  }
+
+  /** Rebases the VFX clock while preserving an in-flight ignition or release envelope. */
+  rebasePlumeTime(time: number, boost: number): void {
+    const safeBoost = Number.isFinite(boost) ? THREE.MathUtils.clamp(boost, 0, 1) : 0;
+    this.lastPlumeTime = time;
+    this.previousBoost = safeBoost;
+
+    this.plumeMat.uniforms.uBoost.value = safeBoost;
+    this.plumeMat.uniforms.uCells.value = safeBoost * 0.34;
+    this.plumeMat.uniforms.uCellFreq.value = 10 - safeBoost * 1.6;
+    this.plumeMat.uniforms.uCore.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
+    this.glowMat.uniforms.uColor.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
+  }
+
   /**
    * @param power  0..1 drive output
    * @param boost  0..1 overdrive blend
@@ -994,14 +1128,111 @@ export class ShipModel {
 
     const safePower = Number.isFinite(power) ? THREE.MathUtils.clamp(power, 0, 1) : 0;
     const safeBoost = Number.isFinite(boost) ? THREE.MathUtils.clamp(boost, 0, 1) : 0;
+    const plumeDt = time - this.lastPlumeTime;
+    if (!Number.isFinite(plumeDt) || plumeDt < 0 || plumeDt > 0.25) {
+      // Deterministic harnesses rewind their clock between captures. Treat initialization, a
+      // rewind, or a long gap as settled so none can manufacture a one-frame ignition flash.
+      this.ignition = 0;
+      this.release = 0;
+      this.previousBoost = safeBoost;
+    } else if (plumeDt > 0) {
+      const boostRateScale = plumeDt * 6.25;
+      const rising = THREE.MathUtils.clamp(
+        (safeBoost - this.previousBoost) / boostRateScale,
+        0,
+        1,
+      );
+      const falling = THREE.MathUtils.clamp(
+        (this.previousBoost - safeBoost) / boostRateScale,
+        0,
+        1,
+      );
+      const ignitionDecay = this.ignition * Math.exp(-plumeDt / 0.12);
+      const releaseDecay = this.release * Math.exp(-plumeDt / 0.3);
+      // A direction change hands the transient over immediately. Letting the ignition peak
+      // survive into shutdown made the release frame brighter than steady boost.
+      this.ignition = falling > 0 ? 0 : Math.max(rising, ignitionDecay);
+      this.release = rising > 0 ? 0 : Math.max(falling, releaseDecay);
+      this.previousBoost = safeBoost;
+    }
+    // At dt === 0 the simulation is paused: update the visible steady-state uniforms below, but
+    // retain previousBoost and both transient envelopes. The first advancing frame can then see
+    // an input edge that occurred while paused instead of silently swallowing it.
+    this.lastPlumeTime = time;
+
     const length = 3.4 + safePower * 0.4 + safeBoost * 0.2;
     const width = 0.95 + safePower * 0.15 + safeBoost * 0.25;
+    const coreStretch = 0.62
+      + safePower * 0.08
+      + safeBoost * 0.12
+      + this.ignition * 0.08
+      + this.release * 0.04;
+    const coreGain = 0.78 + safePower * 0.12 + safeBoost * 0.42;
+    const cells = safeBoost * 0.34;
+    const cellFreq = 10 - safeBoost * 1.6;
     this.plumeMat.uniforms.uPower.value = Math.max(0.05, safePower * 0.55 + safeBoost * 0.45);
-    this.plumeMat.uniforms.uLength.value = length * (0.96 + Math.sin(time * 31 + this.plumeMat.id) * 0.04);
+    this.plumeMat.uniforms.uBoost.value = safeBoost;
+    this.plumeMat.uniforms.uLength.value = length * (0.96 + Math.sin(time * 31 + 0.73) * 0.04);
     this.plumeMat.uniforms.uWidth.value = width;
+    this.plumeMat.uniforms.uCoreStretch.value = coreStretch;
+    this.plumeMat.uniforms.uCoreGain.value = coreGain;
+    this.plumeMat.uniforms.uIgnite.value = this.ignition;
+    this.plumeMat.uniforms.uRelease.value = this.release;
+    this.plumeMat.uniforms.uCells.value = cells;
+    this.plumeMat.uniforms.uCellFreq.value = cellFreq;
     this.plumeMat.uniforms.uTime.value = time;
     this.plumeMat.uniforms.uCore.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
     this.glowMat.uniforms.uPower.value = 0.38 + safePower * 0.3 + safeBoost * 0.35;
+    this.glowMat.uniforms.uCoreGain.value = coreGain;
+    this.glowMat.uniforms.uIgnite.value = this.ignition;
+    this.glowMat.uniforms.uRelease.value = this.release;
+    this.glowMat.uniforms.uColor.value.lerpColors(this.idleCore, this.boostCore, safeBoost);
+  }
+
+  getDebugState(): ShipVisualDebugState {
+    let drawCalls = 0;
+    let triangles = 0;
+    let plumeTriangles = 0;
+    const materials = new Set<THREE.Material>();
+
+    for (const child of this.object.children) {
+      if (!(child instanceof THREE.Mesh)) continue;
+      drawCalls++;
+      const geometry = child.geometry;
+      const triangleCount = (geometry.index?.count ?? geometry.getAttribute('position').count) / 3;
+      triangles += triangleCount;
+      if (child.name === 'paired-engine-plumes') plumeTriangles = triangleCount;
+      if (Array.isArray(child.material)) {
+        for (const material of child.material) materials.add(material);
+      } else {
+        materials.add(child.material);
+      }
+    }
+
+    return {
+      visible: this.object.visible,
+      drawCalls,
+      triangles,
+      plumeTriangles,
+      materials: materials.size,
+      nozzleAnchors: this.nozzles.map((nozzle) => ({
+        position: [nozzle.position.x, nozzle.position.y, nozzle.position.z],
+        radius: nozzle.radius,
+      })),
+      plume: {
+        power: this.plumeMat.uniforms.uPower.value,
+        boost: this.plumeMat.uniforms.uBoost.value,
+        length: this.plumeMat.uniforms.uLength.value,
+        width: this.plumeMat.uniforms.uWidth.value,
+        coreStretch: this.plumeMat.uniforms.uCoreStretch.value,
+        coreGain: this.plumeMat.uniforms.uCoreGain.value,
+        ignite: this.plumeMat.uniforms.uIgnite.value,
+        release: this.plumeMat.uniforms.uRelease.value,
+        cells: this.plumeMat.uniforms.uCells.value,
+        cellFreq: this.plumeMat.uniforms.uCellFreq.value,
+        glowPower: this.glowMat.uniforms.uPower.value,
+      },
+    };
   }
 
   setVisible(visible: boolean): void {

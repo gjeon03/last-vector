@@ -43,7 +43,14 @@ import type {
   Telemetry,
   UiAudioBus,
 } from '../core/contracts.ts';
-import type { GatePassRecord, HarnessInput, HarnessPose, HazardReport, PerfSample } from '../core/harness.ts';
+import type {
+  GatePassRecord,
+  HarnessInput,
+  HarnessPose,
+  HarnessShipVisualDebugState,
+  HazardReport,
+  PerfSample,
+} from '../core/harness.ts';
 
 /**
  * The game. Owns the render graph, the simulation, the phase machine and the automation
@@ -152,6 +159,8 @@ export class Game {
   private phase: Phase = 'boot';
   private elapsed = 0;
   private clock = 0;
+  /** Ship-local visual time freezes with pause while the background scene keeps breathing. */
+  private shipVisualClock = 0;
   private countdown: number | null = null;
   private countdownTimer = 0;
   private result: RunResult | null = null;
@@ -596,6 +605,11 @@ export class Game {
       // the right-hand HUD column.
       { name: 'hull', t: 0.2, offset: new THREE.Vector3(-26, 5.5, 38), lookAhead: 26, fov: 40, exposureBias: 1.45 },
       { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.5 },
+      // True lateral engine view for plume authoring. `hull` is a rear three-quarter hero frame;
+      // it cannot prove that the nested core remains inside the sheath or that shock cells read
+      // down the plume axis. This offset is deliberately broad enough to keep both drive pods and
+      // their full exhaust length visible without turning the shot into a telephoto silhouette.
+      { name: 'drive-side', t: 0.34, offset: new THREE.Vector3(26, 0.6, 6), lookAhead: 0, fov: 48, exposureBias: 1.2 },
       { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
       { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },
       { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900, exposureBias: 1.3 },
@@ -608,6 +622,14 @@ export class Game {
 
   private resetShipToStart(): void {
     this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
+    // A restart is a new visual run as well as a new physics run. Leaving the smoothed boost
+    // value alive made the first countdown frame look like a shutdown transient after restarting
+    // during boost, even though Ship.reset() had already cleared the actual engine state.
+    this.boostBlend = 0;
+    this.wasBoosting = false;
+    this.wasBoostLocked = false;
+    this.gateTickTimer = 0;
+    this.shipModel.resetPlumeState(this.shipVisualClock);
     this.asteroids.resetMotion();
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
@@ -766,6 +788,7 @@ export class Game {
     }
     const dt = this.fixedTimestep ?? clamp(rawDt, 0.0005, 0.05);
     this.clock += dt;
+    if (!this.paused) this.shipVisualClock += dt;
     this.grade.time = this.clock;
 
     this.fpsAccumulator += rawDt;
@@ -1113,7 +1136,7 @@ export class Game {
     // boost-driven effect — FOV kick, streak length, dust density, plume, trail width, lens warp
     // — was keyed off a value that had already been through two independent smoothers, so it lagged
     // badly and never reached full strength. That is why boost barely deformed the frame.
-    this.boostBlend = damp(this.boostBlend, boost, 0.16, dt);
+    if (!this.paused) this.boostBlend = damp(this.boostBlend, boost, 0.16, dt);
     const boostBlend = this.boostBlend;
 
     this.shipRoot.position.copy(this.ship.position);
@@ -1190,7 +1213,7 @@ export class Game {
     this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
 
     this.shipModel.update(
-      this.clock,
+      this.shipVisualClock,
       camPos,
       this.ship.throttleSmoothed,
       boostBlend,
@@ -1914,6 +1937,10 @@ export class Game {
       // `setFixedTimestep` fixes the STEP; this fixes the ORIGIN. Both are needed for two
       // processes to render the same frame.
       this.clock = 0;
+      this.shipVisualClock = 0;
+      // Reset the time origin without inventing an engine edge. A driver can take ownership in
+      // the middle of sustained boost, so the plume's baseline must match the live blend.
+      this.shipModel.rebasePlumeTime(0, this.boostBlend);
       this.grade.time = 0;
     }
   }
@@ -1936,6 +1963,82 @@ export class Game {
   /** Read-only cockpit evidence for deterministic integration and render-budget checks. */
   getCockpitDebug(): CockpitDebugState {
     return this.cockpitModel.getDebugState();
+  }
+
+  /** Read-only exterior renderer contract used by the boost VFX regression probe. */
+  getShipDebug(): HarnessShipVisualDebugState {
+    const debug = this.shipModel.getDebugState();
+    const plumeLength = debug.plume.length;
+    const plumeWidth = debug.plume.width;
+    this.shipModel.object.updateWorldMatrix(true, false);
+    this.chase.camera.updateMatrixWorld();
+    const projectLocal = (point: THREE.Vector3): [number, number, number] => {
+      const world = this.shipModel.object.localToWorld(point.clone());
+      const ndc = world.project(this.chase.camera);
+      return [ndc.x, ndc.y, ndc.z];
+    };
+    // The composite samples scene UV at `out + (out-centre) * r^2 * warp`. Invert that radial
+    // mapping so a point projected from the scene lands in the same pixel the final PNG uses.
+    const toScreenNdc = (ndc: [number, number, number]): [number, number, number] => {
+      const centre = this.grade.blurCentre;
+      const dx = ndc[0] * 0.5 + 0.5 - centre.x;
+      const dy = ndc[1] * 0.5 + 0.5 - centre.y;
+      const sourceRadius = Math.hypot(dx, dy);
+      if (sourceRadius < 1e-9 || this.grade.warp <= 0) return ndc;
+      let outputRadius = sourceRadius;
+      for (let i = 0; i < 5; i++) {
+        const radius2 = outputRadius * outputRadius;
+        outputRadius -= (
+          outputRadius + this.grade.warp * outputRadius * radius2 - sourceRadius
+        ) / (1 + 3 * this.grade.warp * radius2);
+      }
+      const scale = outputRadius / sourceRadius;
+      return [
+        (centre.x + dx * scale) * 2 - 1,
+        (centre.y + dy * scale) * 2 - 1,
+        ndc[2],
+      ];
+    };
+    return {
+      ...debug,
+      engineProjection: this.shipModel.nozzles.map((nozzle) => {
+        const mouthNdc = projectLocal(nozzle.position);
+        const mouthRimNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0.38 * plumeWidth, 0, 0)),
+        );
+        const coreNdc = projectLocal(nozzle.position.clone().setZ(6.67));
+        const coreRimNdc = projectLocal(
+          nozzle.position.clone().setZ(6.67).add(new THREE.Vector3(0.14, 0, 0)),
+        );
+        const sheathMidNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0, 0, plumeLength * 0.38)),
+        );
+        const sheathMidRimNdc = projectLocal(nozzle.position.clone().add(new THREE.Vector3(
+          (0.38 * (1 - 0.38) + 0.012 * 0.38) * plumeWidth,
+          0,
+          plumeLength * 0.38,
+        )));
+        const tailNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0, 0, plumeLength)),
+        );
+        return {
+          mouthNdc,
+          mouthRimNdc,
+          coreNdc,
+          coreRimNdc,
+          sheathMidNdc,
+          sheathMidRimNdc,
+          tailNdc,
+          mouthScreenNdc: toScreenNdc(mouthNdc),
+          mouthRimScreenNdc: toScreenNdc(mouthRimNdc),
+          coreScreenNdc: toScreenNdc(coreNdc),
+          coreRimScreenNdc: toScreenNdc(coreRimNdc),
+          sheathMidScreenNdc: toScreenNdc(sheathMidNdc),
+          sheathMidRimScreenNdc: toScreenNdc(sheathMidRimNdc),
+          tailScreenNdc: toScreenNdc(tailNdc),
+        };
+      }),
+    };
   }
 
   getTelemetry(): Telemetry {
