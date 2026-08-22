@@ -88,6 +88,7 @@ async function runPlaytest({ report, session, options }) {
   });
 
   const keyboardOutcome = await capture(async () => collectKeyboardEvidence(page, options));
+  const chordOutcome = await capture(async () => collectChordOrderEvidence(page, options));
 
   await report.check({
     id: 'INPUT.keys-drive-the-command',
@@ -114,6 +115,72 @@ async function runPlaytest({ report, session, options }) {
         'pointer lock itself',
       ],
     };
+  });
+
+  await report.check({
+    id: 'INPUT.chord-order-recovery',
+    name: 'Throttle and boost survive either chord order at input boundaries',
+    criteria: [criterion('M7', 'partial', 'Exercises real W and Shift key events on both sides of run reset and window blur, including modifier resynchronization and held-key repeat quarantine.')],
+    assertion:
+      'W then Shift and Shift then W both produce full throttle plus boost; run reset and blur '
+      + 'quarantine a W already held across the boundary, including its repeats, until keyup and '
+      + 'a fresh keydown, while a held Shift is recovered from the next modifier-bearing W; the '
+      + 'same quarantine covers W used to navigate BEGIN RUN, left/right and dual Shift transitions '
+      + 'are equivalent, and repeated one-shot camera events do not toggle the view.',
+  }, async () => {
+    const e = unwrap(chordOutcome);
+    const chordOn = (input) => input?.boost === true && input?.throttle >= 0.99;
+    verify(chordOn(e.uninterrupted.wThenShift.together)
+      && chordOn(e.uninterrupted.shiftThenW.together),
+    'W/Shift order changed the uninterrupted flight command.', e);
+    verify(e.acrossReset.wThenShift.afterSecond.boost === true
+      && Math.abs(e.acrossReset.wThenShift.afterSecond.throttle - 0.85) <= 1e-9
+      && e.acrossReset.wThenShift.afterRepeat1.boost === true
+      && Math.abs(e.acrossReset.wThenShift.afterRepeat1.throttle
+        - e.acrossReset.wThenShift.afterSecond.throttle) <= 1e-9
+      && Math.abs(e.acrossReset.wThenShift.afterRepeat2.throttle
+        - e.acrossReset.wThenShift.afterRepeat1.throttle) <= 1e-9
+      && Math.abs(e.acrossReset.wThenShift.afterRelease.throttle
+        - e.acrossReset.wThenShift.afterRepeat2.throttle) <= 1e-9,
+    'A W held across beginRun/reset escaped quarantine before keyup and a fresh keydown.', e);
+    verify(chordOn(e.acrossReset.shiftThenW.recovered)
+      && chordOn(e.acrossReset.wThenShift.recovered),
+    'The post-reset modifier-bearing W or post-keyup fresh W did not recover the chord.', e);
+    verify(chordOn(e.rightShift), 'ShiftRight did not produce the same boosted throttle command as ShiftLeft.', e);
+    verify(chordOn(e.dualShift.afterLeftRelease),
+      'Releasing ShiftLeft cancelled boost while ShiftRight remained held.', e);
+    verify(e.acrossBlur.shiftThenW.cleared.boost === false
+      && chordOn(e.acrossBlur.shiftThenW.recovered),
+    'Blur either latched Shift or failed to recover it from the next W keydown modifier state.', e);
+    verify(e.acrossBlur.wThenShift.cleared1.boost === false
+      && Math.abs(e.acrossBlur.wThenShift.cleared2.throttle
+        - e.acrossBlur.wThenShift.cleared1.throttle) <= 1e-9
+      && e.acrossBlur.wThenShift.afterShift.boost === true
+      && Math.abs(e.acrossBlur.wThenShift.afterRepeat1.throttle
+        - e.acrossBlur.wThenShift.afterShift.throttle) <= 1e-9
+      && Math.abs(e.acrossBlur.wThenShift.afterRepeat2.throttle
+        - e.acrossBlur.wThenShift.afterRepeat1.throttle) <= 1e-9
+      && Math.abs(e.acrossBlur.wThenShift.afterRelease.throttle
+        - e.acrossBlur.wThenShift.afterRepeat2.throttle) <= 1e-9
+      && chordOn(e.acrossBlur.wThenShift.recovered),
+    'Blur either latched W, accepted its suppressed repeat, or failed to re-arm it after keyup.', e);
+    verify(e.repeatedView.before === e.repeatedView.after,
+      'A repeated KeyV keydown retriggered the one-shot camera action.', e);
+    verify(e.menuHeldW.initialPhase === 'title'
+      && e.menuHeldW.afterSFocus === 'SETTINGS'
+      && e.menuHeldW.afterWFocus === 'BEGIN RUN'
+      && e.menuHeldW.afterFirstEnter === 'briefing'
+      && e.menuHeldW.afterSecondEnter === 'countdown',
+    'The menu-held W probe did not traverse title -> briefing -> countdown through the real keyboard UI path.', e);
+    verify(e.menuHeldW.repeatEvent?.code === 'KeyW'
+      && e.menuHeldW.repeatEvent?.repeat === true,
+    'The menu-held W probe did not observe a real repeated KeyW event.', e);
+    verify(Math.abs(e.menuHeldW.afterRepeat.throttle - 0.85) <= 1e-9,
+      'A W held for menu navigation escaped quarantine on repeat before its keyup.', e);
+    verify(Math.abs(e.menuHeldW.afterRelease.throttle - 0.85) <= 1e-9
+      && e.menuHeldW.afterFreshDown.throttle > e.menuHeldW.afterRelease.throttle,
+    'W did not remain neutral through keyup and resume throttle on the next fresh keydown.', e);
+    return e;
   });
 
   await report.check({
@@ -1459,6 +1526,280 @@ async function collectKeyboardEvidence(page, options) {
     pitchDown: pitchDown.pitch,
     throttle: { t0, t1, t2, delta1: t0 - t1, delta2: t1 - t2, expectedDelta: 1.35 * 0.25 },
     invertY: { off: normalPitch.pitch, on: invertedPitch.pitch },
+  };
+}
+
+/**
+ * Real-key coverage for the boundary a chord can straddle. A Set of held key codes is only a
+ * faithful physical-state model while lifecycle resets and focus loss do not clear it between
+ * the two keydowns, so each arm deliberately puts one of those boundaries in the middle.
+ */
+async function collectChordOrderEvidence(page, options) {
+  verify(page, 'Browser page is unavailable.');
+  await callHarness(page, 'ready', [], options.timeoutMs);
+  await callHarness(page, 'setFixedTimestep', [1 / 60]);
+  await callHarness(page, 'setDriven', [true]);
+
+  const prepare = async () => {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [null]);
+    await stepUntilFlying(page, options.timeoutMs);
+  };
+  const readAfter = async (frames = 2) => {
+    await callHarness(page, 'step', [frames], options.timeoutMs);
+    return callHarness(page, 'activeInput');
+  };
+  const release = async (...keys) => {
+    for (let i = keys.length - 1; i >= 0; i -= 1) {
+      try { await page.keyboard.up(keys[i]); } catch { /* best-effort cleanup */ }
+    }
+    await callHarness(page, 'step', [2], options.timeoutMs);
+  };
+  const dispatch = (type, init) => page.evaluate(({ eventType, eventInit }) => {
+    window.dispatchEvent(new KeyboardEvent(eventType, {
+      bubbles: true,
+      cancelable: true,
+      ...eventInit,
+    }));
+  }, { eventType: type, eventInit: init });
+  const blurAndFocus = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('blur'));
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  const uninterrupted = async (first, second) => {
+    await prepare();
+    try {
+      await page.keyboard.down(first);
+      const firstOnly = await readAfter();
+      await page.keyboard.down(second);
+      const together = await readAfter(10);
+      return { first, second, firstOnly, together };
+    } finally {
+      await release(first, second);
+    }
+  };
+
+  const acrossReset = async (first, second) => {
+    await prepare();
+    try {
+      await page.keyboard.down(first);
+      const beforeReset = await readAfter();
+      await callHarness(page, 'startRun', [{ skipIntro: true }]);
+      await callHarness(page, 'setAutopilot', [false]);
+      await callHarness(page, 'setInput', [null]);
+      await page.keyboard.down(second);
+      const afterSecond = await readAfter(first === 'w' ? 2 : 10);
+      let afterRepeat1 = null;
+      let afterRepeat2 = null;
+      let afterRelease = null;
+      let recovered = afterSecond;
+      if (first === 'w') {
+        // A repeat proves W is still the SAME physical press that crossed reset, not a fresh
+        // command. It stays quarantined through multiple frames; only keyup re-arms the next
+        // non-repeat keydown. page.keyboard.down() is repeated here without an intervening up(),
+        // so Chromium emits a real KeyW keydown with repeat=true.
+        await page.keyboard.down('w');
+        afterRepeat1 = await readAfter();
+        afterRepeat2 = await readAfter(8);
+        await page.keyboard.up('w');
+        afterRelease = await readAfter();
+        await page.keyboard.down('w');
+        recovered = await readAfter(10);
+      }
+      return {
+        first,
+        second,
+        beforeReset,
+        afterSecond,
+        afterRepeat1,
+        afterRepeat2,
+        afterRelease,
+        recovered,
+      };
+    } finally {
+      await release(first, second);
+    }
+  };
+
+  const uninterruptedWThenShift = await uninterrupted('w', 'Shift');
+  const uninterruptedShiftThenW = await uninterrupted('Shift', 'w');
+  const resetShiftThenW = await acrossReset('Shift', 'w');
+  const resetWThenShift = await acrossReset('w', 'Shift');
+
+  await prepare();
+  let rightShift;
+  try {
+    await dispatch('keydown', { key: 'Shift', code: 'ShiftRight', shiftKey: true });
+    await dispatch('keydown', { key: 'W', code: 'KeyW', shiftKey: true });
+    rightShift = await readAfter(10);
+  } finally {
+    await dispatch('keyup', { key: 'W', code: 'KeyW', shiftKey: true });
+    await dispatch('keyup', { key: 'Shift', code: 'ShiftRight', shiftKey: false });
+    await callHarness(page, 'step', [2], options.timeoutMs);
+  }
+
+  await prepare();
+  let dualShift;
+  try {
+    await dispatch('keydown', { key: 'Shift', code: 'ShiftLeft', shiftKey: true });
+    await dispatch('keydown', { key: 'Shift', code: 'ShiftRight', shiftKey: true });
+    // This exact false snapshot is emitted by headless Chromium when one of two Shift keys is
+    // released; the remaining code is the only evidence that ShiftRight is still physically down.
+    await dispatch('keyup', { key: 'Shift', code: 'ShiftLeft', shiftKey: false });
+    await dispatch('keydown', { key: 'w', code: 'KeyW', shiftKey: false });
+    const afterLeftRelease = await readAfter(10);
+    dualShift = { afterLeftRelease };
+  } finally {
+    await dispatch('keyup', { key: 'w', code: 'KeyW', shiftKey: false });
+    await dispatch('keyup', { key: 'Shift', code: 'ShiftRight', shiftKey: false });
+    await callHarness(page, 'step', [2], options.timeoutMs);
+  }
+
+  await prepare();
+  let blurShiftThenW;
+  try {
+    await page.keyboard.down('Shift');
+    const beforeBlur = await readAfter();
+    await blurAndFocus();
+    const cleared = await readAfter();
+    // Playwright retains its physical Shift modifier, so this trusted W keydown carries
+    // shiftKey=true even though the page's held-code cache was safely cleared by blur.
+    await page.keyboard.down('w');
+    const recovered = await readAfter(10);
+    blurShiftThenW = { beforeBlur, cleared, recovered };
+  } finally {
+    await release('Shift', 'w');
+  }
+
+  await prepare();
+  let blurWThenShift;
+  try {
+    await page.keyboard.down('w');
+    const beforeBlur = await readAfter();
+    await blurAndFocus();
+    const cleared1 = await readAfter();
+    const cleared2 = await readAfter(8);
+    await page.keyboard.down('Shift');
+    const afterShift = await readAfter();
+    // The next W event is a real repeat of the press that crossed blur, so it must remain
+    // quarantined. A release is the only proof that the following keydown is a new command.
+    await page.keyboard.down('w');
+    const afterRepeat1 = await readAfter();
+    const afterRepeat2 = await readAfter(8);
+    await page.keyboard.up('w');
+    const afterRelease = await readAfter();
+    await page.keyboard.down('w');
+    const recovered = await readAfter(10);
+    blurWThenShift = {
+      beforeBlur,
+      cleared1,
+      cleared2,
+      afterShift,
+      afterRepeat1,
+      afterRepeat2,
+      afterRelease,
+      recovered,
+    };
+  } finally {
+    await release('w', 'Shift');
+  }
+
+  await prepare();
+  const viewBefore = await callHarness(page, 'cameraMode');
+  await dispatch('keydown', { key: 'v', code: 'KeyV', repeat: true });
+  await readAfter();
+  const viewAfter = await callHarness(page, 'cameraMode');
+  await dispatch('keyup', { key: 'v', code: 'KeyV' });
+
+  /* The reset and blur arms above prove that no key press crossing a safety boundary can be
+     reconstructed from repeat alone. This is the UI origin of the same contract: W itself selected
+     BEGIN RUN in the title. Its repeats must remain quarantined after ENGAGE until the browser
+     reports a release, or a player who holds the navigation key through the two Enter presses
+     starts accelerating during the countdown. S first proves W really moved focus back to BEGIN
+     RUN instead of merely being held while the already-selected default button was activated. */
+  await reloadHarness(page, options.timeoutMs);
+  await callHarness(page, 'setFixedTimestep', [1 / 60]);
+  await callHarness(page, 'setDriven', [true]);
+  await callHarness(page, 'setInput', [null]);
+
+  const focusedButtonLabel = () => page.evaluate(() =>
+    document.activeElement?.querySelector('.lv-btn-t')?.textContent?.trim().toUpperCase() ?? null);
+  const observeNextRealKeyDown = async (key, code) => {
+    await page.evaluate((wantedCode) => {
+      window.__lvChordRepeatProbe = null;
+      const observe = (event) => {
+        if (event.code !== wantedCode) return;
+        window.removeEventListener('keydown', observe, true);
+        window.__lvChordRepeatProbe = {
+          key: event.key,
+          code: event.code,
+          repeat: event.repeat,
+          shiftKey: event.shiftKey,
+        };
+      };
+      window.addEventListener('keydown', observe, true);
+    }, code);
+    await page.keyboard.down(key);
+    return page.evaluate(() => {
+      const evidence = window.__lvChordRepeatProbe;
+      delete window.__lvChordRepeatProbe;
+      return evidence;
+    });
+  };
+
+  let menuHeldW;
+  try {
+    const initialPhase = await callHarness(page, 'phase');
+    await page.keyboard.press('s');
+    const afterSFocus = await focusedButtonLabel();
+    await page.keyboard.down('w');
+    const afterWFocus = await focusedButtonLabel();
+    await page.keyboard.press('Enter');
+    const afterFirstEnter = await callHarness(page, 'phase');
+    await page.keyboard.press('Enter');
+    const afterSecondEnter = await callHarness(page, 'phase');
+
+    // Playwright emits repeat=true when down() is called again before the matching up().
+    const repeatEvent = await observeNextRealKeyDown('w', 'KeyW');
+    const afterRepeat = await readAfter(10);
+    await page.keyboard.up('w');
+    const afterRelease = await readAfter();
+    await page.keyboard.down('w');
+    const afterFreshDown = await readAfter(4);
+    menuHeldW = {
+      initialPhase,
+      afterSFocus,
+      afterWFocus,
+      afterFirstEnter,
+      afterSecondEnter,
+      repeatEvent,
+      afterRepeat,
+      afterRelease,
+      afterFreshDown,
+    };
+  } finally {
+    await release('w', 's', 'Enter');
+  }
+
+  return {
+    uninterrupted: {
+      wThenShift: uninterruptedWThenShift,
+      shiftThenW: uninterruptedShiftThenW,
+    },
+    acrossReset: {
+      shiftThenW: resetShiftThenW,
+      wThenShift: resetWThenShift,
+    },
+    rightShift,
+    dualShift,
+    acrossBlur: {
+      shiftThenW: blurShiftThenW,
+      wThenShift: blurWThenShift,
+    },
+    repeatedView: { before: viewBefore, after: viewAfter },
+    menuHeldW,
   };
 }
 

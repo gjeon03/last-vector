@@ -80,6 +80,7 @@ const EXPECTED_CHECKS = {
     'M2.automation-input',
     'M7.automation-input-surface',
     'INPUT.keys-drive-the-command',
+    'INPUT.chord-order-recovery',
     'INPUT.invertY-reaches-flight',
     'INPUT.mouse-pipeline',
     'CAMERA.cockpit-toggle-persistence',
