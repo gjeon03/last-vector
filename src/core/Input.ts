@@ -299,9 +299,16 @@ export class Input {
     }
     // Escape is deliberately NOT handled here. The interface layer owns pause; two owners
     // means two flags, and two flags means the timer can run behind a PAUSED screen.
-    if (e.code === 'KeyT') this.onAction?.('match');
-    if (e.code === 'KeyV') this.onAction?.('view');
-    if (e.code === 'KeyN') this.onAction?.('restart');
+    /* Plain game actions must not replace platform shortcuts such as Cmd/Ctrl+C. Shift remains
+       valid so a pilot can switch camera while boosting. */
+    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.code === 'KeyT') this.onAction?.('match');
+      /* C is the public camera binding. V remains a silent compatibility alias because Vimium and
+         similar keyboard-navigation extensions reserve V before page code sees it, which made the
+         advertised control enter the extension's Caret mode and swallow the rest of flight input. */
+      if (e.code === 'KeyC' || e.code === 'KeyV') this.onAction?.('view');
+      if (e.code === 'KeyN') this.onAction?.('restart');
+    }
     // Tab is only ours while the ship is being flown. Swallowing it unconditionally, on a window
     // listener, combined with the interface layer correctly letting its range widgets own their
     // own keys, left Tab and Shift+Tab dead on all five settings sliders — 5 of 13 settings rows

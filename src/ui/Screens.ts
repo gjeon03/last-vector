@@ -84,7 +84,7 @@ const CONTROLS: readonly ControlRow[] = [
     short: 'Steer without mouse',
   },
   {
-    groups: [['V']],
+    groups: [['C']],
     action: 'Toggle chase / first-person cockpit (launch / flight)',
     primer: true,
     short: 'Toggle first-person cockpit',
@@ -149,7 +149,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         kind: 'enum',
         key: 'cameraMode',
         label: 'Default camera',
-        hint: 'Press V during flight to switch views.',
+        hint: 'Press C during flight to switch views.',
         options: [
           ['chase', 'CHASE'],
           ['cockpit', 'COCKPIT'],

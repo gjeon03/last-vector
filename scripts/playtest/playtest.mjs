@@ -120,13 +120,14 @@ async function runPlaytest({ report, session, options }) {
   await report.check({
     id: 'INPUT.chord-order-recovery',
     name: 'Throttle and boost survive either chord order at input boundaries',
-    criteria: [criterion('M7', 'partial', 'Exercises real W and Shift key events on both sides of run reset and window blur, including modifier resynchronization and held-key repeat quarantine.')],
+    criteria: [criterion('M7', 'partial', 'Exercises real W and Shift key events on both sides of run reset and window blur, including modifier resynchronization, held-key repeat quarantine and camera-key modifier guards.')],
     assertion:
       'W then Shift and Shift then W both produce full throttle plus boost; run reset and blur '
       + 'quarantine a W already held across the boundary, including its repeats, until keyup and '
       + 'a fresh keydown, while a held Shift is recovered from the next modifier-bearing W; the '
       + 'same quarantine covers W used to navigate BEGIN RUN, left/right and dual Shift transitions '
-      + 'are equivalent, and repeated one-shot camera events do not toggle the view.',
+      + 'are equivalent, repeated KeyC/legacy KeyV one-shot camera events do not toggle the view, '
+      + 'Meta/Ctrl/Alt+C leave platform shortcuts untouched, and Shift+C toggles while boost remains held.',
   }, async () => {
     const e = unwrap(chordOutcome);
     const chordOn = (input) => input?.boost === true && input?.throttle >= 0.99;
@@ -164,8 +165,19 @@ async function runPlaytest({ report, session, options }) {
         - e.acrossBlur.wThenShift.afterRepeat2.throttle) <= 1e-9
       && chordOn(e.acrossBlur.wThenShift.recovered),
     'Blur either latched W, accepted its suppressed repeat, or failed to re-arm it after keyup.', e);
-    verify(e.repeatedView.before === e.repeatedView.after,
-      'A repeated KeyV keydown retriggered the one-shot camera action.', e);
+    verify(e.repeatedView.keyC.before === e.repeatedView.keyC.after,
+      'A repeated KeyC keydown retriggered the one-shot camera action.', e);
+    verify(e.repeatedView.keyV.before === e.repeatedView.keyV.after,
+      'A repeated legacy KeyV keydown retriggered the one-shot camera action.', e);
+    for (const modifier of ['meta', 'ctrl', 'alt']) {
+      const probe = e.repeatedView.platformModifiedC[modifier];
+      verify(probe.before === probe.after,
+        `${modifier}+KeyC replaced a platform shortcut with the camera action.`, e);
+    }
+    verify(e.repeatedView.shiftC.before !== e.repeatedView.shiftC.after,
+      'Shift+KeyC did not toggle the camera.', e);
+    verify(e.repeatedView.shiftC.input.boost === true,
+      'Shift+KeyC toggled the camera but dropped the held boost modifier.', e);
     verify(e.menuHeldW.initialPhase === 'title'
       && e.menuHeldW.afterSFocus === 'SETTINGS'
       && e.menuHeldW.afterWFocus === 'BEGIN RUN'
@@ -285,25 +297,26 @@ async function runPlaytest({ report, session, options }) {
 
   await report.check({
     id: 'CAMERA.cockpit-toggle-persistence',
-    name: 'The real view key applies and persists the cockpit camera',
-    criteria: [criterion('M7', 'partial', 'Drives the real KeyV action during active flight, then verifies the applied camera geometry and the SettingsStore reload path.')],
+    name: 'The primary view key applies and persists the cockpit camera',
+    criteria: [criterion('M7', 'partial', 'Drives the primary KeyC action during active flight, then verifies the applied camera geometry and the SettingsStore reload path; checks legacy KeyV once as a compatibility alias.')],
     assertion:
-      'During active flight a real KeyV changes chase to cockpit without changing any ship state; '
+      'During active flight a real KeyC changes chase to cockpit without changing any ship state; '
       + 'cockpit places the camera within six metres of the ship, uses a near plane below 0.25 m, '
       + 'and settles about 8 degrees wider than chase for identical ordinary and full-boost ship '
       + 'traces without exceeding 124 degrees; '
-      + 'the selection survives reload; a second real KeyV restores the chase boom and original '
+      + 'the selection survives reload; a second real KeyC restores the chase boom and original '
       + 'near plane, again without directly changing ship state; cockpit debug evidence proves '
       + 'unit physical scale at both FOV endpoints, a <=24 draw-call / <=6000-triangle interior, '
-      + 'and finite motion, controls, and MFD cadence that respond to deterministic pilot input.',
+      + 'and finite motion, controls, and MFD cadence that respond to deterministic pilot input; '
+      + 'one real legacy KeyV still toggles the mode without changing ship state.',
   }, async () => {
     const e = await collectCameraEvidence(page, options);
     verify(e.phaseAtFirstToggle === 'flying' && e.phaseAtSecondToggle === 'flying',
-      'KeyV was not exercised during active flight.', e);
+      'KeyC was not exercised during active flight.', e);
     verify(e.initial.mode === 'chase' && e.initial.settingsMode === 'chase',
       'The probe did not begin with both applied and stored modes set to chase.', e);
     verify(e.afterFirstKey.mode === 'cockpit' && e.afterFirstKey.settingsMode === 'cockpit',
-      'A real KeyV did not change both the applied camera and stored setting to cockpit.', e);
+      'A real KeyC did not change both the applied camera and stored setting to cockpit.', e);
     verify(e.afterFirstKey.shipUnchanged,
       'Changing to cockpit directly mutated ship position, orientation, velocity, or angular velocity.', e);
     verify(e.cockpit.distanceFromShip < 6,
@@ -325,7 +338,7 @@ async function runPlaytest({ report, session, options }) {
     verify(e.persisted.fov <= 124 + 0.01,
       `Cockpit FOV exceeded its 124 degree ceiling: ${e.persisted.fov}.`, e);
     verify(e.afterSecondKey.mode === 'chase' && e.afterSecondKey.settingsMode === 'chase',
-      'A second real KeyV did not restore both applied and stored chase mode.', e);
+      'A second real KeyC did not restore both applied and stored chase mode.', e);
     verify(e.afterSecondKey.shipUnchanged,
       'Returning to chase directly mutated ship position, orientation, velocity, or angular velocity.', e);
     verify(Math.abs(e.restored.near - e.initial.near) <= 1e-9,
@@ -336,8 +349,14 @@ async function runPlaytest({ report, session, options }) {
       'The restored chase boom is materially different from the initial chase pose.', e);
     verify(vectorDistance(e.restored.forward, e.initial.forward) < 0.02,
       'The restored chase camera did not recover the initial forward aim.', e);
+    verify(e.legacyKeyV.phase === 'flying'
+      && e.legacyKeyV.mode === 'cockpit'
+      && e.legacyKeyV.settingsMode === 'cockpit',
+    'The legacy KeyV compatibility alias did not toggle chase to cockpit during active flight.', e);
+    verify(e.legacyKeyV.shipUnchanged,
+      'The legacy KeyV compatibility alias directly changed ship state.', e);
     verify(e.boostedChase.mode === 'chase' && e.boostedCockpit.mode === 'cockpit',
-      'The full-boost comparison did not measure chase and then enter cockpit through a real KeyV toggle.', e);
+      'The full-boost comparison did not measure chase and then enter cockpit through a real KeyC toggle.', e);
     verify(e.boostedCockpit.shipMatchesChaseTrace,
       'The full-boost chase and cockpit probes did not produce identical ship state.', e);
     verify(e.boostedCockpit.fov > e.boostedChase.fov,
@@ -673,7 +692,7 @@ async function runPlaytest({ report, session, options }) {
     criteria: [criterion('M6', 'full', 'Drives the title -> briefing -> countdown -> flying path through the DOM, which no harness-driven check exercises.')],
     assertion:
       'From a cold load the phase is title; clicking BEGIN RUN reaches the briefing; the briefing '
-      + 'names mouse steering, arrow-key steering, SHIFT boost, SPACE brake and the V first-person '
+      + 'names mouse steering, arrow-key steering, SHIFT boost, SPACE brake and the C first-person '
       + 'cockpit toggle; clicking ENGAGE reaches the countdown and then flying.',
   }, async () => {
     await reloadHarness(page, options);
@@ -712,7 +731,7 @@ async function runPlaytest({ report, session, options }) {
       { keys: ['SHIFT', 'LMB'], action: 'BOOST' },
       { keys: ['SPACE', 'RMB'], action: 'BRAKE' },
       { keys: ['↑', '↓', '←', '→'], action: 'WITHOUT MOUSE' },
-      { keys: ['V'], action: 'TOGGLE FIRST-PERSON COCKPIT' },
+      { keys: ['C'], action: 'TOGGLE FIRST-PERSON COCKPIT' },
     ];
     const missingPrimerRows = requiredPrimerRows.filter((required) => !primerRows.some((actual) =>
       required.keys.every((key) => actual.keys.includes(key)) && actual.action.includes(required.action)));
@@ -1707,11 +1726,60 @@ async function collectChordOrderEvidence(page, options) {
   }
 
   await prepare();
-  const viewBefore = await callHarness(page, 'cameraMode');
-  await dispatch('keydown', { key: 'v', code: 'KeyV', repeat: true });
-  await readAfter();
-  const viewAfter = await callHarness(page, 'cameraMode');
-  await dispatch('keyup', { key: 'v', code: 'KeyV' });
+  const repeatedView = {};
+  for (const [name, key, code] of [
+    ['keyC', 'c', 'KeyC'],
+    ['keyV', 'v', 'KeyV'],
+  ]) {
+    const before = await callHarness(page, 'cameraMode');
+    await dispatch('keydown', { key, code, repeat: true });
+    await readAfter();
+    const after = await callHarness(page, 'cameraMode');
+    await dispatch('keyup', { key, code });
+    repeatedView[name] = { before, after };
+  }
+
+  const platformModifiedC = {};
+  for (const [name, flag] of [
+    ['meta', 'metaKey'],
+    ['ctrl', 'ctrlKey'],
+    ['alt', 'altKey'],
+  ]) {
+    const before = await callHarness(page, 'cameraMode');
+    await dispatch('keydown', { key: 'c', code: 'KeyC', [flag]: true });
+    await readAfter();
+    const after = await callHarness(page, 'cameraMode');
+    await dispatch('keyup', { key: 'c', code: 'KeyC', [flag]: true });
+    platformModifiedC[name] = { before, after };
+  }
+  repeatedView.platformModifiedC = platformModifiedC;
+
+  const shiftCBefore = await callHarness(page, 'cameraMode');
+  let shiftCInput;
+  let shiftCAfter;
+  try {
+    await dispatch('keydown', {
+      key: 'Shift', code: 'ShiftLeft', shiftKey: true,
+    });
+    await dispatch('keydown', {
+      key: 'c', code: 'KeyC', shiftKey: true,
+    });
+    shiftCInput = await readAfter();
+    shiftCAfter = await callHarness(page, 'cameraMode');
+  } finally {
+    await dispatch('keyup', {
+      key: 'c', code: 'KeyC', shiftKey: true,
+    });
+    await dispatch('keyup', {
+      key: 'Shift', code: 'ShiftLeft', shiftKey: false,
+    });
+    await callHarness(page, 'step', [2], options.timeoutMs);
+  }
+  repeatedView.shiftC = {
+    before: shiftCBefore,
+    after: shiftCAfter,
+    input: shiftCInput,
+  };
 
   /* The reset and blur arms above prove that no key press crossing a safety boundary can be
      reconstructed from repeat alone. This is the UI origin of the same contract: W itself selected
@@ -1798,7 +1866,7 @@ async function collectChordOrderEvidence(page, options) {
       shiftThenW: blurShiftThenW,
       wThenShift: blurWThenShift,
     },
-    repeatedView: { before: viewBefore, after: viewAfter },
+    repeatedView,
     menuHeldW,
   };
 }
@@ -1837,7 +1905,7 @@ async function collectCameraEvidence(page, options) {
     };
     const phaseAtFirstToggle = await callHarness(page, 'phase');
     const beforeFirstKey = shipSnapshot(initialPose);
-    await page.keyboard.press('v');
+    await page.keyboard.press('c');
     const immediatelyAfterFirstKey = await callHarness(page, 'pose');
     const afterFirstKey = {
       mode: await callHarness(page, 'cameraMode'),
@@ -1848,7 +1916,7 @@ async function collectCameraEvidence(page, options) {
     const cockpit = cameraSample(await callHarness(page, 'pose'));
     const cockpitDebug = await callHarness(page, 'cockpitDebug');
 
-    // KeyV must route through SettingsStore, so a cold Game instance must recover cockpit mode.
+    // KeyC must route through SettingsStore, so a cold Game instance must recover cockpit mode.
     await reloadHarness(page, options.timeoutMs);
     const persistedSettings = await callHarness(page, 'settings');
     await prepareFlight();
@@ -1863,7 +1931,7 @@ async function collectCameraEvidence(page, options) {
 
     const phaseAtSecondToggle = await callHarness(page, 'phase');
     const beforeSecondKey = shipSnapshot(persistedPose);
-    await page.keyboard.press('v');
+    await page.keyboard.press('c');
     const immediatelyAfterSecondKey = await callHarness(page, 'pose');
     const afterSecondKey = {
       mode: await callHarness(page, 'cameraMode'),
@@ -1873,9 +1941,24 @@ async function collectCameraEvidence(page, options) {
     await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
     const restored = cameraSample(await callHarness(page, 'pose'));
 
+    // Keep the old binding as a deliberately narrow compatibility contract. KeyC owns all camera
+    // geometry, persistence and FOV assertions; this one active-flight KeyV only proves the alias
+    // still reaches the same stored mode without touching ship state.
+    const legacyPose = await callHarness(page, 'pose');
+    await page.keyboard.press('v');
+    const legacyKeyV = {
+      phase: await callHarness(page, 'phase'),
+      mode: await callHarness(page, 'cameraMode'),
+      settingsMode: (await callHarness(page, 'settings')).cameraMode,
+      shipUnchanged: sameShipSnapshot(
+        shipSnapshot(legacyPose),
+        shipSnapshot(await callHarness(page, 'pose')),
+      ),
+    };
+
     // Compare both modes from cold Game instances at the widest supported setting. Reloading
     // before each trace gives the FOV damper, boost blend, damage flash, and world clock identical
-    // origins; KeyV remains the route into cockpit and its SettingsStore persistence is what makes
+    // origins; KeyC remains the route into cockpit and its SettingsStore persistence is what makes
     // the second cold instance boot in that mode.
     await callHarness(page, 'setSettings', [{ cameraMode: 'chase', fov: 100 }]);
     await reloadHarness(page, options.timeoutMs);
@@ -1887,7 +1970,7 @@ async function collectCameraEvidence(page, options) {
       ...cameraSample(boostedChasePose),
       mode: await callHarness(page, 'cameraMode'),
     };
-    await page.keyboard.press('v');
+    await page.keyboard.press('c');
     await reloadHarness(page, options.timeoutMs);
     await prepareFlight();
     await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
@@ -1936,6 +2019,7 @@ async function collectCameraEvidence(page, options) {
       persistedCockpitDebug,
       afterSecondKey,
       restored,
+      legacyKeyV,
       boostedChase,
       boostedCockpit,
       boostedCockpitDebug,
