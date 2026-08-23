@@ -6,6 +6,7 @@ import { ShipModel } from '../render/ShipModel.ts';
 import {
   CockpitModel,
   type CockpitDebugState,
+  type CockpitMfdEvidence,
   type CockpitState,
 } from '../render/CockpitModel.ts';
 import { PostFX, type GradeParams } from '../render/PostFX.ts';
@@ -536,7 +537,11 @@ export class Game {
     this.shipRoot.add(this.shipMeshHolder);
     this.mainScene.add(this.shipRoot);
 
-    this.cockpitModel = new CockpitModel();
+    this.cockpitModel = new CockpitModel(
+      this.selectedLocale,
+      this.activeTranslator,
+      this.isCockpitFontReady(this.selectedLocale),
+    );
     this.mainScene.add(this.cockpitModel.object);
 
     // Trails live in world space rather than under the ship, because the whole point of them
@@ -723,6 +728,7 @@ export class Game {
       this.fontPreparation = preparation;
       this.observeFontPreparation(preparation, this.fontGeneration);
       this.replaceOverlay(this.activeTranslator);
+      this.syncCockpitLocale();
     }
   }
 
@@ -751,10 +757,24 @@ export class Game {
           || this.disposed
           || this.contextLost) return;
         this.fontResult = result;
+        this.syncCockpitLocale();
       },
       () => {
         // LocaleFontPreparation promises are non-rejecting; observe defensively at this boundary.
       },
+    );
+  }
+
+  private isCockpitFontReady(locale: Locale): boolean {
+    return locale === 'en' || this.fontResult.status === 'ready';
+  }
+
+  private syncCockpitLocale(): void {
+    const locale = this.activeRunLocale ?? this.selectedLocale;
+    this.cockpitModel.setLocale(
+      locale,
+      this.activeTranslator,
+      this.isCockpitFontReady(locale),
     );
   }
 
@@ -2306,6 +2326,45 @@ export class Game {
     return this.cockpitModel.getDebugState();
   }
 
+  /** Read-only locale, fitted-label, source-pixel, and final-screen evidence for the MFD. */
+  getCockpitMfd(): CockpitMfdEvidence {
+    const evidence = this.cockpitModel.getMfdEvidence(this.chase.camera);
+    return {
+      ...evidence,
+      screenNdcCorners: evidence.projectedNdcCorners.map((corner) => this.toScreenNdc(corner)),
+      labelScreenNdcCorners: evidence.labelProjectedNdcCorners.map(
+        (corner) => this.toScreenNdc(corner),
+      ),
+    };
+  }
+
+  /**
+   * Invert the composite's radial warp so a projected scene point maps to its final PNG pixel.
+   * Shared by ship and cockpit evidence to keep both screenshot contracts on one implementation.
+   */
+  private toScreenNdc(
+    ndc: readonly [number, number, number],
+  ): [number, number, number] {
+    const centre = this.grade.blurCentre;
+    const dx = ndc[0] * 0.5 + 0.5 - centre.x;
+    const dy = ndc[1] * 0.5 + 0.5 - centre.y;
+    const sourceRadius = Math.hypot(dx, dy);
+    if (sourceRadius < 1e-9 || this.grade.warp <= 0) return [ndc[0], ndc[1], ndc[2]];
+    let outputRadius = sourceRadius;
+    for (let i = 0; i < 5; i++) {
+      const radius2 = outputRadius * outputRadius;
+      outputRadius -= (
+        outputRadius + this.grade.warp * outputRadius * radius2 - sourceRadius
+      ) / (1 + 3 * this.grade.warp * radius2);
+    }
+    const scale = outputRadius / sourceRadius;
+    return [
+      (centre.x + dx * scale) * 2 - 1,
+      (centre.y + dy * scale) * 2 - 1,
+      ndc[2],
+    ];
+  }
+
   /** Read-only exterior renderer contract used by the boost VFX regression probe. */
   getShipDebug(): HarnessShipVisualDebugState {
     const debug = this.shipModel.getDebugState();
@@ -2317,28 +2376,6 @@ export class Game {
       const world = this.shipModel.object.localToWorld(point.clone());
       const ndc = world.project(this.chase.camera);
       return [ndc.x, ndc.y, ndc.z];
-    };
-    // The composite samples scene UV at `out + (out-centre) * r^2 * warp`. Invert that radial
-    // mapping so a point projected from the scene lands in the same pixel the final PNG uses.
-    const toScreenNdc = (ndc: [number, number, number]): [number, number, number] => {
-      const centre = this.grade.blurCentre;
-      const dx = ndc[0] * 0.5 + 0.5 - centre.x;
-      const dy = ndc[1] * 0.5 + 0.5 - centre.y;
-      const sourceRadius = Math.hypot(dx, dy);
-      if (sourceRadius < 1e-9 || this.grade.warp <= 0) return ndc;
-      let outputRadius = sourceRadius;
-      for (let i = 0; i < 5; i++) {
-        const radius2 = outputRadius * outputRadius;
-        outputRadius -= (
-          outputRadius + this.grade.warp * outputRadius * radius2 - sourceRadius
-        ) / (1 + 3 * this.grade.warp * radius2);
-      }
-      const scale = outputRadius / sourceRadius;
-      return [
-        (centre.x + dx * scale) * 2 - 1,
-        (centre.y + dy * scale) * 2 - 1,
-        ndc[2],
-      ];
     };
     return {
       ...debug,
@@ -2370,13 +2407,13 @@ export class Game {
           sheathMidNdc,
           sheathMidRimNdc,
           tailNdc,
-          mouthScreenNdc: toScreenNdc(mouthNdc),
-          mouthRimScreenNdc: toScreenNdc(mouthRimNdc),
-          coreScreenNdc: toScreenNdc(coreNdc),
-          coreRimScreenNdc: toScreenNdc(coreRimNdc),
-          sheathMidScreenNdc: toScreenNdc(sheathMidNdc),
-          sheathMidRimScreenNdc: toScreenNdc(sheathMidRimNdc),
-          tailScreenNdc: toScreenNdc(tailNdc),
+          mouthScreenNdc: this.toScreenNdc(mouthNdc),
+          mouthRimScreenNdc: this.toScreenNdc(mouthRimNdc),
+          coreScreenNdc: this.toScreenNdc(coreNdc),
+          coreRimScreenNdc: this.toScreenNdc(coreRimNdc),
+          sheathMidScreenNdc: this.toScreenNdc(sheathMidNdc),
+          sheathMidRimScreenNdc: this.toScreenNdc(sheathMidRimNdc),
+          tailScreenNdc: this.toScreenNdc(tailNdc),
         };
       }),
     };

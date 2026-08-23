@@ -12,8 +12,11 @@ const REQUIRED_METHODS = [
   'startRun',
   'phase',
   'cameraMode',
+  'cockpitDebug',
+  'cockpitMfd',
   'setAutopilot',
   'step',
+  'present',
   'setDriven',
   'profile',
   'settings',
@@ -75,6 +78,48 @@ async function runPerfProbe({ report, session, options }) {
   // baseline is applied, then reset once one chase frame has presented inside collectColdWindow.
   // The measured contract starts at the cockpit transition, not at an unrelated settings change.
   const coldInstrumentationOutcome = await capture(() => installColdInstrumentation(page));
+
+  const mfdUploadOutcome = await capture(() => collectMfdUploadCadence(page, options.timeoutMs));
+
+  await report.check({
+    id: 'PERF.mfd-upload-cadence',
+    name: 'The MFD redraw deadline produces one real canvas upload at exactly 20 Hz',
+    criteria: [],
+    assertion:
+      'After one warm presented cockpit frame, exactly 20 MFD redraws occur over 60 fixed '
+      + '60 Hz frames; WebGL observes exactly one successful texImage2D/texSubImage2D call per '
+      + 'redraw from one 1024x256 HTMLCanvasElement, with unchanged cockpit budgets and no late shaders.',
+  }, async () => {
+    const evidence = unwrap(mfdUploadOutcome);
+    verify(evidence.cameraMode === 'cockpit' && evidence.before.visible === true,
+      'The fixed upload window did not begin in a visible cockpit.', evidence);
+    verify(evidence.mfdUpdatesDelta === 20,
+      `Expected exactly 20 MFD redraws in 60 fixed frames, observed ${evidence.mfdUpdatesDelta}.`, evidence);
+    verify(evidence.uploads.total === 20
+      && evidence.uploads.texImage2D + evidence.uploads.texSubImage2D === 20
+      && evidence.uploads.total === evidence.mfdUpdatesDelta,
+    'Actual 1024x256 canvas uploads did not match the exact redraw delta one-for-one.', evidence);
+    verify(evidence.uploads.sources.length === 1
+      && evidence.uploads.sources[0].constructor === 'HTMLCanvasElement'
+      && evidence.uploads.sources[0].width === 1024
+      && evidence.uploads.sources[0].height === 256,
+    'The upload trace did not identify exactly one 1024x256 HTMLCanvasElement source.', evidence);
+    verify(evidence.uploads.calls.length > 0
+      && evidence.uploads.calls.every(({ constructor, width, height, kind }) =>
+        constructor === 'HTMLCanvasElement' && width === 1024 && height === 256
+        && (kind === 'texImage2D' || kind === 'texSubImage2D')),
+    'The WebGL upload trace is empty or contains a non-canvas/non-MFD call.', evidence);
+    verify(evidence.before.drawCalls === 20 && evidence.after.drawCalls === 20
+      && evidence.before.triangles === 3540 && evidence.after.triangles === 3540
+      && JSON.stringify(evidence.before.perspectiveScale) === JSON.stringify([1, 1, 1])
+      && JSON.stringify(evidence.after.perspectiveScale) === JSON.stringify([1, 1, 1]),
+    'Cockpit draw, triangle, or unit-scale budgets changed during the upload window.', evidence);
+    verify(evidence.compileShaderCalls === 0 && evidence.linkProgramCalls === 0,
+      'A shader compiled or linked during the fixed MFD upload window.', evidence);
+    verify(evidence.instrumentation.restored === true,
+      'A patched WebGL descriptor was not restored before the live profile.', evidence);
+    return evidence;
+  });
 
   const profileOutcome = await capture(async () => collectProfile(page, options));
 
@@ -225,6 +270,167 @@ async function collectProfile(page, options) {
     await bestEffort(page, 'setAutopilot', [false]);
     await bestEffort(page, 'setDriven', [false]);
   }
+}
+
+/**
+ * Count source-backed WebGL texture calls during an exact driven window. This is intentionally
+ * separate from the live-rAF profile: wrapping is fully restored before the existing cold/live
+ * measurements begin, and no screenshot or canvas readback occurs inside this window.
+ */
+async function collectMfdUploadCadence(page, timeoutMs) {
+  verify(page, 'Browser page is unavailable.');
+  return page.evaluate(async ({ callTimeoutMs }) => {
+    const api = window.__LV;
+    if (!api) throw new Error('Harness unavailable for MFD upload cadence.');
+
+    api.setDriven(true);
+    api.setSettings({
+      cameraMode: 'cockpit',
+      quality: 'high',
+      renderScale: 1,
+      showFps: false,
+      cameraShake: 0,
+      motionBlur: false,
+      filmGrain: false,
+      chromaticAberration: false,
+    });
+    api.startRun({ skipIntro: true });
+    await api.step(1, 1 / 60);
+    let warmTimer = null;
+    try {
+      await Promise.race([
+        api.present(),
+        new Promise((_, reject) => {
+          warmTimer = window.setTimeout(
+            () => reject(new Error(`Warm MFD presentation timed out after ${callTimeoutMs} ms.`)),
+            callTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (warmTimer !== null) window.clearTimeout(warmTimer);
+    }
+
+    const before = api.cockpitDebug();
+    const cameraMode = api.cameraMode();
+    const calls = [];
+    const sourceIds = new WeakMap();
+    const sources = new Map();
+    const restored = [];
+    let nextSourceId = 1;
+    let compileShaderCalls = 0;
+    let linkProgramCalls = 0;
+
+    const sourceIdentity = (source) => {
+      let id = sourceIds.get(source);
+      if (id === undefined) {
+        id = nextSourceId++;
+        sourceIds.set(source, id);
+        sources.set(id, {
+          id,
+          identity: `${source.constructor?.name ?? 'Object'}#${id}`,
+          constructor: source.constructor?.name ?? null,
+          width: source.width,
+          height: source.height,
+        });
+      }
+      return id;
+    };
+
+    const patch = (constructorName, method) => {
+      const prototype = window[constructorName]?.prototype;
+      if (!prototype) return;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, method);
+      if (!descriptor || typeof descriptor.value !== 'function') return;
+      const original = descriptor.value;
+      Object.defineProperty(prototype, method, {
+        ...descriptor,
+        value: function instrumentedMfdWebGLCall(...args) {
+          const result = Reflect.apply(original, this, args);
+          if (method === 'compileShader') {
+            compileShaderCalls += 1;
+          } else if (method === 'linkProgram') {
+            linkProgramCalls += 1;
+          } else {
+            const source = args.find((argument) => argument instanceof HTMLCanvasElement
+              && argument.width === 1024 && argument.height === 256);
+            if (source) {
+              const id = sourceIdentity(source);
+              calls.push({
+                kind: method,
+                context: constructorName,
+                argumentCount: args.length,
+                sourceId: id,
+                sourceIdentity: sources.get(id).identity,
+                constructor: source.constructor?.name ?? null,
+                width: source.width,
+                height: source.height,
+              });
+            }
+          }
+          return result;
+        },
+      });
+      restored.push({ prototype, method, descriptor, constructorName });
+    };
+
+    for (const constructorName of ['WebGLRenderingContext', 'WebGL2RenderingContext']) {
+      for (const method of ['texImage2D', 'texSubImage2D', 'compileShader', 'linkProgram']) {
+        patch(constructorName, method);
+      }
+    }
+
+    let after;
+    let restorationComplete = false;
+    try {
+      await api.step(60, 1 / 60);
+      after = api.cockpitDebug();
+    } finally {
+      for (let index = restored.length - 1; index >= 0; index -= 1) {
+        const entry = restored[index];
+        Object.defineProperty(entry.prototype, entry.method, entry.descriptor);
+      }
+      restorationComplete = restored.every((entry) =>
+        Object.getOwnPropertyDescriptor(entry.prototype, entry.method)?.value === entry.descriptor.value);
+      api.setSettings({ cameraMode: 'chase' });
+      await api.step(1, 1 / 60);
+      await api.present();
+      api.setDriven(false);
+      await new Promise((resolve) => {
+        let frames = 30;
+        const settle = () => {
+          frames -= 1;
+          if (frames <= 0) resolve();
+          else requestAnimationFrame(settle);
+        };
+        requestAnimationFrame(settle);
+      });
+    }
+
+    if (!after) throw new Error('MFD upload cadence did not produce a final cockpit snapshot.');
+    const texImage2D = calls.filter(({ kind }) => kind === 'texImage2D').length;
+    const texSubImage2D = calls.filter(({ kind }) => kind === 'texSubImage2D').length;
+    return {
+      contract: { warmFrames: 1, frames: 60, dt: 1 / 60, expectedRedraws: 20 },
+      cameraMode,
+      before,
+      after,
+      mfdUpdatesDelta: after.mfdUpdates - before.mfdUpdates,
+      uploads: {
+        total: calls.length,
+        texImage2D,
+        texSubImage2D,
+        sources: Array.from(sources.values()),
+        calls,
+      },
+      compileShaderCalls,
+      linkProgramCalls,
+      instrumentation: {
+        patched: restored.map(({ constructorName, method }) => `${constructorName}.${method}`),
+        restored: restorationComplete,
+      },
+    };
+  }, { callTimeoutMs: timeoutMs });
 }
 
 /**

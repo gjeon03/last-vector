@@ -190,7 +190,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.5.0',
+    version: '1.6.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -245,6 +245,7 @@ function installHarness(game: Game): void {
     locale: () => game.getLocaleState(),
     cameraMode: () => game.getCameraMode(),
     cockpitDebug: () => game.getCockpitDebug(),
+    cockpitMfd: () => game.getCockpitMfd(),
     setPaused: (paused) => game.setPaused(paused),
     pauseMenu: (on) => game.pauseMenu(on),
     setFixedTimestep: (dt) => game.setFixedTimestep(dt),

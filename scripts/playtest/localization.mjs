@@ -8,6 +8,7 @@ import {
   verify,
   waitForHarness,
 } from './runtime.mjs';
+import { decodePng } from './pngstats.mjs';
 
 const LOCALE_STORAGE_KEY = 'last-vector.locale.v1';
 const HANGUL_FONT_ALIAS = 'NanumSquare Neo Hangul';
@@ -23,9 +24,16 @@ const REQUIRED_METHODS = [
   'telemetry',
   'result',
   'damageHull',
+  'cameraMode',
+  'cockpitDebug',
+  'cockpitMfd',
   'setAutopilot',
   'setDriven',
+  'setInput',
+  'setPaused',
+  'setSettings',
   'step',
+  'present',
   'locale',
   'errors',
 ];
@@ -335,6 +343,27 @@ const RADIO_COPY = {
 };
 const HOSTILE_REASON = '<img src=x onerror=window.__LV_INJECTED=1>';
 const STAGED_FULL_SEVERITY_HULL_DAMAGE = 0.22;
+const MFD_CANVAS = { width: 1024, height: 256 };
+const MFD_LABEL_ROI = { x: 16, y: 16, width: 992, height: 32 };
+const MFD_SCREEN_SETTLE_EPSILON = 1e-3;
+// Focused pre-assertion measurement with identical 1024x256 source uploads and zero-delta remote
+// controls found 72/11,488 fallback pixels changed by at most one output code (0.6267%), versus
+// 2,832/11,488 Korean pixels (24.6518%) and a 5,932x larger mean channel delta. These gates sit
+// immediately above the measured fallback envelope and far below the localized signal.
+const MFD_FALLBACK_MAX_CHANNEL_DELTA = 1;
+const MFD_FALLBACK_MAX_CHANGED_FRACTION = 0.01;
+const MFD_KOREAN_MIN_CHANGED_FRACTION = 0.10;
+const MFD_KOREAN_MIN_EXCESS_RATIO = 100;
+const MFD_LABELS = {
+  en: [
+    'ATTITUDE', 'VECTOR / RANGE', 'SHIP SYSTEMS', 'ENG', 'HULL', 'THR',
+    'RETRO BRAKE', 'HULL WARN', 'PROX WARN',
+  ],
+  ko: [
+    '자세', '벡터 / 거리', '기체 계통', '동력', '선체', '추력',
+    '역추진 제동', '선체 경고', '근접 경고',
+  ],
+};
 const LEGACY_FALLBACK = {
   title: 'LEGACY TITLE · DESCRIPTOR ABSENT',
   sub: 'LEGACY SUB · KEEP ENGLISH',
@@ -357,7 +386,7 @@ async function runLocalization({ report, session, options }) {
     name: 'A clean first boot selects Korean before player-facing UI',
     assertion:
       'An isolated empty-storage boot uses lang=ko before both loader and Overlay insertion, exposes '
-      + 'the exact 1.5.0 locale contract with required fontStatus, and remains unlocked on the title screen.',
+      + 'the exact 1.6.0 locale/MFD contract with required fontStatus, and remains unlocked on the title screen.',
   }, async () => {
     const scenario = await openBootScenario(session, { initScripts: [installBootProbe] });
     try {
@@ -367,7 +396,7 @@ async function runLocalization({ report, session, options }) {
       const boot = await scenario.page.evaluate(() => window.__LV_BOOT_PROBE ?? []);
       const title = await titleLocaleEvidence(scenario.page);
       const evidence = { inspection, locale, boot, title, requests: scenario.requests };
-      verify(inspection.version === '1.5.0', 'Harness version is not exactly 1.5.0.', evidence);
+      verify(inspection.version === '1.6.0', 'Harness version is not exactly 1.6.0.', evidence);
       verify(inspection.methods.locale === true, 'Harness locale() capability is missing.', evidence);
       verify(locale.selected === 'ko' && locale.active === null && locale.locked === false,
         'Empty storage did not produce an unlocked Korean title.', evidence);
@@ -826,6 +855,260 @@ async function runLocalization({ report, session, options }) {
       && fatal.ko.consoleErrors.length === 0 && fatal.ko.pageErrors.length === 0
       && fatal.en.consoleErrors.length === 0 && fatal.en.pageErrors.length === 0,
     'A font failure scenario emitted a runtime, console, page, or unhandled-rejection error.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.mfd-canvas-pixels',
+    name: 'Cockpit labels change actual source-canvas pixels with safe font fallback',
+    assertion:
+      'The fixed 1024x256 label atlas ROI is deterministic for English, differs for ready Korean, '
+      + 'falls back byte-identically to English on Korean font failure, changes after late ready in '
+      + 'a locked run, and ignores a stale held Korean completion after en-ko-en.',
+  }, async () => {
+    const englishScenario = await openLocaleScenario(session, 'en');
+    let english;
+    try {
+      await ready(englishScenario.page, options.timeoutMs);
+      const first = await prepareMfdCockpit(englishScenario.page, options);
+      const repeated = await callHarness(englishScenario.page, 'cockpitMfd');
+      english = {
+        locale: await localeSnapshot(englishScenario.page),
+        first,
+        repeated,
+      };
+    } finally {
+      await englishScenario.close();
+    }
+
+    const koreanScenario = await openLocaleScenario(session, 'ko');
+    let korean;
+    try {
+      await ready(koreanScenario.page, options.timeoutMs);
+      const first = await prepareMfdCockpit(koreanScenario.page, options);
+      const repeated = await callHarness(koreanScenario.page, 'cockpitMfd');
+      korean = {
+        locale: await localeSnapshot(koreanScenario.page),
+        first,
+        repeated,
+      };
+    } finally {
+      await koreanScenario.close();
+    }
+
+    const fallbackScenario = await openLocaleScenario(session, 'ko', {
+      initScripts: [installForcedFontFailure],
+    });
+    let fallback;
+    try {
+      await ready(fallbackScenario.page, options.timeoutMs);
+      fallback = {
+        locale: await localeSnapshot(fallbackScenario.page),
+        evidence: await prepareMfdCockpit(fallbackScenario.page, options),
+      };
+    } finally {
+      await fallbackScenario.close();
+    }
+
+    const lateScenario = await openLocaleScenario(session, 'ko', {
+      initScripts: [installHeldFontLoads],
+    });
+    let lateReady;
+    try {
+      await ready(lateScenario.page, options.timeoutMs);
+      const fallbackEvidence = await prepareMfdCockpit(lateScenario.page, options);
+      const lockedFallback = await localeSnapshot(lateScenario.page);
+      await releaseHeldFonts(lateScenario.page);
+      await lateScenario.page.waitForFunction(
+        () => window.__LV?.locale().fontStatus === 'ready',
+        undefined,
+        { timeout: 10_000 },
+      );
+      const dirtyOnly = await callHarness(lateScenario.page, 'cockpitMfd');
+      await callHarness(lateScenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+      await callHarness(lateScenario.page, 'present');
+      const readyEvidence = await callHarness(lateScenario.page, 'cockpitMfd');
+      lateReady = {
+        lockedFallback,
+        readyLocale: await localeSnapshot(lateScenario.page),
+        fallback: fallbackEvidence,
+        dirtyOnly,
+        ready: readyEvidence,
+        fontControl: await fontControlSnapshot(lateScenario.page),
+      };
+    } finally {
+      await lateScenario.close();
+    }
+
+    const staleScenario = await openLocaleScenario(session, 'en', {
+      initScripts: [installHeldFontLoads],
+    });
+    let stale;
+    try {
+      await ready(staleScenario.page, options.timeoutMs);
+      await staleScenario.page.locator('[data-view="title"][data-open="1"] [data-locale="ko"]').click();
+      await staleScenario.page.waitForFunction(
+        () => window.__LV?.locale().selected === 'ko'
+          && window.__LV?.locale().fontStatus === 'fallback'
+          && window.__LV_FONT_CONTROL?.snapshot().calls.length === 3,
+      );
+      const koreanPending = await localeSnapshot(staleScenario.page);
+      await staleScenario.page.locator('[data-view="title"][data-open="1"] [data-locale="en"]').click();
+      await waitForSelected(staleScenario.page, 'en');
+      await prepareMfdCockpit(staleScenario.page, options);
+      const beforeRelease = await alignAfterMfdRedraw(staleScenario.page, options);
+      await releaseHeldFonts(staleScenario.page);
+      await staleScenario.page.evaluate(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await callHarness(staleScenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+      await callHarness(staleScenario.page, 'present');
+      stale = {
+        koreanPending,
+        afterReleaseLocale: await localeSnapshot(staleScenario.page),
+        beforeRelease,
+        afterRelease: await callHarness(staleScenario.page, 'cockpitMfd'),
+        fontControl: await fontControlSnapshot(staleScenario.page),
+      };
+    } finally {
+      await staleScenario.close();
+    }
+
+    const evidence = { english, korean, fallback, lateReady, stale };
+    assertMfdEvidence(english.first, 'en', 'en', true, MFD_LABELS.en, evidence);
+    assertMfdEvidence(korean.first, 'ko', 'ko', true, MFD_LABELS.ko, evidence);
+    assertMfdEvidence(fallback.evidence, 'ko', 'en', false, MFD_LABELS.en, evidence);
+    assertMfdEvidence(lateReady.ready, 'ko', 'ko', true, MFD_LABELS.ko, evidence);
+    assertMfdEvidence(stale.afterRelease, 'en', 'en', true, MFD_LABELS.en, evidence);
+    verify(english.locale.fontStatus === 'not-required'
+      && english.first.labelRoi.hash === english.repeated.labelRoi.hash
+      && english.first.mfdUpdates === english.repeated.mfdUpdates,
+    'Repeated frozen English canvas evidence was not byte-stable.', evidence);
+    verify(korean.locale.fontStatus === 'ready'
+      && korean.first.labelRoi.hash === korean.repeated.labelRoi.hash
+      && korean.first.mfdUpdates === korean.repeated.mfdUpdates
+      && korean.first.labelRoi.hash !== english.first.labelRoi.hash,
+    'Ready Korean did not produce a stable label hash distinct from English.', evidence);
+    verify(fallback.locale.selected === 'ko' && fallback.locale.fontStatus === 'failed'
+      && fallback.evidence.locale === 'ko' && fallback.evidence.renderedLocale === 'en'
+      && fallback.evidence.labelRoi.hash === english.first.labelRoi.hash,
+    'Failed Korean font preparation did not render the exact English canvas fallback.', evidence);
+    verify(lateReady.lockedFallback.active === 'ko' && lateReady.lockedFallback.locked
+      && lateReady.lockedFallback.fontStatus === 'fallback'
+      && lateReady.readyLocale.active === 'ko' && lateReady.readyLocale.fontStatus === 'ready'
+      && lateReady.fallback.labelRoi.hash === english.first.labelRoi.hash
+      && lateReady.dirtyOnly.labelRoi.hash === lateReady.fallback.labelRoi.hash
+      && lateReady.dirtyOnly.mfdUpdates === lateReady.fallback.mfdUpdates
+      && lateReady.ready.mfdUpdates === lateReady.fallback.mfdUpdates + 1
+      && lateReady.ready.labelRoi.hash !== lateReady.fallback.labelRoi.hash,
+    'Fallback-to-late-ready did not remain setter-only until one redraw changed actual pixels.', evidence);
+    verify(stale.koreanPending.selected === 'ko' && stale.koreanPending.fontStatus === 'fallback'
+      && stale.afterReleaseLocale.selected === 'en'
+      && stale.afterReleaseLocale.fontStatus === 'not-required'
+      && stale.afterRelease.labelRoi.hash === stale.beforeRelease.labelRoi.hash
+      && stale.afterRelease.mfdUpdates === stale.beforeRelease.mfdUpdates,
+    'A stale held Korean completion changed the final English canvas or redraw counter.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.mfd-postfx-pixels',
+    name: 'Localized MFD pixels survive the final post-FX screen image',
+    assertion:
+      'With boost, warp, film grain, motion blur, and chromatic aberration settled off, physical-PNG '
+      + 'pixels strictly inside the projected MFD quad are stable for a frozen repeat, differ between '
+      + 'English and ready Korean, match English on failed-font fallback, and leave a remote control ROI unchanged.',
+  }, async () => {
+    const cases = {
+      english: { locale: 'en', renderedLocale: 'en', initScripts: [] },
+      korean: { locale: 'ko', renderedLocale: 'ko', initScripts: [] },
+      fallback: { locale: 'ko', renderedLocale: 'en', initScripts: [installForcedFontFailure] },
+    };
+    const evidence = {};
+    for (const [name, fixture] of Object.entries(cases)) {
+      const scenario = await openLocaleScenario(session, fixture.locale, {
+        initScripts: fixture.initScripts,
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        const mfd = await prepareMfdCockpit(scenario.page, options, {
+          settleFrames: 600,
+          pinRenderScale: true,
+        });
+        verify(mfd.renderedLocale === fixture.renderedLocale,
+          `${name} post-FX fixture did not reach the expected effective MFD locale.`, { mfd, fixture });
+        evidence[name] = await captureMfdPostFx(scenario.page, mfd, options);
+      } finally {
+        await scenario.close();
+      }
+    }
+
+    const expectedWidth = Math.round(options.viewport.width * options.deviceScaleFactor);
+    const expectedHeight = Math.round(options.viewport.height * options.deviceScaleFactor);
+    for (const [name, capture] of Object.entries(evidence)) {
+      verify(capture.image.width === expectedWidth && capture.image.height === expectedHeight,
+        `${name} screenshot did not use scale=device physical PNG dimensions.`, {
+          expectedWidth,
+          expectedHeight,
+          capture,
+        });
+      verify(capture.mfd.pixelCount >= 2_000 * options.deviceScaleFactor ** 2,
+        `${name} projected MFD sample is not material.`, capture);
+      verify(capture.mfd.hash === capture.repeat.mfd.hash
+        && capture.control.hash === capture.repeat.control.hash,
+      `${name} frozen same-locale screenshot repeat was not pixel-identical.`, capture);
+      verify(capture.overlay.hidden === true && capture.overlay.visibleOccluders === 0,
+        `${name} DOM HUD/Overlay was not hidden before screenshot capture.`, capture);
+      verify(capture.postFx.motionBlur === false && capture.postFx.filmGrain === false
+        && capture.postFx.chromaticAberration === false && capture.postFx.boosting === false
+        && capture.postFx.warpSettled === true
+        && capture.postFx.maxRawScreenDelta <= MFD_SCREEN_SETTLE_EPSILON,
+      `${name} capture did not settle every named post-FX source to zero/off.`, capture);
+      verify(capture.control.overlapsMfd === false,
+        `${name} remote background control ROI overlaps the MFD sample.`, capture);
+    }
+    verify(evidence.english.mfd.hash !== evidence.korean.mfd.hash,
+      'Ready Korean and English produced the same final post-FX MFD pixel hash.', evidence);
+    verify(evidence.english.control.hash === evidence.korean.control.hash
+      && evidence.english.control.hash === evidence.fallback.control.hash,
+    'A remote post-FX background control changed across locale/font fixtures.', evidence);
+    const fallbackLabelDiff = comparePixelSamples(evidence.english.mfd, evidence.fallback.mfd);
+    const koreanLabelDiff = comparePixelSamples(evidence.english.mfd, evidence.korean.mfd);
+    const fallbackControlDiff = comparePixelSamples(evidence.english.control, evidence.fallback.control);
+    const koreanControlDiff = comparePixelSamples(evidence.english.control, evidence.korean.control);
+    const fallbackMeanExcess = Math.max(
+      0,
+      fallbackLabelDiff.normalizedMeanAbs - fallbackControlDiff.normalizedMeanAbs,
+    );
+    const koreanMeanExcess = Math.max(
+      0,
+      koreanLabelDiff.normalizedMeanAbs - koreanControlDiff.normalizedMeanAbs,
+    );
+    evidence.pixelDiff = {
+      fallbackLabel: fallbackLabelDiff,
+      koreanLabel: koreanLabelDiff,
+      fallbackControl: fallbackControlDiff,
+      koreanControl: koreanControlDiff,
+      fallbackMeanExcess,
+      koreanMeanExcess,
+      koreanToFallbackExcessRatio: fallbackMeanExcess > 0
+        ? koreanMeanExcess / fallbackMeanExcess
+        : null,
+      thresholds: {
+        fallbackMaxChannelDelta: MFD_FALLBACK_MAX_CHANNEL_DELTA,
+        fallbackMaxChangedFraction: MFD_FALLBACK_MAX_CHANGED_FRACTION,
+        koreanMinChangedFraction: MFD_KOREAN_MIN_CHANGED_FRACTION,
+        koreanMinExcessRatio: MFD_KOREAN_MIN_EXCESS_RATIO,
+      },
+    };
+    verify(evidence.fallback.sourceCanvasHash === evidence.english.sourceCanvasHash
+      && fallbackLabelDiff.maxChannelDelta <= MFD_FALLBACK_MAX_CHANNEL_DELTA
+      && fallbackLabelDiff.changedFraction <= MFD_FALLBACK_MAX_CHANGED_FRACTION,
+    'Failed Korean font fallback exceeded the measured one-code English renderer envelope.', evidence);
+    verify(koreanLabelDiff.changedFraction >= MFD_KOREAN_MIN_CHANGED_FRACTION
+      && koreanMeanExcess >= fallbackMeanExcess * MFD_KOREAN_MIN_EXCESS_RATIO,
+    'Ready Korean final pixels were not materially larger than the fallback renderer envelope.', evidence);
     return evidence;
   });
 
@@ -1869,6 +2152,338 @@ async function openLocaleScenario(session, locale, extra = {}) {
   if (Object.keys(localStorageSeed).length > 0) options.localStorageSeed = localStorageSeed;
   else delete options.localStorageSeed;
   return openBootScenario(session, options);
+}
+
+async function prepareMfdCockpit(page, options, {
+  settleFrames = 60,
+  pinRenderScale = false,
+} = {}) {
+  await callHarness(page, 'setDriven', [true]);
+  if (pinRenderScale) await callHarness(page, 'setSettings', [{ renderScale: 0.99 }]);
+  await callHarness(page, 'setSettings', [{
+    cameraMode: 'cockpit',
+    quality: 'high',
+    renderScale: 1,
+    showFps: false,
+    cameraShake: 0,
+    motionBlur: false,
+    filmGrain: false,
+    chromaticAberration: false,
+  }]);
+  await callHarness(page, 'setInput', [{
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    throttle: 0,
+    strafeX: 0,
+    strafeY: 0,
+    boost: false,
+    brake: false,
+  }]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'step', [settleFrames, 1 / 60], options.timeoutMs);
+  await callHarness(page, 'present');
+  const cameraMode = await callHarness(page, 'cameraMode');
+  const evidence = await callHarness(page, 'cockpitMfd');
+  verify(cameraMode === 'cockpit' && evidence?.visible === true,
+    'MFD evidence was not captured from a visible applied cockpit camera.', {
+      cameraMode,
+      evidence,
+    });
+  return evidence;
+}
+
+async function alignAfterMfdRedraw(page, options) {
+  let previous = await callHarness(page, 'cockpitMfd');
+  for (let frame = 1; frame <= 4; frame += 1) {
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const current = await callHarness(page, 'cockpitMfd');
+    if (current.mfdUpdates > previous.mfdUpdates) return current;
+    previous = current;
+  }
+  throw Object.assign(new Error('No MFD redraw occurred within four 60 Hz frames.'), {
+    evidence: { previous },
+  });
+}
+
+function assertMfdEvidence(actual, locale, renderedLocale, fontReady, labels, context) {
+  const evidence = { expected: { locale, renderedLocale, fontReady, labels }, actual, context };
+  verify(actual?.locale === locale && actual?.renderedLocale === renderedLocale
+    && actual?.fontReady === fontReady && actual?.visible === true,
+  'MFD locale/readiness/visibility evidence differs from the expected effective state.', evidence);
+  verify(JSON.stringify(actual.canvas) === JSON.stringify(MFD_CANVAS)
+    && actual.labelRoi?.x === MFD_LABEL_ROI.x
+    && actual.labelRoi?.y === MFD_LABEL_ROI.y
+    && actual.labelRoi?.width === MFD_LABEL_ROI.width
+    && actual.labelRoi?.height === MFD_LABEL_ROI.height
+    && /^[0-9a-f]{8}$/u.test(actual.labelRoi?.hash ?? ''),
+  'MFD canvas dimensions, fixed label ROI, or actual RGBA hash is invalid.', evidence);
+  verify(Array.isArray(actual.labels) && actual.labels.length === labels.length
+    && JSON.stringify(actual.labels.map(({ text }) => text)) === JSON.stringify(labels),
+  'MFD fitted labels do not match the exact effective catalog.', evidence);
+  verify(actual.labels.every(({ fontPx, measuredWidth, allowedWidth, ellipsized }) =>
+    Number.isInteger(fontPx) && fontPx > 0
+    && Number.isFinite(measuredWidth) && measuredWidth >= 0
+    && Number.isFinite(allowedWidth) && allowedWidth > 0
+    && measuredWidth <= allowedWidth + 1e-6
+    && ellipsized === false),
+  'An MFD label exceeds its panel width or unexpectedly ellipsized.', evidence);
+  for (const field of [
+    'projectedNdcCorners',
+    'screenNdcCorners',
+    'labelProjectedNdcCorners',
+    'labelScreenNdcCorners',
+  ]) {
+    verify(Array.isArray(actual[field]) && actual[field].length === 4
+      && actual[field].every((corner) => Array.isArray(corner) && corner.length === 3
+        && corner.every((value) => Number.isFinite(value))),
+    `MFD ${field} does not contain four finite TL/TR/BR/BL corners.`, evidence);
+  }
+  verify(Number.isInteger(actual.mfdUpdates) && actual.mfdUpdates > 0,
+    'MFD redraw evidence is not a positive integer.', evidence);
+}
+
+async function captureMfdPostFx(page, mfd, options) {
+  await page.locator('.lv-loader').waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
+  const overlay = await page.evaluate(() => {
+    const roots = Array.from(document.querySelectorAll('.lv-root'));
+    for (const root of roots) {
+      if (root instanceof HTMLElement) root.style.visibility = 'hidden';
+    }
+    const visibleOccluders = roots.filter((root) => root instanceof HTMLElement
+      && root.getClientRects().length > 0
+      && getComputedStyle(root).visibility !== 'hidden').length;
+    return {
+      roots: roots.length,
+      hidden: roots.length > 0 && roots.every((root) => root instanceof HTMLElement
+        && getComputedStyle(root).visibility === 'hidden'),
+      visibleOccluders,
+    };
+  });
+  await callHarness(page, 'present');
+
+  const [settings, telemetry] = await Promise.all([
+    callHarness(page, 'settings'),
+    callHarness(page, 'telemetry'),
+  ]);
+  const firstBuffer = await page.screenshot({ type: 'png', scale: 'device' });
+  const repeatBuffer = await page.screenshot({ type: 'png', scale: 'device' });
+  const first = decodePng(firstBuffer);
+  const repeated = decodePng(repeatBuffer);
+  verify(first.width === repeated.width && first.height === repeated.height
+    && first.channels === repeated.channels,
+  'Frozen screenshot repeat changed its decoded PNG shape.', {
+    first: { width: first.width, height: first.height, channels: first.channels },
+    repeated: { width: repeated.width, height: repeated.height, channels: repeated.channels },
+  });
+
+  const insetPixels = Math.max(2, Math.round(2 * options.deviceScaleFactor));
+  const mfdPixels = hashProjectedQuad(first, mfd.labelScreenNdcCorners, insetPixels);
+  const repeatMfdPixels = hashProjectedQuad(repeated, mfd.labelScreenNdcCorners, insetPixels);
+  const controlBounds = {
+    x: Math.round(first.width * 0.06),
+    y: Math.round(first.height * 0.06),
+    width: Math.max(32, Math.round(first.width * 0.06)),
+    height: Math.max(32, Math.round(first.height * 0.06)),
+  };
+  const control = hashPixelRect(first, controlBounds);
+  const repeatControl = hashPixelRect(repeated, controlBounds);
+  control.overlapsMfd = rectanglesOverlap(control.bounds, mfdPixels.bounds);
+  repeatControl.overlapsMfd = rectanglesOverlap(repeatControl.bounds, repeatMfdPixels.bounds);
+  const maxRawScreenDelta = Math.max(...mfd.labelProjectedNdcCorners.flatMap((corner, index) =>
+    corner.map((value, axis) => Math.abs(value - mfd.labelScreenNdcCorners[index][axis]))));
+  return {
+    locale: mfd.locale,
+    renderedLocale: mfd.renderedLocale,
+    fontReady: mfd.fontReady,
+    sourceCanvasHash: mfd.labelRoi.hash,
+    image: { width: first.width, height: first.height, channels: first.channels },
+    insetPixels,
+    mfd: mfdPixels,
+    repeat: { mfd: repeatMfdPixels, control: repeatControl },
+    control,
+    overlay,
+    postFx: {
+      motionBlur: settings.motionBlur,
+      filmGrain: settings.filmGrain,
+      chromaticAberration: settings.chromaticAberration,
+      boosting: telemetry.boosting,
+      maxRawScreenDelta,
+      allowedRawScreenDelta: MFD_SCREEN_SETTLE_EPSILON,
+      warpSettled: maxRawScreenDelta <= MFD_SCREEN_SETTLE_EPSILON,
+    },
+  };
+}
+
+function hashProjectedQuad(image, ndcCorners, insetPixels) {
+  verify(Array.isArray(ndcCorners) && ndcCorners.length === 4,
+    'Projected MFD quad does not contain four corners.', { ndcCorners });
+  const corners = ndcCorners.map(([x, y]) => ({
+    x: (x + 1) * 0.5 * image.width,
+    y: (1 - y) * 0.5 * image.height,
+  }));
+  const centre = corners.reduce((sum, point) => ({
+    x: sum.x + point.x / corners.length,
+    y: sum.y + point.y / corners.length,
+  }), { x: 0, y: 0 });
+  const insetCorners = corners.map((point) => {
+    const dx = centre.x - point.x;
+    const dy = centre.y - point.y;
+    const distance = Math.hypot(dx, dy);
+    const scale = distance > 0 ? Math.min(0.45, insetPixels / distance) : 0;
+    return { x: point.x + dx * scale, y: point.y + dy * scale };
+  });
+  const bounds = polygonBounds(insetCorners, image.width, image.height);
+  let hash = 0x811c9dc5;
+  let pixelCount = 0;
+  const sample = [];
+  for (let y = bounds.y; y < bounds.y + bounds.height; y += 1) {
+    for (let x = bounds.x; x < bounds.x + bounds.width; x += 1) {
+      if (!pointInConvexPolygon(x + 0.5, y + 0.5, insetCorners)) continue;
+      const offset = (y * image.width + x) * image.channels;
+      for (let channel = 0; channel < image.channels; channel += 1) {
+        const byte = image.pixels[offset + channel];
+        hash = fnv1aByte(hash, byte);
+        sample.push(byte);
+      }
+      if (image.channels === 3) hash = fnv1aByte(hash, 255);
+      pixelCount += 1;
+    }
+  }
+  verify(pixelCount > 0, 'Projected MFD quad contains no physical PNG pixels.', {
+    corners,
+    insetCorners,
+    bounds,
+  });
+  const result = {
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+    pixelCount,
+    bounds,
+    corners: corners.map(({ x, y }) => [roundPixel(x), roundPixel(y)]),
+    insetCorners: insetCorners.map(({ x, y }) => [roundPixel(x), roundPixel(y)]),
+  };
+  Object.defineProperty(result, 'sample', {
+    value: Uint8Array.from(sample),
+    enumerable: false,
+  });
+  Object.defineProperty(result, 'sampleChannels', {
+    value: image.channels,
+    enumerable: false,
+  });
+  return result;
+}
+
+function hashPixelRect(image, requestedBounds) {
+  const x = Math.max(0, Math.min(image.width - 1, requestedBounds.x));
+  const y = Math.max(0, Math.min(image.height - 1, requestedBounds.y));
+  const width = Math.max(1, Math.min(image.width - x, requestedBounds.width));
+  const height = Math.max(1, Math.min(image.height - y, requestedBounds.height));
+  let hash = 0x811c9dc5;
+  let pixelCount = 0;
+  const sample = [];
+  for (let py = y; py < y + height; py += 1) {
+    for (let px = x; px < x + width; px += 1) {
+      const offset = (py * image.width + px) * image.channels;
+      for (let channel = 0; channel < image.channels; channel += 1) {
+        const byte = image.pixels[offset + channel];
+        hash = fnv1aByte(hash, byte);
+        sample.push(byte);
+      }
+      if (image.channels === 3) hash = fnv1aByte(hash, 255);
+      pixelCount += 1;
+    }
+  }
+  const result = {
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+    pixelCount,
+    bounds: { x, y, width, height },
+  };
+  Object.defineProperty(result, 'sample', {
+    value: Uint8Array.from(sample),
+    enumerable: false,
+  });
+  Object.defineProperty(result, 'sampleChannels', {
+    value: image.channels,
+    enumerable: false,
+  });
+  return result;
+}
+
+function comparePixelSamples(left, right) {
+  verify(left.pixelCount === right.pixelCount
+    && left.sampleChannels === right.sampleChannels
+    && left.sample?.length === right.sample?.length,
+  'Pixel-difference samples do not have identical physical shapes.', {
+    left: { pixelCount: left.pixelCount, channels: left.sampleChannels, bytes: left.sample?.length },
+    right: { pixelCount: right.pixelCount, channels: right.sampleChannels, bytes: right.sample?.length },
+  });
+  let totalAbs = 0;
+  let maxChannelDelta = 0;
+  let changedChannels = 0;
+  let changedPixels = 0;
+  for (let offset = 0; offset < left.sample.length; offset += left.sampleChannels) {
+    let pixelChanged = false;
+    for (let channel = 0; channel < left.sampleChannels; channel += 1) {
+      const delta = Math.abs(left.sample[offset + channel] - right.sample[offset + channel]);
+      totalAbs += delta;
+      maxChannelDelta = Math.max(maxChannelDelta, delta);
+      if (delta > 0) {
+        changedChannels += 1;
+        pixelChanged = true;
+      }
+    }
+    if (pixelChanged) changedPixels += 1;
+  }
+  const channelCount = left.sample.length;
+  const meanAbs = channelCount > 0 ? totalAbs / channelCount : 0;
+  return {
+    pixels: left.pixelCount,
+    channels: left.sampleChannels,
+    totalAbs,
+    meanAbs,
+    normalizedMeanAbs: meanAbs / 255,
+    maxChannelDelta,
+    normalizedMaxChannelDelta: maxChannelDelta / 255,
+    changedChannels,
+    changedPixels,
+    changedFraction: left.pixelCount > 0 ? changedPixels / left.pixelCount : 0,
+  };
+}
+
+function polygonBounds(points, imageWidth, imageHeight) {
+  const minX = Math.max(0, Math.floor(Math.min(...points.map(({ x }) => x))));
+  const minY = Math.max(0, Math.floor(Math.min(...points.map(({ y }) => y))));
+  const maxX = Math.min(imageWidth, Math.ceil(Math.max(...points.map(({ x }) => x))));
+  const maxY = Math.min(imageHeight, Math.ceil(Math.max(...points.map(({ y }) => y))));
+  return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) };
+}
+
+function pointInConvexPolygon(x, y, points) {
+  let sign = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    const cross = (next.x - current.x) * (y - current.y)
+      - (next.y - current.y) * (x - current.x);
+    if (Math.abs(cross) <= 1e-7) continue;
+    const nextSign = Math.sign(cross);
+    if (sign !== 0 && nextSign !== sign) return false;
+    sign = nextSign;
+  }
+  return true;
+}
+
+function fnv1aByte(hash, byte) {
+  return Math.imul(hash ^ byte, 0x01000193) >>> 0;
+}
+
+function rectanglesOverlap(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x
+    && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function roundPixel(value) {
+  return Math.round(value * 1_000) / 1_000;
 }
 
 function isNanumFontUrl(value) {

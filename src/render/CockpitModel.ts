@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { createTranslator, type Translator } from '../i18n/index.ts';
+import type { Locale } from '../core/contracts.ts';
 
 /**
  * Flight state consumed by the procedural cockpit. `dt` is seconds, `speed` is metres/second,
@@ -47,6 +49,47 @@ export interface CockpitDebugState {
   mfdUpdates: number;
 }
 
+export interface CockpitMfdLabelEvidence {
+  key: string;
+  text: string;
+  fontPx: number;
+  measuredWidth: number;
+  allowedWidth: number;
+  ellipsized: boolean;
+}
+
+export interface CockpitMfdEvidence {
+  locale: Locale;
+  renderedLocale: Locale;
+  fontReady: boolean;
+  visible: boolean;
+  canvas: { width: 1024; height: 256 };
+  labelRoi: { x: number; y: number; width: number; height: number; hash: string };
+  labels: ReadonlyArray<CockpitMfdLabelEvidence>;
+  /** Final model projection before post-processing, in TL/TR/BR/BL order. */
+  projectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Final screenshot projection after radial warp; Game replaces the model-space default. */
+  screenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI projection before post-processing, in TL/TR/BR/BL order. */
+  labelProjectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI after radial warp; Game replaces the model-space default. */
+  labelScreenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  mfdUpdates: number;
+}
+
+interface MfdLabelDefinition {
+  key: keyof Translator['messages']['cockpit'];
+  preferredPx: number;
+  minimumPx: number;
+  allowedWidth: number;
+  englishWeight: 600 | 700;
+  koreanWeight: 400 | 700;
+}
+
+interface PreparedMfdLabel extends CockpitMfdLabelEvidence {
+  font: string;
+}
+
 interface GeometryBatch {
   material: THREE.Material;
   parts: THREE.BufferGeometry[];
@@ -55,6 +98,37 @@ interface GeometryBatch {
 const SOLID_RENDER_ORDER = 210;
 const EMISSIVE_RENDER_ORDER = 224;
 const GLASS_RENDER_ORDER = 230;
+const MFD_INTERVAL = 1 / 20;
+const MFD_DEADLINE_EPSILON = 1e-9;
+const MFD_MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+const MFD_HANGUL_STACK = `"NanumSquare Neo Hangul", ${MFD_MONO_STACK}`;
+const MFD_LABEL_ROI = Object.freeze({ x: 16, y: 16, width: 992, height: 32 });
+const MFD_PLANE_WIDTH = 1.08;
+const MFD_PLANE_HEIGHT = 0.18;
+const MFD_PLANE_CORNERS: readonly (readonly [number, number, number])[] = Object.freeze([
+  [-MFD_PLANE_WIDTH / 2, MFD_PLANE_HEIGHT / 2, 0],
+  [MFD_PLANE_WIDTH / 2, MFD_PLANE_HEIGHT / 2, 0],
+  [MFD_PLANE_WIDTH / 2, -MFD_PLANE_HEIGHT / 2, 0],
+  [-MFD_PLANE_WIDTH / 2, -MFD_PLANE_HEIGHT / 2, 0],
+]);
+const MFD_LABEL_PLANE_CORNERS: readonly (readonly [number, number, number])[] = Object.freeze([
+  [MFD_PLANE_WIDTH * (MFD_LABEL_ROI.x / 1024 - 0.5), MFD_PLANE_HEIGHT * (0.5 - MFD_LABEL_ROI.y / 256), 0],
+  [MFD_PLANE_WIDTH * ((MFD_LABEL_ROI.x + MFD_LABEL_ROI.width) / 1024 - 0.5), MFD_PLANE_HEIGHT * (0.5 - MFD_LABEL_ROI.y / 256), 0],
+  [MFD_PLANE_WIDTH * ((MFD_LABEL_ROI.x + MFD_LABEL_ROI.width) / 1024 - 0.5), MFD_PLANE_HEIGHT * (0.5 - (MFD_LABEL_ROI.y + MFD_LABEL_ROI.height) / 256), 0],
+  [MFD_PLANE_WIDTH * (MFD_LABEL_ROI.x / 1024 - 0.5), MFD_PLANE_HEIGHT * (0.5 - (MFD_LABEL_ROI.y + MFD_LABEL_ROI.height) / 256), 0],
+]);
+const ENGLISH_TRANSLATOR = createTranslator('en');
+const MFD_LABEL_DEFINITIONS: readonly MfdLabelDefinition[] = Object.freeze([
+  { key: 'attitude', preferredPx: 20, minimumPx: 14, allowedWidth: 266, englishWeight: 600, koreanWeight: 700 },
+  { key: 'vectorRange', preferredPx: 20, minimumPx: 14, allowedWidth: 344, englishWeight: 600, koreanWeight: 700 },
+  { key: 'shipSystems', preferredPx: 20, minimumPx: 14, allowedWidth: 264, englishWeight: 600, koreanWeight: 700 },
+  { key: 'energy', preferredPx: 18, minimumPx: 13, allowedWidth: 60, englishWeight: 600, koreanWeight: 400 },
+  { key: 'hull', preferredPx: 18, minimumPx: 13, allowedWidth: 60, englishWeight: 600, koreanWeight: 400 },
+  { key: 'throttle', preferredPx: 18, minimumPx: 13, allowedWidth: 60, englishWeight: 600, koreanWeight: 400 },
+  { key: 'retroBrake', preferredPx: 17, minimumPx: 13, allowedWidth: 260, englishWeight: 700, koreanWeight: 700 },
+  { key: 'hullWarning', preferredPx: 17, minimumPx: 13, allowedWidth: 260, englishWeight: 700, koreanWeight: 700 },
+  { key: 'proximityWarning', preferredPx: 17, minimumPx: 13, allowedWidth: 260, englishWeight: 700, koreanWeight: 700 },
+]);
 
 const DEFAULT_STATE: CockpitState = {
   dt: 1 / 60,
@@ -101,6 +175,7 @@ export class CockpitModel {
   private readonly mfdContext: CanvasRenderingContext2D;
   private readonly mfdBackground: CanvasGradient;
   private readonly mfdTexture: THREE.CanvasTexture;
+  private readonly mfdMesh: THREE.Mesh;
   private indicatorCoolMaterial!: THREE.MeshBasicMaterial;
   private indicatorWarmMaterial!: THREE.MeshBasicMaterial;
   private readonly glassMaterial: THREE.ShaderMaterial;
@@ -111,8 +186,16 @@ export class CockpitModel {
   private triangles = 0;
   private lastFov = 76;
   private lastNear = 0.1;
-  private lastMfdTime = -Infinity;
+  private lastMfdTime = 0;
+  private nextMfdTime = MFD_INTERVAL;
   private mfdUpdates = 0;
+  private mfdDirty = false;
+  private locale: Locale;
+  private translator: Translator;
+  private fontReady: boolean;
+  private renderedLocale: Locale;
+  private renderedTranslator: Translator;
+  private preparedLabels: readonly PreparedMfdLabel[] = [];
 
   private motionX = 0;
   private motionY = 0;
@@ -125,7 +208,12 @@ export class CockpitModel {
   private stickRoll = 0;
   private throttleAngle = -0.56;
 
-  constructor() {
+  constructor(locale: Locale, translator: Translator, fontReady: boolean) {
+    this.locale = locale;
+    this.translator = translator;
+    this.fontReady = locale === 'en' || fontReady;
+    this.renderedLocale = locale === 'ko' && this.fontReady ? 'ko' : 'en';
+    this.renderedTranslator = this.renderedLocale === 'ko' ? translator : ENGLISH_TRANSLATOR;
     this.object.name = 'immersive-cockpit';
     this.motionRoot.name = 'cockpit-head-inertia';
     this.object.add(this.motionRoot);
@@ -193,9 +281,10 @@ export class CockpitModel {
       side: THREE.FrontSide,
     });
     this.materials.push(mfdMaterial);
-    const mfdGeometry = new THREE.PlaneGeometry(1.08, 0.18);
+    const mfdGeometry = new THREE.PlaneGeometry(MFD_PLANE_WIDTH, MFD_PLANE_HEIGHT);
     this.geometries.push(mfdGeometry);
     const mfd = this.registerMesh(new THREE.Mesh(mfdGeometry, mfdMaterial), EMISSIVE_RENDER_ORDER);
+    this.mfdMesh = mfd;
     mfd.name = 'three-zone-flight-mfd';
     // The display plane sits 10 mm behind the nearest bezel faces and 9 mm ahead of the
     // instrument backing. This gives the atlas a real shadowed well without depth fighting.
@@ -216,8 +305,35 @@ export class CockpitModel {
     this.coolFill.position.set(0.72, -0.08, -0.28);
     this.motionRoot.add(this.coolFill);
 
+    this.prepareMfdLabels();
     this.drawMfd(0, DEFAULT_STATE);
     this.object.visible = false;
+  }
+
+  setLocale(locale: Locale, translator: Translator, fontReady: boolean): void {
+    const ready = locale === 'en' || fontReady;
+    if (locale === this.locale && translator === this.translator && ready === this.fontReady) return;
+
+    const nextRenderedLocale: Locale = locale === 'ko' && ready ? 'ko' : 'en';
+    const nextRenderedTranslator = nextRenderedLocale === 'ko' ? translator : ENGLISH_TRANSLATOR;
+    const effectiveChanged = nextRenderedLocale !== this.renderedLocale
+      || nextRenderedTranslator.messages !== this.renderedTranslator.messages;
+    this.locale = locale;
+    this.translator = translator;
+    this.fontReady = ready;
+    this.renderedLocale = nextRenderedLocale;
+    this.renderedTranslator = nextRenderedTranslator;
+    if (effectiveChanged) this.prepareMfdLabels();
+    this.mfdDirty = true;
+  }
+
+  setFontReady(locale: Locale, ready: boolean): void {
+    if (locale !== this.locale) return;
+    this.setLocale(this.locale, this.translator, ready);
+  }
+
+  invalidateMfd(): void {
+    this.mfdDirty = true;
   }
 
   setVisible(visible: boolean): void {
@@ -288,7 +404,7 @@ export class CockpitModel {
     this.glassMaterial.uniforms.uRoll.value = roll;
     this.glassMaterial.uniforms.uImpact.value = impact;
 
-    if (time - this.lastMfdTime >= 1 / 20 || time < this.lastMfdTime) {
+    if (this.mfdDirty || time < this.lastMfdTime || time + MFD_DEADLINE_EPSILON >= this.nextMfdTime) {
       this.drawMfd(time, state);
     }
   }
@@ -312,6 +428,51 @@ export class CockpitModel {
       stickYaw: this.stickYaw,
       stickRoll: this.stickRoll,
       throttleAngle: this.throttleAngle,
+      mfdUpdates: this.mfdUpdates,
+    };
+  }
+
+  getMfdEvidence(camera: THREE.PerspectiveCamera): CockpitMfdEvidence {
+    this.object.updateMatrixWorld(true);
+    this.mfdMesh.updateWorldMatrix(true, false);
+    camera.updateMatrixWorld();
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+    const projectCorners = (
+      corners: readonly (readonly [number, number, number])[],
+    ): [number, number, number][] => corners.map(([x, y, z]) => {
+      const projected = this.mfdMesh.localToWorld(new THREE.Vector3(x, y, z)).project(camera);
+      return [projected.x, projected.y, projected.z];
+    });
+    const projectedNdcCorners = projectCorners(MFD_PLANE_CORNERS);
+    const labelProjectedNdcCorners = projectCorners(MFD_LABEL_PLANE_CORNERS);
+    const image = this.mfdContext.getImageData(
+      MFD_LABEL_ROI.x,
+      MFD_LABEL_ROI.y,
+      MFD_LABEL_ROI.width,
+      MFD_LABEL_ROI.height,
+    );
+    const hash = hashRgba(image.data);
+    return {
+      locale: this.locale,
+      renderedLocale: this.renderedLocale,
+      fontReady: this.fontReady,
+      visible: this.object.visible,
+      canvas: { width: 1024, height: 256 },
+      labelRoi: { ...MFD_LABEL_ROI, hash },
+      labels: this.preparedLabels.map(({ key, text, fontPx, measuredWidth, allowedWidth, ellipsized }) => ({
+        key,
+        text,
+        fontPx,
+        measuredWidth,
+        allowedWidth,
+        ellipsized,
+      })),
+      projectedNdcCorners,
+      screenNdcCorners: projectedNdcCorners.map((corner) => [...corner] as [number, number, number]),
+      labelProjectedNdcCorners,
+      labelScreenNdcCorners: labelProjectedNdcCorners.map(
+        (corner) => [...corner] as [number, number, number],
+      ),
       mfdUpdates: this.mfdUpdates,
     };
   }
@@ -825,6 +986,67 @@ export class CockpitModel {
     glass.name = 'canopy-glass';
   }
 
+  private prepareMfdLabels(): void {
+    const messages = this.renderedTranslator.messages.cockpit;
+    this.preparedLabels = MFD_LABEL_DEFINITIONS.map((definition) =>
+      this.fitMfdLabel(definition, messages[definition.key]));
+  }
+
+  private fitMfdLabel(definition: MfdLabelDefinition, sourceText: string): PreparedMfdLabel {
+    const ctx = this.mfdContext;
+    const weight = this.renderedLocale === 'ko'
+      ? definition.koreanWeight
+      : definition.englishWeight;
+    const stack = this.renderedLocale === 'ko' ? MFD_HANGUL_STACK : MFD_MONO_STACK;
+    let fontPx = definition.preferredPx;
+    let font = `${weight} ${fontPx}px ${stack}`;
+    ctx.font = font;
+    let measuredWidth = ctx.measureText(sourceText).width;
+
+    while (measuredWidth > definition.allowedWidth && fontPx > definition.minimumPx) {
+      fontPx -= 1;
+      font = `${weight} ${fontPx}px ${stack}`;
+      ctx.font = font;
+      measuredWidth = ctx.measureText(sourceText).width;
+    }
+
+    let text = sourceText;
+    let ellipsized = false;
+    if (measuredWidth > definition.allowedWidth) {
+      const glyphs = Array.from(sourceText);
+      ellipsized = true;
+      do {
+        glyphs.pop();
+        text = `${glyphs.join('')}…`;
+        measuredWidth = ctx.measureText(text).width;
+      } while (glyphs.length > 0 && measuredWidth > definition.allowedWidth);
+      if (measuredWidth > definition.allowedWidth) {
+        text = '';
+        measuredWidth = 0;
+      }
+    }
+
+    return {
+      key: definition.key,
+      text,
+      fontPx,
+      measuredWidth,
+      allowedWidth: definition.allowedWidth,
+      ellipsized,
+      font,
+    };
+  }
+
+  private drawMfdLabel(
+    ctx: CanvasRenderingContext2D,
+    label: PreparedMfdLabel,
+    x: number,
+    y: number,
+  ): void {
+    ctx.font = label.font;
+    ctx.fillText(label.text, x, y);
+  }
+
   private drawMfd(time: number, state: CockpitState): void {
     const ctx = this.mfdContext;
     const width = this.mfdCanvas.width;
@@ -846,10 +1068,9 @@ export class CockpitModel {
     ctx.strokeRect(327.5, 12.5, 369, height - 25);
     ctx.strokeRect(719.5, 12.5, 289, height - 25);
     ctx.fillStyle = 'rgba(160, 225, 239, 0.76)';
-    ctx.font = '600 20px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillText('ATTITUDE', 28, 39);
-    ctx.fillText('VECTOR / RANGE', 342, 39);
-    ctx.fillText('SHIP SYSTEMS', 734, 39);
+    this.drawMfdLabel(ctx, this.preparedLabels[0], 28, 39);
+    this.drawMfdLabel(ctx, this.preparedLabels[1], 342, 39);
+    this.drawMfdLabel(ctx, this.preparedLabels[2], 734, 39);
 
     // Left MFD: clipped attitude horizon and pitch ladder.
     ctx.save();
@@ -896,7 +1117,7 @@ export class CockpitModel {
     ctx.fillText(`${Math.max(0, Math.round(state.speed)).toString().padStart(4, '0')}`, 512, 102);
     ctx.fillStyle = 'rgba(150, 221, 235, 0.64)';
     ctx.font = '600 17px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillText('M / S', 512, 125);
+    ctx.fillText(this.renderedTranslator.messages.cockpit.velocityUnit, 512, 125);
     const radarX = 512;
     const radarY = 183;
     const radarRadius = 42 + proximity * 25;
@@ -916,35 +1137,40 @@ export class CockpitModel {
 
     // Right MFD: physical resource bars and clear numeric labels.
     ctx.textAlign = 'left';
-    this.drawMfdBar(ctx, 'ENG', energy, '#55daf5', 0);
-    this.drawMfdBar(ctx, 'HULL', hull, hull < 0.35 ? '#ff7956' : '#8ee6c7', 1);
-    this.drawMfdBar(ctx, 'THR', throttle, boost > 0.2 ? '#ffd279' : '#72bfff', 2);
+    this.drawMfdBar(ctx, this.preparedLabels[3], energy, '#55daf5', 0);
+    this.drawMfdBar(ctx, this.preparedLabels[4], hull, hull < 0.35 ? '#ff7956' : '#8ee6c7', 1);
+    this.drawMfdBar(ctx, this.preparedLabels[5], throttle, boost > 0.2 ? '#ffd279' : '#72bfff', 2);
     if (state.brake || hull < 0.35 || proximity > 0.72) {
       ctx.fillStyle = hull < 0.35 ? '#ff7453' : '#ffb468';
-      ctx.font = '700 17px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillText(state.brake ? 'RETRO BRAKE' : hull < 0.35 ? 'HULL WARN' : 'PROX WARN', 738, 239);
+      const warning = state.brake
+        ? this.preparedLabels[6]
+        : hull < 0.35
+          ? this.preparedLabels[7]
+          : this.preparedLabels[8];
+      this.drawMfdLabel(ctx, warning, 738, 239);
     }
 
     // Fine scanlines keep the panel technological without brightening a large connected area.
     ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
     for (let y = 0; y < height; y += 4) ctx.fillRect(0, y, width, 1);
 
-    this.mfdTexture.needsUpdate = true;
     this.lastMfdTime = time;
+    this.nextMfdTime = time + MFD_INTERVAL;
+    this.mfdDirty = false;
+    this.mfdTexture.needsUpdate = true;
     this.mfdUpdates++;
   }
 
   private drawMfdBar(
     ctx: CanvasRenderingContext2D,
-    label: string,
+    label: PreparedMfdLabel,
     value: number,
     color: string,
     index: number,
   ): void {
     const y = 70 + index * 55;
     ctx.fillStyle = 'rgba(203, 239, 245, 0.7)';
-    ctx.font = '600 18px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillText(label, 738, y + 14);
+    this.drawMfdLabel(ctx, label, 738, y + 14);
     ctx.fillStyle = 'rgba(18, 42, 50, 0.9)';
     ctx.fillRect(804, y, 174, 17);
     ctx.fillStyle = color;
@@ -1227,4 +1453,12 @@ function clamp01(value: number): number {
 
 function dampValue(current: number, target: number, tau: number, dt: number): number {
   return current + (target - current) * (1 - Math.exp(-dt / Math.max(tau, 1e-4)));
+}
+
+function hashRgba(data: Uint8ClampedArray): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < data.length; index++) {
+    hash = Math.imul(hash ^ data[index], 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }

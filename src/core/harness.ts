@@ -119,6 +119,33 @@ export interface HarnessCockpitDebugState {
   mfdUpdates: number;
 }
 
+/** JSON-safe proof of the physical MFD's locale, fitted labels, pixels, and projection. */
+export interface HarnessCockpitMfdEvidence {
+  locale: Locale;
+  renderedLocale: Locale;
+  fontReady: boolean;
+  visible: boolean;
+  canvas: { width: 1024; height: 256 };
+  labelRoi: { x: number; y: number; width: number; height: number; hash: string };
+  labels: ReadonlyArray<{
+    key: string;
+    text: string;
+    fontPx: number;
+    measuredWidth: number;
+    allowedWidth: number;
+    ellipsized: boolean;
+  }>;
+  /** Final model projection before post-processing, in TL/TR/BR/BL order. */
+  projectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Projection after the final composite's radial warp, in TL/TR/BR/BL order. */
+  screenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI projection before post-processing, in TL/TR/BR/BL order. */
+  labelProjectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI after the final composite's radial warp, in TL/TR/BR/BL order. */
+  labelScreenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  mfdUpdates: number;
+}
+
 /**
  * Read-only proof for the exterior ship and its paired drive plume. Counts describe only the
  * ship model, so world debris density cannot make this regression contract fluctuate.
@@ -326,6 +353,8 @@ export interface HarnessApi {
   cameraMode(): CameraMode;
   /** Physical cockpit pose, controls, instrument cadence, and cockpit-only render cost. */
   cockpitDebug(): HarnessCockpitDebugState;
+  /** Physical MFD locale, fitted-label, source-pixel, and final-screen evidence. */
+  cockpitMfd(): HarnessCockpitMfdEvidence;
   /**
    * Freezes SIMULATION only. Does NOT open the pause menu, release pointer lock or duck the
    * drive, so it reaches a state no player can occupy: paused, pointer still locked, audio at
