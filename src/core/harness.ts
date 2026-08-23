@@ -5,7 +5,15 @@
  * This is a stable contract: the playtest tooling under `scripts/playtest/` depends on it.
  */
 
-import type { CameraMode, Locale, Phase, RunResult, Settings, Telemetry } from './contracts.ts';
+import type {
+  CameraMode,
+  Locale,
+  LocaleFontStatus,
+  Phase,
+  RunResult,
+  Settings,
+  Telemetry,
+} from './contracts.ts';
 
 export interface HarnessInput {
   /**
@@ -180,6 +188,7 @@ export interface HarnessLocaleState {
   active: Locale | null;
   locked: boolean;
   settingsSubscribers: number;
+  fontStatus: LocaleFontStatus;
 }
 
 export interface HarnessApi {

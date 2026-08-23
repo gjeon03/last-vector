@@ -4,7 +4,12 @@ import { UI } from './core/art.ts';
 import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
-import { createTranslator, LocaleStore, type Translator } from './i18n/index.ts';
+import {
+  createTranslator,
+  LocaleStore,
+  prepareLocaleFonts,
+  type Translator,
+} from './i18n/index.ts';
 
 /**
  * Entry point. Three jobs: prove the browser can run the thing, hold a loading screen while
@@ -20,6 +25,9 @@ document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribut
   'content',
   bootTranslator.messages.meta.documentDescription,
 );
+// boot.css is imported before this module executes, so its @font-face rules are registered before
+// the coordinator probes them. This is the only preparation created for the boot locale.
+const bootFontPreparation = prepareLocaleFonts(bootLocale);
 
 const root = document.getElementById('app');
 if (!root) throw new Error('#app missing');
@@ -75,6 +83,7 @@ const nextPaint = (): Promise<void> =>
 
 async function boot(): Promise<void> {
   if (!supportsWebGL2()) {
+    bootFontPreparation.cancel();
     fail(
       bootTranslator.messages.loader.webglRequiredTitle,
       bootTranslator.messages.loader.webglRequiredDetail,
@@ -86,6 +95,7 @@ async function boot(): Promise<void> {
   await nextPaint();
   loader.setProgress(0.15, bootTranslator.messages.loader.chartingDrift);
   await nextPaint();
+  const bootFontResult = await bootFontPreparation.initial;
 
   // A seed can be pinned from the URL so a failing headless run is reproducible. The world
   // is generated once at construction, which is why this is a boot-time input, not a method.
@@ -95,10 +105,16 @@ async function boot(): Promise<void> {
 
   let game: Game;
   try {
+    const fonts = {
+      result: bootFontResult,
+      settled: bootFontPreparation.settled,
+      cancel: bootFontPreparation.cancel,
+    };
     game = new Game(seed === undefined
-      ? { root: root!, localeStore }
-      : { root: root!, localeStore, seed });
+      ? { root: root!, localeStore, fonts }
+      : { root: root!, localeStore, fonts, seed });
   } catch (error) {
+    bootFontPreparation.cancel();
     const translator = createTranslator(localeStore.get());
     fail(
       translator.messages.loader.launchFailedTitle,
@@ -174,7 +190,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.4.0',
+    version: '1.5.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),

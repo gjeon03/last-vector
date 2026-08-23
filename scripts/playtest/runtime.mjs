@@ -686,6 +686,9 @@ export async function openBootScenario(session, {
 
   const origin = new URL(session.target.url).origin;
   const requests = [];
+  const responses = [];
+  const consoleErrors = [];
+  const pageErrors = [];
   const context = await session.browser.newContext({
     viewport: session.options.viewport,
     deviceScaleFactor: session.options.deviceScaleFactor,
@@ -707,6 +710,20 @@ export async function openBootScenario(session, {
     for (const script of initScripts) await context.addInitScript(script);
     const page = await context.newPage();
     installPageObservers(page, session.observations);
+    page.on('console', (message) => {
+      if (message.type() !== 'error') return;
+      consoleErrors.push({ text: message.text(), location: message.location() });
+    });
+    page.on('pageerror', (error) => {
+      pageErrors.push({ name: error.name, message: error.message });
+    });
+    page.on('response', (response) => {
+      responses.push({
+        url: response.url(),
+        status: response.status(),
+        resourceType: response.request().resourceType(),
+      });
+    });
     const gameUrl = new URL(session.target.url);
     gameUrl.searchParams.set('seed', String(seed));
     const response = await page.goto(gameUrl.href, {
@@ -722,6 +739,9 @@ export async function openBootScenario(session, {
     return {
       page,
       requests,
+      responses,
+      consoleErrors,
+      pageErrors,
       close: async () => {
         if (closed) return;
         closed = true;

@@ -71,8 +71,9 @@ export const UI = {
   scanline: 'rgba(127, 232, 255, 0.05)',
 } as const;
 
-/** No web fonts: the build must stay fully offline and asset-free. */
+/** Self-hosted Hangul faces keep localized UI offline; Latin and numerals retain these stacks. */
 export const FONT = {
+  hangul: "'NanumSquare Neo Hangul'",
   mono: "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Roboto Mono', monospace",
   display:
     "'Helvetica Neue', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",

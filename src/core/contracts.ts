@@ -22,6 +22,7 @@ export type Phase =
   | 'finished';
 
 export type Locale = 'ko' | 'en';
+export type LocaleFontStatus = 'not-required' | 'ready' | 'fallback' | 'failed';
 export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
 
 export type GateNameMessage =

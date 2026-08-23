@@ -29,7 +29,14 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
-import { createTranslator, LocaleStore, type Translator } from '../i18n/index.ts';
+import {
+  createTranslator,
+  LocaleStore,
+  prepareLocaleFonts,
+  type LocaleFontPreparation,
+  type LocaleFontResult,
+  type Translator,
+} from '../i18n/index.ts';
 import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
@@ -196,6 +203,11 @@ interface Vantage {
 export interface GameOptions {
   root: HTMLElement;
   localeStore?: LocaleStore;
+  fonts?: {
+    result: LocaleFontResult;
+    settled: Promise<LocaleFontResult>;
+    cancel(): void;
+  };
   seed?: number;
 }
 
@@ -210,6 +222,9 @@ export class Game {
   private selectedLocale: Locale;
   private activeRunLocale: Locale | null = null;
   private activeTranslator: Translator;
+  private fontResult: LocaleFontResult;
+  private fontGeneration = 0;
+  private fontPreparation: Pick<LocaleFontPreparation, 'cancel'> | null = null;
   private readonly canvas: HTMLCanvasElement;
   private readonly farScene = new THREE.Scene();
   private readonly mainScene = new THREE.Scene();
@@ -369,6 +384,18 @@ export class Game {
     this.selectedLocale = this.localeStore.get();
     this.activeTranslator = createTranslator(this.selectedLocale);
     this.applyDocumentLocale(this.activeTranslator);
+    const bootstrapFonts = options.fonts;
+    if (bootstrapFonts?.result.locale === this.selectedLocale) {
+      this.fontResult = bootstrapFonts.result;
+      this.fontPreparation = bootstrapFonts;
+      this.observeFontResult(bootstrapFonts.settled, this.fontGeneration);
+    } else {
+      bootstrapFonts?.cancel();
+      this.fontResult = this.pendingFontResult(this.selectedLocale);
+      const preparation = prepareLocaleFonts(this.selectedLocale);
+      this.fontPreparation = preparation;
+      this.observeFontPreparation(preparation, this.fontGeneration);
+    }
 
     const seed = options.seed ?? hashSeed('cairn-drift-01');
     this.seed = seed;
@@ -688,7 +715,47 @@ export class Game {
     this.selectedLocale = locale;
     this.activeTranslator = createTranslator(locale);
     this.applyDocumentLocale(this.activeTranslator);
-    if (changed) this.replaceOverlay(this.activeTranslator);
+    if (changed) {
+      this.fontGeneration += 1;
+      this.fontPreparation?.cancel();
+      this.fontResult = this.pendingFontResult(locale);
+      const preparation = prepareLocaleFonts(locale);
+      this.fontPreparation = preparation;
+      this.observeFontPreparation(preparation, this.fontGeneration);
+      this.replaceOverlay(this.activeTranslator);
+    }
+  }
+
+  private pendingFontResult(locale: Locale): LocaleFontResult {
+    return locale === 'en'
+      ? { locale, status: 'not-required' }
+      : { locale, status: 'fallback' };
+  }
+
+  private observeFontPreparation(
+    preparation: LocaleFontPreparation,
+    generation: number,
+  ): void {
+    this.observeFontResult(preparation.initial, generation);
+    this.observeFontResult(preparation.settled, generation);
+  }
+
+  private observeFontResult(
+    promise: Promise<LocaleFontResult>,
+    generation: number,
+  ): void {
+    void promise.then(
+      (result) => {
+        if (generation !== this.fontGeneration
+          || result.locale !== this.selectedLocale
+          || this.disposed
+          || this.contextLost) return;
+        this.fontResult = result;
+      },
+      () => {
+        // LocaleFontPreparation promises are non-rejecting; observe defensively at this boundary.
+      },
+    );
   }
 
   private lockLocaleForRun(): void {
@@ -2010,6 +2077,9 @@ export class Game {
     // Preventing the default is what allows a restore event to ever fire.
     event.preventDefault();
     this.contextLost = true;
+    this.fontGeneration += 1;
+    this.fontPreparation?.cancel();
+    this.fontPreparation = null;
     this.cancelCockpitPrewarm?.();
     this.paused = true;
     this.audio.suspend();
@@ -2322,6 +2392,7 @@ export class Game {
       active: this.activeRunLocale,
       locked: this.activeRunLocale !== null,
       settingsSubscribers: this.settings.subscriberCount,
+      fontStatus: this.fontResult.status,
     };
   }
 
@@ -2588,6 +2659,9 @@ export class Game {
 
   dispose(): void {
     this.disposed = true;
+    this.fontGeneration += 1;
+    this.fontPreparation?.cancel();
+    this.fontPreparation = null;
     this.cancelCockpitPrewarm?.();
     this.releaseUnlock();
     this.cancelCountdownClear();

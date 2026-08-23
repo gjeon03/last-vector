@@ -9,6 +9,8 @@ export { DEFAULT_LOCALE, LOCALE_STORAGE_KEY, LocaleStore, isLocale } from './Loc
 export type { Locale, LocaleStorage } from './Locale.ts';
 export type { DomainMessage } from './domain.ts';
 export { en } from './en.ts';
+export { prepareLocaleFonts } from './fonts.ts';
+export type { LocaleFontPreparation, LocaleFontResult } from './fonts.ts';
 export { ko } from './ko.ts';
 export type { Messages } from './messages.ts';
 

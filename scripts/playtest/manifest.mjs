@@ -17,6 +17,7 @@
 const EXPECTED_CHECKS = {
   'i18n-contract': [
     'I18N.module-load',
+    'I18N.font-assets',
     'I18N.catalog-parity',
     'I18N.compile-time-arguments',
     'I18N.preserved-tokens',
@@ -31,6 +32,9 @@ const EXPECTED_CHECKS = {
     'API.contract',
     'I18N.default-korean',
     'I18N.persisted-english-clean-boot',
+    'I18N.font-network',
+    'I18N.font-lifecycle',
+    'I18N.font-fallback',
     'I18N.title-selector',
     'I18N.run-lock',
     'I18N.restart-lock',
@@ -62,6 +66,9 @@ const EXPECTED_CHECKS = {
     'API.contract',
     'I18N.default-korean',
     'I18N.persisted-english-clean-boot',
+    'I18N.font-network',
+    'I18N.font-lifecycle',
+    'I18N.font-fallback',
     'I18N.title-selector',
     'I18N.run-lock',
     'I18N.restart-lock',

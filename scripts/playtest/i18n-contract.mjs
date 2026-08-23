@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 
 import { Report, parseOptions, verify } from './runtime.mjs';
@@ -6,6 +7,7 @@ const EXPECTED_MODULES = [
   'Locale.ts',
   'domain.ts',
   'en.ts',
+  'fonts.ts',
   'index.ts',
   'ko.ts',
   'messages.ts',
@@ -54,12 +56,6 @@ await report.check(
     } catch (error) {
       verify(false, 'src/i18n is unavailable', { error: String(error) });
     }
-    verify(
-      JSON.stringify(names) === JSON.stringify(EXPECTED_MODULES),
-      'src/i18n module set differs from the contract',
-      { expected: EXPECTED_MODULES, actual: names },
-    );
-
     const failures = [];
     for (const name of names) {
       try {
@@ -69,7 +65,143 @@ await report.check(
       }
     }
     verify(failures.length === 0, 'One or more i18n modules failed to import', { failures });
+    verify(
+      JSON.stringify(names) === JSON.stringify(EXPECTED_MODULES),
+      'src/i18n module set differs from the contract',
+      { expected: EXPECTED_MODULES, actual: names },
+    );
     return { modules: names };
+  },
+);
+
+await report.check(
+  {
+    id: 'I18N.font-assets',
+    name: 'Vendored Korean fonts retain exact official bytes and complete provenance',
+    assertion:
+      'Exactly the three approved WOFF2 files match independent byte/hash fixtures, and NOTICE/OFL '
+      + 'record the official archive, mappings, copyright, Reserved Font Name, and complete license.',
+  },
+  async () => {
+    const fontsDirectory = new URL('../../public/fonts/', import.meta.url);
+    const expectedFonts = [
+      {
+        repository: 'NanumSquareNeo-Light.woff2',
+        archive: 'NanumSquareNeo/웹폰트/woff2/NanumSquareNeoTTF-aLt.woff2',
+        bytes: 339380,
+        sha256: 'f0da0f2329935d3f88f7e4162b68fcdc0be393f74398736ea0967594282ca4e2',
+      },
+      {
+        repository: 'NanumSquareNeo-Regular.woff2',
+        archive: 'NanumSquareNeo/웹폰트/woff2/NanumSquareNeoTTF-bRg.woff2',
+        bytes: 387104,
+        sha256: 'd13846b612acc829078aff4f91c272c637c08441b409d46bb1a4c802eb2967c3',
+      },
+      {
+        repository: 'NanumSquareNeo-Bold.woff2',
+        archive: 'NanumSquareNeo/웹폰트/woff2/NanumSquareNeoTTF-cBd.woff2',
+        bytes: 384992,
+        sha256: '97dfe9720fbed813fc988fcedbcf741e97eef9353515b2043717484ec0b90aa1',
+      },
+    ];
+    let names = [];
+    try {
+      names = (await readdir(fontsDirectory)).filter((name) => name.endsWith('.woff2')).sort();
+    } catch (error) {
+      verify(false, 'public/fonts is unavailable', { error: String(error) });
+    }
+    const expectedNames = expectedFonts.map(({ repository }) => repository).sort();
+    verify(JSON.stringify(names) === JSON.stringify(expectedNames),
+      'public/fonts/*.woff2 differs from the exact approved set.', { expectedNames, names });
+
+    const binaries = [];
+    for (const expected of expectedFonts) {
+      const bytes = await readFile(new URL(expected.repository, fontsDirectory));
+      const actual = {
+        repository: expected.repository,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        magic: bytes.subarray(0, 4).toString('ascii'),
+      };
+      verify(actual.bytes > 0 && actual.magic === 'wOF2',
+        `${expected.repository} is not a non-empty WOFF2 binary.`, { expected, actual });
+      verify(actual.bytes === expected.bytes && actual.sha256 === expected.sha256,
+        `${expected.repository} differs from the official byte fixture.`, { expected, actual });
+      binaries.push(actual);
+    }
+
+    const notice = await readFile(new URL('NOTICE.md', fontsDirectory), 'utf8');
+    const ofl = await readFile(new URL('OFL.txt', fontsDirectory), 'utf8');
+    const oflSha256 = createHash('sha256').update(ofl).digest('hex');
+    verify(oflSha256 === '975fb7229129ac94d05e9b4b7ae60b904f1c25f8b205d50e1c542507a586e5ea',
+      'OFL.txt differs from the exact NAVER declaration plus unmodified official English body.', {
+        expected: '975fb7229129ac94d05e9b4b7ae60b904f1c25f8b205d50e1c542507a586e5ea',
+        actual: oflSha256,
+      });
+    const requiredNoticeFacts = [
+      'https://campaign.naver.com/nanumsquare_neo/',
+      'https://campaign.naver.com/nanumsquare_neo/download/NaverNanumSquareNeo.zip',
+      'https://help.naver.com/service/30016/contents/18088?lang=ko&osType=PC',
+      'https://software.sil.org/downloads/r/oflt/OFL.txt',
+      '26,666,204',
+      'aba166203bf7637324f1d923bcf9501eb276cfca044c1ad714ba06b1e61a15cc',
+      '2026-08-24',
+      'Asia/Seoul',
+      'Copyright (c) 2010, NAVER Corporation',
+      'Copyright © 2022 NAVER Corp. All rights reserved. Font Designed by Sandoll Inc.',
+      'NanumSquare Neo Hangul',
+      '350',
+      '300',
+    ];
+    for (const fact of requiredNoticeFacts) {
+      verify(notice.includes(fact), `NOTICE.md omits required provenance fact: ${fact}`);
+    }
+    for (const expected of expectedFonts) {
+      for (const fact of [expected.repository, expected.archive, String(expected.bytes), expected.sha256]) {
+        verify(notice.normalize('NFC').includes(fact.normalize('NFC')),
+          `NOTICE.md omits mapping fact: ${fact}`);
+      }
+    }
+    verify(/archive.{0,80}(contains|included|ships with) no license/isu.test(notice)
+      || /no license.{0,80}(archive|ZIP)/isu.test(notice),
+    'NOTICE.md does not disclose that the upstream ZIP contains no license file.');
+    verify(/(byte|bytes).{0,80}unmodified|unmodified.{0,80}(byte|bytes)/isu.test(notice),
+      'NOTICE.md does not state that the font bytes are unmodified.');
+    verify(/filenames?.{0,120}(changed|renamed).{0,160}(alias|CSS)/isu.test(notice)
+      || /(alias|CSS).{0,120}(changed|renamed).{0,160}filenames?/isu.test(notice),
+    'NOTICE.md does not disclose the repository filename and CSS alias changes.');
+    verify(/embedded names?.{0,80}(unchanged|not changed)|(?:unchanged|not changed).{0,80}embedded names?/isu.test(notice),
+      'NOTICE.md does not state that embedded font names are unchanged.');
+    verify(/OS\/2.{0,80}350.{0,80}CSS.{0,80}300/isu.test(notice),
+      'NOTICE.md does not disclose the intentional Light OS/2 350 to CSS 300 mapping.');
+
+    const requiredOflFacts = [
+      'Copyright (c) 2010, NAVER Corporation',
+      'NanumSquareNeo',
+      'Reserved Font Name',
+      'SIL OPEN FONT LICENSE',
+      'Version 1.1 - 26 February 2007',
+      '1) Neither the Font Software nor any of its individual components,',
+      '2) Original or Modified Versions of the Font Software may be bundled',
+      '3) No Modified Version of the Font Software may use the Reserved Font',
+      '4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font',
+      '5) The Font Software, modified or unmodified, in part or in whole,',
+      'TERMINATION',
+      'DISCLAIMER',
+    ];
+    for (const fact of requiredOflFacts) {
+      verify(ofl.includes(fact), `OFL.txt omits required official text: ${fact}`);
+    }
+    verify(!/Copyright \(c\) <dates>, <Copyright Holder>/u.test(ofl)
+      && !/<Reserved Font Name>/u.test(ofl),
+    'OFL.txt retains a generic copyright or Reserved Font Name placeholder.');
+
+    return {
+      files: binaries,
+      noticeFacts: requiredNoticeFacts,
+      oflSections: requiredOflFacts.slice(3),
+      oflSha256,
+    };
   },
 );
 

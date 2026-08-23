@@ -42,7 +42,7 @@ export class Overlay {
 
     this.root = el('div', 'lv-root');
     this.root.dataset['phase'] = 'boot';
-    this.applyTokens();
+    this.applyTokens(translator);
 
     this.grain = el('div', 'lv-veneer');
     this.grain.setAttribute('aria-hidden', 'true');
@@ -74,7 +74,7 @@ export class Overlay {
 
   /* ------------------------------------------------------------------ tokens */
 
-  private applyTokens(): void {
+  private applyTokens(translator: Translator): void {
     const s = this.root.style;
     s.setProperty('--c-primary', UI.primary);
     s.setProperty('--c-primary-dim', UI.primaryDim);
@@ -89,8 +89,9 @@ export class Overlay {
     s.setProperty('--c-panel-solid', UI.panelSolid);
     s.setProperty('--c-hairline', UI.hairline);
     s.setProperty('--c-scanline', UI.scanline);
-    s.setProperty('--f-mono', FONT.mono);
-    s.setProperty('--f-display', FONT.display);
+    const hangul = translator.locale === 'ko' ? `${FONT.hangul}, ` : '';
+    s.setProperty('--f-mono', `${hangul}${FONT.mono}`);
+    s.setProperty('--f-display', `${hangul}${FONT.display}`);
   }
 
   /* ------------------------------------------------------------- host bridge */
