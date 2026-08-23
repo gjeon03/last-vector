@@ -98,9 +98,12 @@
 
 **Files:**
 
-- Create: `src/i18n/catalog.ts`
-- Create: `src/i18n/LocaleStore.ts`
+- Create: `src/i18n/Locale.ts`
+- Create: `src/i18n/messages.ts`
+- Create: `src/i18n/ko.ts`
+- Create: `src/i18n/en.ts`
 - Create: `src/i18n/domain.ts`
+- Create: `src/i18n/index.ts`
 - Create: `scripts/playtest/i18n-contract.mjs`
 - Modify: `src/core/contracts.ts`
 - Modify: `package.json`
@@ -399,7 +402,9 @@
 
 **Files:**
 
-- Modify: `src/i18n/catalog.ts`
+- Modify: `src/i18n/messages.ts`
+- Modify: `src/i18n/ko.ts`
+- Modify: `src/i18n/en.ts`
 - Modify: `src/ui/Screens.ts`
 - Modify: `src/ui/styles.css`
 - Modify: `src/boot.css`
@@ -488,7 +493,7 @@
 - [ ] **Step 7: Commit**
 
   ~~~bash
-  git add src/i18n/catalog.ts src/ui/Screens.ts src/ui/styles.css scripts/playtest/localization.mjs
+  git add src/i18n/messages.ts src/i18n/ko.ts src/i18n/en.ts src/ui/Screens.ts src/ui/styles.css scripts/playtest/localization.mjs
   git commit -m "feat: localize menus and run screens"
   ~~~
 
@@ -499,6 +504,9 @@
 **Files:**
 
 - Modify: `src/core/contracts.ts`
+- Modify: `src/i18n/messages.ts`
+- Modify: `src/i18n/ko.ts`
+- Modify: `src/i18n/en.ts`
 - Modify: `src/i18n/domain.ts`
 - Modify: `src/game/Game.ts`
 - Modify: `src/render/Gate.ts`
@@ -587,7 +595,7 @@
   ~~~
 
   ~~~bash
-  git add src/core/contracts.ts src/i18n/domain.ts src/game/Game.ts src/render/Gate.ts src/ui/Hud.ts scripts/playtest/i18n-contract.mjs scripts/playtest/localization.mjs
+  git add src/core/contracts.ts src/i18n/messages.ts src/i18n/ko.ts src/i18n/en.ts src/i18n/domain.ts src/game/Game.ts src/render/Gate.ts src/ui/Hud.ts scripts/playtest/i18n-contract.mjs scripts/playtest/localization.mjs
   git commit -m "feat: localize HUD telemetry without breaking legacy fields"
   ~~~
 
