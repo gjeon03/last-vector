@@ -388,12 +388,12 @@ async function runLocalization({ report, session, options }) {
     id: 'I18N.font-network',
     name: 'Korean fonts load locally while English boots request none',
     assertion:
-      'Separate clean contexts prove English has no Nanum request or alias, while Korean requests '
-      + 'exactly Light/Regular/Bold from the same origin with HTTP 200 and real resource evidence.',
+      'Pre-document observation proves English calls FontFaceSet.load zero times and requests no '
+      + 'NanumSquareNeo WOFF2 URL, while Korean makes exactly the declared calls and HTTP-200 requests.',
   }, async () => {
     const englishScenario = await openBootScenario(session, {
       localStorageSeed: { [LOCALE_STORAGE_KEY]: 'en' },
-      initScripts: [installBootProbe],
+      initScripts: [installBootProbe, installFontLoadObserver],
     });
     let english;
     try {
@@ -402,6 +402,7 @@ async function runLocalization({ report, session, options }) {
         locale: await localeSnapshot(englishScenario.page),
         boot: await englishScenario.page.evaluate(() => window.__LV_BOOT_PROBE ?? []),
         overlay: await overlayFontEvidence(englishScenario.page),
+        fontLoadCalls: await fontLoadCalls(englishScenario.page),
         requests: englishScenario.requests.filter(({ url }) => isNanumFontUrl(url)),
         responses: englishScenario.responses.filter(({ url }) => isNanumFontUrl(url)),
         consoleErrors: englishScenario.consoleErrors,
@@ -411,7 +412,9 @@ async function runLocalization({ report, session, options }) {
       await englishScenario.close();
     }
 
-    const koreanScenario = await openBootScenario(session, { initScripts: [installBootProbe] });
+    const koreanScenario = await openBootScenario(session, {
+      initScripts: [installBootProbe, installFontLoadObserver],
+    });
     let korean;
     try {
       await ready(koreanScenario.page, options.timeoutMs);
@@ -431,6 +434,7 @@ async function runLocalization({ report, session, options }) {
         locale: await localeSnapshot(koreanScenario.page),
         boot: await koreanScenario.page.evaluate(() => window.__LV_BOOT_PROBE ?? []),
         overlay: await overlayFontEvidence(koreanScenario.page),
+        fontLoadCalls: await fontLoadCalls(koreanScenario.page),
         requests: koreanScenario.requests.filter(({ resourceType, url }) =>
           resourceType === 'font' || /\.woff2(?:$|[?#])/u.test(url)),
         responses: koreanScenario.responses.filter(({ resourceType, url }) =>
@@ -446,14 +450,28 @@ async function runLocalization({ report, session, options }) {
     const expectedPaths = HANGUL_FONT_FILES.map((name) => `/fonts/${name}`).sort();
     const actualRequestPaths = korean.requests.map(({ url }) => new URL(url).pathname).sort();
     const actualResponsePaths = korean.responses.map(({ url }) => new URL(url).pathname).sort();
-    const evidence = { english, korean, expectedPaths, actualRequestPaths, actualResponsePaths };
+    const expectedFontLoadCalls = [300, 400, 700].map((weight) => ({
+      font: `${weight} 1em \"${HANGUL_FONT_ALIAS}\"`,
+      text: '가힣',
+      argumentCount: 2,
+    }));
+    const evidence = {
+      english,
+      korean,
+      expectedPaths,
+      actualRequestPaths,
+      actualResponsePaths,
+      expectedFontLoadCalls,
+    };
     verify(english.locale.fontStatus === 'not-required' && english.requests.length === 0
-      && english.responses.length === 0,
-    'Persisted English boot requested or required a Korean font.', evidence);
+      && english.responses.length === 0 && english.fontLoadCalls.length === 0,
+    'Persisted English boot requested a Nanum font or called FontFaceSet.load.', evidence);
     verify(!fontEvidenceContainsAlias(english.boot, english.overlay),
       'Persisted English computed stacks contain the Korean font alias.', evidence);
     verify(korean.locale.fontStatus === 'ready',
       'Fresh Korean boot did not settle all declared font weights as ready.', evidence);
+    verify(JSON.stringify(korean.fontLoadCalls) === JSON.stringify(expectedFontLoadCalls),
+      'Fresh Korean boot did not make exactly the declared three explicit Hangul load calls.', evidence);
     verify(JSON.stringify(actualRequestPaths) === JSON.stringify(expectedPaths)
       && korean.requests.every(({ resourceType, url }) => resourceType === 'font'
         && new URL(url).origin === korean.origin),
@@ -480,8 +498,8 @@ async function runLocalization({ report, session, options }) {
     id: 'I18N.font-lifecycle',
     name: 'Font preparation is bounded, late-safe, and generation-safe',
     assertion:
-      'Pre-document FontFaceSet instrumentation proves fallback then late ready, stale en-ko-en '
-      + 'completion rejection, and same-locale title return without duplicate loads or readiness regression.',
+      'Pre-document FontFaceSet instrumentation proves fallback then controlled late ready or failed, '
+      + 'stale en-ko-en rejection, and same-locale title return without duplicate loads or regression.',
   }, async () => {
     const delayedScenario = await openBootScenario(session, {
       initScripts: [installHeldFontLoads],
@@ -524,6 +542,41 @@ async function runLocalization({ report, session, options }) {
       await delayedScenario.close();
     }
 
+    const lateFailureScenario = await openBootScenario(session, {
+      initScripts: [installHeldFontLoads],
+    });
+    let lateFailure;
+    try {
+      await ready(lateFailureScenario.page, options.timeoutMs);
+      const fallback = await localeSnapshot(lateFailureScenario.page);
+      const held = await fontControlSnapshot(lateFailureScenario.page);
+      verify(fallback.fontStatus === 'fallback' && held.calls.length === 3,
+        'Held Korean boot did not reach fallback before controlled late rejection.', {
+          fallback,
+          held,
+        });
+      await rejectHeldFonts(lateFailureScenario.page, 'controlled late Korean font rejection');
+      await lateFailureScenario.page.waitForFunction(
+        () => window.__LV?.locale().fontStatus === 'failed',
+        undefined,
+        { timeout: 10_000 },
+      );
+      const failed = await localeSnapshot(lateFailureScenario.page);
+      const rejected = await fontControlSnapshot(lateFailureScenario.page);
+      const errors = await callHarness(lateFailureScenario.page, 'errors');
+      lateFailure = {
+        fallback,
+        held,
+        failed,
+        rejected,
+        errors,
+        consoleErrors: lateFailureScenario.consoleErrors,
+        pageErrors: lateFailureScenario.pageErrors,
+      };
+    } finally {
+      await lateFailureScenario.close();
+    }
+
     const rapidScenario = await openBootScenario(session, {
       localStorageSeed: { [LOCALE_STORAGE_KEY]: 'en' },
       initScripts: [installHeldFontLoads],
@@ -558,7 +611,7 @@ async function runLocalization({ report, session, options }) {
       await rapidScenario.close();
     }
 
-    const evidence = { delayed, rapid };
+    const evidence = { delayed, lateFailure, rapid };
     verify(delayed.fallback.fontStatus === 'fallback'
       && delayed.held.calls.length === 3
       && delayed.held.calls.every(({ text, status }) => text === '가힣' && status === 'held'),
@@ -569,6 +622,14 @@ async function runLocalization({ report, session, options }) {
     verify(delayed.afterTitleReturn.fontStatus === 'ready'
       && delayed.afterTitleReturnControl.calls.length === delayed.beforeTitleReturnCalls,
     'Returning to title with the same locale reissued loads or regressed readiness.', evidence);
+    verify(lateFailure.fallback.fontStatus === 'fallback'
+      && lateFailure.held.calls.length === 3
+      && lateFailure.held.calls.every(({ text, status }) => text === '가힣' && status === 'held')
+      && lateFailure.failed.fontStatus === 'failed'
+      && lateFailure.rejected.calls.length === 3
+      && lateFailure.rejected.calls.every(({ status, error }) => status === 'rejected'
+        && error === 'controlled late Korean font rejection'),
+    'Controlled late rejection did not transition bounded fallback to failed.', evidence);
     verify(rapid.initial.fontStatus === 'not-required'
       && rapid.koreanPending.selected === 'ko' && rapid.koreanPending.fontStatus === 'fallback'
       && rapid.held.calls.length === 3,
@@ -579,8 +640,9 @@ async function runLocalization({ report, session, options }) {
       && rapid.englishAfterRelease.fontStatus === 'not-required'
       && rapid.englishAfterRelease.documentLang === 'en',
     'A stale Korean completion contaminated the final English title state.', evidence);
-    verify(delayed.errors.length === 0 && rapid.errors.length === 0
+    verify(delayed.errors.length === 0 && lateFailure.errors.length === 0 && rapid.errors.length === 0
       && delayed.consoleErrors.length === 0 && delayed.pageErrors.length === 0
+      && lateFailure.consoleErrors.length === 0 && lateFailure.pageErrors.length === 0
       && rapid.consoleErrors.length === 0 && rapid.pageErrors.length === 0,
     'Font lifecycle scenarios emitted a runtime, console, page, or unhandled-rejection error.', evidence);
     return evidence;
@@ -590,8 +652,8 @@ async function runLocalization({ report, session, options }) {
     id: 'I18N.font-fallback',
     name: 'Font failure keeps Korean UI playable and both boot locales styled correctly',
     assertion:
-      'Rejected Korean FontFaceSet loads settle failed without deadlock or errors; Korean loader/fatal '
-      + 'stacks retain the Hangul alias while independent English loader/fatal stacks exclude it.',
+      'Rejected or empty Korean FontFaceSet results settle failed without deadlock or errors; Korean '
+      + 'loader/fatal stacks retain the alias while independent English stacks exclude it.',
   }, async () => {
     const failureScenario = await openBootScenario(session, {
       initScripts: [installBootProbe, installForcedFontFailure],
@@ -625,6 +687,33 @@ async function runLocalization({ report, session, options }) {
       await failureScenario.close();
     }
 
+    const emptyScenario = await openBootScenario(session, {
+      initScripts: [installEmptyFontResult],
+    });
+    let empty;
+    try {
+      await ready(emptyScenario.page, options.timeoutMs);
+      empty = await emptyScenario.page.evaluate(() => {
+        const begin = document.querySelector('[data-view="title"][data-open="1"] [data-action="begin"]');
+        const root = document.querySelector('.lv-root');
+        return {
+          locale: window.__LV?.locale(),
+          calls: window.__LV_EMPTY_FONT_CONTROL?.snapshot().calls ?? [],
+          visibleText: root?.textContent?.trim() ?? '',
+          begin: begin instanceof HTMLButtonElement ? {
+            text: begin.textContent ?? '',
+            disabled: begin.disabled,
+            visible: begin.getClientRects().length > 0,
+          } : null,
+        };
+      });
+      empty.errors = await callHarness(emptyScenario.page, 'errors');
+      empty.consoleErrors = emptyScenario.consoleErrors;
+      empty.pageErrors = emptyScenario.pageErrors;
+    } finally {
+      await emptyScenario.close();
+    }
+
     const fatal = {};
     for (const locale of ['ko', 'en']) {
       const fatalScenario = await openBootScenario(session, {
@@ -653,13 +742,26 @@ async function runLocalization({ report, session, options }) {
       }
     }
 
-    const evidence = { failure, fatal };
+    const evidence = { failure, empty, fatal };
     verify(failure.locale?.selected === 'ko' && failure.locale?.fontStatus === 'failed'
       && failure.failureCalls.length === 3,
     'Rejected Korean font loads did not settle the public state as failed.', evidence);
     verify(failure.visibleText.length > 0 && failure.begin?.text.includes('비행 시작')
       && failure.begin.visible && !failure.begin.disabled,
     'Korean fallback title copy or BEGIN control is empty, hidden, or disabled.', evidence);
+    const emptyCalls = empty.calls.filter(({ status }) => status === 'empty');
+    verify(empty.locale?.selected === 'ko' && empty.locale?.fontStatus === 'failed'
+      && empty.calls.length === 3
+      && empty.calls.every(({ text }) => text === '가힣')
+      && emptyCalls.length === 1
+      && emptyCalls[0].font === `400 1em \"${HANGUL_FONT_ALIAS}\"`
+      && emptyCalls[0].faceCount === 0
+      && empty.calls.every(({ status, faceCount }) => status === 'empty'
+        || (status === 'fulfilled' && faceCount > 0)),
+    'A declared empty face result did not deterministically settle Korean fonts as failed.', evidence);
+    verify(empty.visibleText.length > 0 && empty.begin?.text.includes('비행 시작')
+      && empty.begin.visible && !empty.begin.disabled,
+    'The empty-face failure did not preserve a playable Korean title.', evidence);
     verify(failure.boot.some(({ kind, fontFamily, bodyFontFamily }) => kind === 'loader'
       && fontFamily.includes(HANGUL_FONT_ALIAS) && bodyFontFamily.includes(HANGUL_FONT_ALIAS))
       && failure.overlay?.display.includes(HANGUL_FONT_ALIAS)
@@ -672,11 +774,13 @@ async function runLocalization({ report, session, options }) {
       && !fatal.en.dom.fontFamily.includes(HANGUL_FONT_ALIAS)
       && fatal.en.requests.length === 0 && fatal.en.dom.failureCalls.length === 0,
     'The English fatal path contains the Hangul alias or attempted Korean font work.', evidence);
-    verify(failure.errors.length === 0 && failure.consoleErrors.length === 0
+    verify(failure.errors.length === 0 && empty.errors.length === 0
+      && failure.consoleErrors.length === 0
       && failure.pageErrors.length === 0
+      && empty.consoleErrors.length === 0 && empty.pageErrors.length === 0
       && fatal.ko.consoleErrors.length === 0 && fatal.ko.pageErrors.length === 0
       && fatal.en.consoleErrors.length === 0 && fatal.en.pageErrors.length === 0,
-    'Forced font failure emitted runtime, console, page, or unhandled-rejection errors.', evidence);
+    'A font failure scenario emitted a runtime, console, page, or unhandled-rejection error.', evidence);
     return evidence;
   });
 
@@ -1723,7 +1827,11 @@ async function openLocaleScenario(session, locale, extra = {}) {
 }
 
 function isNanumFontUrl(value) {
-  return /\/fonts\/NanumSquareNeo-(Light|Regular|Bold)\.woff2(?:$|[?#])/u.test(value);
+  return /NanumSquareNeo[^?#]*\.woff2(?:$|[?#])/u.test(value);
+}
+
+async function fontLoadCalls(page) {
+  return page.evaluate(() => window.__LV_FONT_LOAD_CALLS ?? []);
 }
 
 async function overlayFontEvidence(page) {
@@ -1766,6 +1874,13 @@ async function releaseHeldFonts(page) {
     if (!window.__LV_FONT_CONTROL) throw new Error('Font load controller is missing.');
     await window.__LV_FONT_CONTROL.releaseAll();
   });
+}
+
+async function rejectHeldFonts(page, message) {
+  await page.evaluate(async (controlledMessage) => {
+    if (!window.__LV_FONT_CONTROL) throw new Error('Font load controller is missing.');
+    await window.__LV_FONT_CONTROL.rejectAll(controlledMessage);
+  }, message);
 }
 
 async function hudEventSnapshot(page) {
@@ -3126,6 +3241,19 @@ function installBootProbe() {
   }).observe(document, { childList: true, subtree: true });
 }
 
+function installFontLoadObserver() {
+  const nativeLoad = FontFaceSet.prototype.load;
+  window.__LV_FONT_LOAD_CALLS = [];
+  FontFaceSet.prototype.load = function observedFontLoad(font, text) {
+    window.__LV_FONT_LOAD_CALLS.push({
+      font: String(font),
+      text: String(text ?? ''),
+      argumentCount: arguments.length,
+    });
+    return Reflect.apply(nativeLoad, this, arguments);
+  };
+}
+
 function installHeldFontLoads() {
   const nativeLoad = FontFaceSet.prototype.load;
   const calls = [];
@@ -3173,6 +3301,17 @@ function installHeldFontLoads() {
           );
         return entry.completion;
       },
+      reject(message) {
+        if (entry.completion) return entry.completion;
+        const error = new Error(message);
+        call.status = 'rejected';
+        call.error = error.message;
+        entry.completion = Promise.resolve().then(() => {
+          rejectOuter(error);
+          return { status: 'rejected', error: error.message };
+        });
+        return entry.completion;
+      },
     };
     pending.push(entry);
     return outer;
@@ -3182,6 +3321,49 @@ function installHeldFontLoads() {
     async releaseAll() {
       await Promise.all(pending.map((entry) => entry.release()));
     },
+    async rejectAll(message) {
+      await Promise.all(pending.map((entry) => entry.reject(message)));
+    },
+    snapshot() {
+      return { calls: calls.map((call) => ({ ...call })) };
+    },
+  };
+}
+
+function installEmptyFontResult() {
+  const nativeLoad = FontFaceSet.prototype.load;
+  const calls = [];
+  FontFaceSet.prototype.load = function controlledEmptyFontLoad(font, text) {
+    if (!String(font).includes('NanumSquare Neo Hangul')) {
+      return Reflect.apply(nativeLoad, this, arguments);
+    }
+    const call = {
+      font: String(font),
+      text: String(text ?? ''),
+      status: 'loading',
+      faceCount: null,
+      error: null,
+    };
+    calls.push(call);
+    if (String(font) === '400 1em "NanumSquare Neo Hangul"') {
+      call.status = 'empty';
+      call.faceCount = 0;
+      return Promise.resolve([]);
+    }
+    return Reflect.apply(nativeLoad, this, arguments).then(
+      (faces) => {
+        call.status = 'fulfilled';
+        call.faceCount = faces.length;
+        return faces;
+      },
+      (error) => {
+        call.status = 'rejected';
+        call.error = String(error);
+        throw error;
+      },
+    );
+  };
+  window.__LV_EMPTY_FONT_CONTROL = {
     snapshot() {
       return { calls: calls.map((call) => ({ ...call })) };
     },
