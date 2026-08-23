@@ -21,6 +21,35 @@ export type Phase =
   | 'failed'
   | 'finished';
 
+export type Locale = 'ko' | 'en';
+export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
+
+export type GateNameMessage =
+  | { type: 'gate-name.terminus-approach' };
+
+export type CalloutTitleMessage =
+  | { type: 'callout-title.pointer-lock-unavailable' }
+  | { type: 'callout-title.camera-view'; mode: CameraMode }
+  | { type: 'callout-title.engage' }
+  | { type: 'callout-title.hull-impact' }
+  | { type: 'callout-title.boost-depleted' }
+  | { type: 'callout-title.gate-cleared'; accuracy: GateAccuracy }
+  | { type: 'callout-title.gate-missed' };
+
+export type CalloutSubMessage =
+  | { type: 'callout-sub.keyboard-flight-available' }
+  | { type: 'callout-sub.camera-active'; mode: CameraMode }
+  | { type: 'callout-sub.boost-recharging' }
+  | { type: 'callout-sub.gate-progress'; remaining: number }
+  | { type: 'callout-sub.gate-realign' };
+
+export type LogMessage =
+  | { type: 'log.pointer-lock-refused'; reason: string }
+  | { type: 'log.hull-contact'; percent: number }
+  | { type: 'log.boost-depleted' }
+  | { type: 'log.gate-cleared'; gate: number; seconds: number }
+  | { type: 'log.gate-missed'; gate: number };
+
 export interface ScreenAnchor {
   /** Normalised device coords, -1..1, x right / y up. Valid only when `onScreen`. */
   x: number;
@@ -37,6 +66,7 @@ export interface GateTelemetry {
   index: number;
   total: number;
   name: string;
+  nameMessage?: GateNameMessage;
   /** Metres from ship to the next gate centre. */
   distance: number;
   anchor: ScreenAnchor;
@@ -125,7 +155,9 @@ export interface Telemetry {
 export interface Callout {
   id: number;
   title: string;
+  titleMessage?: CalloutTitleMessage;
   sub?: string;
+  subMessage?: CalloutSubMessage;
   tone: 'neutral' | 'good' | 'warn' | 'bad';
   /** Seconds remaining. */
   ttl: number;
@@ -135,6 +167,7 @@ export interface Callout {
 export interface LogLine {
   id: number;
   text: string;
+  message?: LogMessage;
   tone: 'neutral' | 'good' | 'warn' | 'bad';
   /** Seconds since spawn. */
   age: number;
