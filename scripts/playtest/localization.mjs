@@ -766,12 +766,37 @@ async function runLocalization({ report, session, options }) {
       'The screens tree contains no executable/media nodes and catalog-copy children are only '
       + 'text nodes or explicit lang=en spans across menus, countdown, pause, results, and failure.',
   }, async () => {
+    const probeScenario = await openLocaleScenario(session, 'ko');
+    let scopeProbe;
+    try {
+      await ready(probeScenario.page, options.timeoutMs);
+      await probeScenario.page.evaluate(() => {
+        const screens = document.querySelector('.lv-screens');
+        if (!(screens instanceof HTMLElement)) throw new Error('Screens root is missing.');
+        const probe = document.createElement('img');
+        probe.dataset['safeDomProbe'] = 'direct-child';
+        probe.alt = '';
+        screens.appendChild(probe);
+      });
+      try {
+        scopeProbe = await safeDomSnapshot(probeScenario.page, 'title');
+        verify(scopeProbe.forbidden.some((entry) => entry.probe === 'direct-child'),
+          'The safe-DOM helper did not detect a forbidden direct child of .lv-screens.', scopeProbe);
+      } finally {
+        await probeScenario.page.evaluate(() => {
+          document.querySelector('[data-safe-dom-probe="direct-child"]')?.remove();
+        });
+      }
+    } finally {
+      await probeScenario.close();
+    }
+
     const scenario = await openLocaleScenario(session, 'ko', {
       localStorageSeed: { [BEST_STORAGE_KEY]: BEST_STORAGE_VALUE },
     });
     try {
       await ready(scenario.page, options.timeoutMs);
-      const evidence = { snapshots: [] };
+      const evidence = { scopeProbe, snapshots: [] };
       evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'title'));
       await clickAction(scenario.page, 'title', 'settings');
       evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'settings'));
@@ -1282,9 +1307,19 @@ async function safeDomSnapshot(page, phase) {
   const selectors = selectorsByPhase[phase];
   verify(Array.isArray(selectors), `No safe-DOM selector manifest exists for ${phase}.`);
   const evidence = await page.evaluate(({ currentPhase, copySelectors }) => {
+    const screens = document.querySelector('.lv-screens');
+    if (!(screens instanceof HTMLElement)) throw new Error('Screens root is missing.');
     const viewName = currentPhase === 'failure' ? 'results' : currentPhase;
-    const view = document.querySelector(`[data-view="${viewName}"][data-open="1"]`);
+    const view = screens.querySelector(`[data-view="${viewName}"][data-open="1"]`);
     if (!(view instanceof HTMLElement)) throw new Error(`Open ${currentPhase} view is missing.`);
+    const forbidden = Array.from(screens.querySelectorAll('script, img, iframe'), (node) => ({
+      tag: node.tagName.toLowerCase(),
+      location: node.parentElement === screens
+        ? 'screens-direct-child'
+        : node.closest('[data-view]')?.getAttribute('data-view') ?? 'screens-descendant',
+      probe: node.getAttribute('data-safe-dom-probe'),
+      html: node.outerHTML,
+    }));
     const invalidCopyChildren = [];
     const counts = {};
     for (const selector of copySelectors) {
@@ -1301,7 +1336,7 @@ async function safeDomSnapshot(page, phase) {
     }
     return {
       phase: currentPhase,
-      forbidden: Array.from(view.querySelectorAll('script, img, iframe'), (node) => node.outerHTML),
+      forbidden,
       invalidCopyChildren,
       counts,
     };
