@@ -179,8 +179,8 @@ async function runPlaytest({ report, session, options }) {
     verify(e.repeatedView.shiftC.input.boost === true,
       'Shift+KeyC toggled the camera but dropped the held boost modifier.', e);
     verify(e.menuHeldW.initialPhase === 'title'
-      && e.menuHeldW.afterSFocus === 'SETTINGS'
-      && e.menuHeldW.afterWFocus === 'BEGIN RUN'
+      && e.menuHeldW.afterSFocus === 'settings'
+      && e.menuHeldW.afterWFocus === 'begin'
       && e.menuHeldW.afterFirstEnter === 'briefing'
       && e.menuHeldW.afterSecondEnter === 'countdown',
     'The menu-held W probe did not traverse title -> briefing -> countdown through the real keyboard UI path.', e);
@@ -635,15 +635,13 @@ async function runPlaytest({ report, session, options }) {
     ),
     'Real ArrowUp/ArrowLeft/W/D/E/R/Shift plus Space-code brake input changed ship physics after failure.', evidence);
 
-    const failureText = evidence.lethal.ui.text.toUpperCase();
     verify(evidence.lethal.ui.screenOpen === '1'
-      && evidence.lethal.ui.bodyState === 'failure'
-      && ['HULL BREACH', 'TIME', 'RETRY'].every((token) => failureText.includes(token)),
-    'The visible terminal UI does not identify the breach, failure time, and retry action.', evidence);
-    verify(evidence.lethal.ui.buttonLabels.length === 1
-      && evidence.lethal.ui.buttonLabels[0] === 'RETRY'
+      && evidence.lethal.ui.bodyState === 'failure',
+    'The failure result view is not open with its failure state.', evidence);
+    verify(evidence.lethal.ui.buttonActions.length === 1
+      && evidence.lethal.ui.buttonActions[0] === 'retry'
       && evidence.lethal.ui.buttonShortcuts[0] === 'n',
-    'Failure UI does not expose exactly one RETRY button with the N shortcut.', evidence);
+    'Failure UI does not expose exactly one retry action with the N shortcut.', evidence);
 
     verify(evidence.restart.immediate.phase === 'countdown'
       && evidence.restart.immediate.hull === 1
@@ -666,13 +664,13 @@ async function runPlaytest({ report, session, options }) {
 
     verify(evidence.staleGo.go.phase === 'flying'
       && evidence.staleGo.goUi.screenOpen === '1'
-      && evidence.staleGo.goUi.number === 'GO',
+      && evidence.staleGo.goUi.value === 'go',
     'The timer regression setup did not reach the visible GO card.', evidence);
     verify(evidence.staleGo.restartDelayMs >= 0 && evidence.staleGo.restartDelayMs < 700,
       'Failure/retry did not occur while the old 700 ms GO-dismiss timer was still pending.', evidence);
     verify(evidence.staleGo.afterWait.phase === 'countdown'
       && evidence.staleGo.afterWaitUi.screenOpen === '1'
-      && evidence.staleGo.afterWaitUi.number === '3',
+      && evidence.staleGo.afterWaitUi.value === '3',
     'An old run\'s GO-dismiss timer hid the newly restarted countdown.', evidence);
 
     verify(evidence.bestAfter === evidence.bestBefore,
@@ -694,65 +692,116 @@ async function runPlaytest({ report, session, options }) {
     name: 'A player can reach a run by clicking the real buttons',
     criteria: [criterion('M6', 'full', 'Drives the title -> briefing -> countdown -> flying path through the DOM, which no harness-driven check exercises.')],
     assertion:
-      'From a cold load the phase is title; clicking BEGIN RUN reaches the briefing; the briefing '
-      + 'names mouse steering, arrow-key steering, SHIFT boost, SPACE brake and the C first-person '
-      + 'cockpit toggle; clicking ENGAGE reaches the countdown and then flying.',
+      'From a cold load the phase is title; semantic view/action/control/setting contracts identify '
+      + 'the title, briefing, countdown, and HUD controls; clicking begin reaches the briefing and '
+      + 'clicking engage reaches the countdown and then flying.',
   }, async () => {
-    await reloadHarness(page, options);
+    await reloadHarness(page, options.timeoutMs);
     const atLoad = await callHarness(page, 'phase');
     verify(atLoad === 'title', `Cold load should present the title, got "${atLoad}".`, { atLoad });
+
+    const expectedViews = ['title', 'briefing', 'countdown', 'pause', 'settings', 'controls', 'results'];
+    const viewContracts = await page.evaluate(() => Array.from(
+      document.querySelectorAll('.lv-screen'),
+      (view) => view.getAttribute('data-view'),
+    ));
+    verify(JSON.stringify(viewContracts) === JSON.stringify(expectedViews),
+      'Screens do not expose the stable data-view contract.', { viewContracts, expectedViews });
 
     // A measured mouse click, not locator.click(). Playwright's locator.click() calls
     // DOM.scrollIntoViewIfNeeded, which displaces the overlay stack 4 times in 6 mid-animation —
     // so this check's own captures could photograph a broken layout and mislead the next
     // reviewer, which is the same class of defect as photographing a transition.
-    const click = async (label) => {
-      const button = page.locator(`button:has-text("${label}"), [role=button]:has-text("${label}")`).first();
+    const click = async (view, action) => {
+      const selector = `[data-view="${view}"][data-open="1"] [data-action="${action}"]`;
+      const button = page.locator(selector).first();
       await button.waitFor({ state: 'visible', timeout: options.timeoutMs });
       const box = await button.boundingBox();
-      verify(box, `Could not measure the "${label}" button.`, { label });
+      verify(box, `Could not measure the ${view}/${action} action.`, { view, action, selector });
       await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       const scrolled = await page.evaluate(() => document.documentElement.scrollTop
         + document.body.scrollTop + (document.querySelector('.lv-root')?.scrollTop ?? 0));
-      verify(scrolled === 0, `Clicking "${label}" scrolled the overlay stack by ${scrolled}px.`, { label, scrolled });
+      verify(scrolled === 0, `Clicking ${view}/${action} scrolled the overlay stack by ${scrolled}px.`, { view, action, scrolled });
     };
 
-    await click('BEGIN RUN');
+    await click('title', 'settings');
+    const settingContracts = await page.evaluate(() => Array.from(
+      document.querySelectorAll('[data-view="settings"][data-open="1"] [data-setting]'),
+      (control) => ({
+        setting: control.getAttribute('data-setting'),
+        value: control.getAttribute('data-value'),
+      }),
+    ));
+    const expectedSettings = [
+      'assistLevel', 'cameraMode', 'mouseSensitivity', 'invertY', 'fov', 'cameraShake',
+      'quality', 'renderScale', 'showFps', 'motionBlur', 'filmGrain', 'chromaticAberration',
+      'masterVolume', 'musicVolume',
+    ];
+    verify(JSON.stringify(settingContracts.map((control) => control.setting))
+      === JSON.stringify(expectedSettings)
+      && settingContracts.every((control) => control.value !== null && control.value !== ''),
+    'Settings controls do not expose their stable data-setting and raw data-value contracts.',
+    { settingContracts, expectedSettings });
+    await click('settings', 'return');
+
+    await click('title', 'controls');
+    const controlContracts = await page.evaluate(() => Array.from(
+      document.querySelectorAll('[data-view="controls"][data-open="1"] [data-control]'),
+      (row) => row.getAttribute('data-control'),
+    ));
+    const expectedControls = [
+      'mouse-steer', 'throttle', 'roll', 'boost', 'brake', 'strafe-horizontal',
+      'strafe-vertical', 'keyboard-steer', 'camera-toggle', 'pause', 'restart',
+    ];
+    verify(JSON.stringify(controlContracts) === JSON.stringify(expectedControls),
+      'Controls rows do not expose stable data-control identifiers.', { controlContracts, expectedControls });
+    await click('controls', 'return');
+
+    await click('title', 'begin');
     await page.waitForFunction(() => window.__LV?.phase() === 'briefing', null, { timeout: options.timeoutMs });
 
-    // Read only the open primer and preserve each binding/action pair. Searching document.body
+    // Read only the open primer and preserve each binding/control pair. Searching document.body
     // could pass from the hidden full CONTROLS screen even when the first-run panel omitted a row.
     const primerRows = await page.evaluate(() => Array.from(
-      document.querySelectorAll('.lv-screen--briefing[data-open="1"] .lv-primer-list li'),
+      document.querySelectorAll('[data-view="briefing"][data-open="1"] .lv-primer-list [data-control]'),
       (row) => ({
+        control: row.getAttribute('data-control'),
         keys: Array.from(row.querySelectorAll('kbd'), (key) => key.textContent?.trim() ?? ''),
-        action: row.lastElementChild?.textContent?.trim().toUpperCase() ?? '',
       }),
     ));
     const requiredPrimerRows = [
-      { keys: ['MOUSE'], action: 'STEER' },
-      { keys: ['SHIFT', 'LMB'], action: 'BOOST' },
-      { keys: ['SPACE', 'RMB'], action: 'BRAKE' },
-      { keys: ['↑', '↓', '←', '→'], action: 'WITHOUT MOUSE' },
-      { keys: ['C'], action: 'TOGGLE FIRST-PERSON COCKPIT' },
+      { control: 'mouse-steer', keys: ['MOUSE'] },
+      { control: 'boost', keys: ['SHIFT', 'LMB'] },
+      { control: 'brake', keys: ['SPACE', 'RMB'] },
+      { control: 'keyboard-steer', keys: ['↑', '↓', '←', '→'] },
+      { control: 'camera-toggle', keys: ['C'] },
     ];
     const missingPrimerRows = requiredPrimerRows.filter((required) => !primerRows.some((actual) =>
-      required.keys.every((key) => actual.keys.includes(key)) && actual.action.includes(required.action)));
+      actual.control === required.control && required.keys.every((key) => actual.keys.includes(key))));
     verify(missingPrimerRows.length === 0,
-      `Briefing omits required control rows: ${missingPrimerRows.map((row) => row.action).join(', ')}.`,
+      `Briefing omits required semantic control rows: ${missingPrimerRows.map((row) => row.control).join(', ')}.`,
       { primerRows, missingPrimerRows });
+
+    const briefingControls = await page.evaluate(() => Array.from(
+      document.querySelectorAll('[data-view="briefing"][data-open="1"] [data-control]'),
+      (row) => row.getAttribute('data-control'),
+    ));
+    const expectedBriefingControls = [
+      'mouse-steer', 'throttle', 'roll', 'boost', 'brake', 'keyboard-steer', 'camera-toggle',
+    ];
+    verify(JSON.stringify(briefingControls) === JSON.stringify(expectedBriefingControls),
+      'Briefing control rows are missing data-control identifiers.', { briefingControls });
 
     // Portrait turns the desktop columns into a scroll stack. The primer is the lesson the
     // player needs before ENGAGE, so it must begin in the initial viewport rather than below the
     // fiction, and the launch action must remain available outside the inner scroller.
     await page.setViewportSize({ width: 375, height: 667 });
     const portraitLayout = await page.evaluate(() => {
-      const view = document.querySelector('.lv-screen--briefing[data-open="1"]');
+      const view = document.querySelector('[data-view="briefing"][data-open="1"]');
       const panel = view?.querySelector('.lv-brief');
       const cols = view?.querySelector('.lv-brief-cols');
       const primer = view?.querySelector('.lv-primer');
-      const engage = Array.from(view?.querySelectorAll('button') ?? [])
-        .find((button) => button.textContent?.includes('ENGAGE'));
+      const engage = view?.querySelector('[data-action="engage"]');
       if (!panel || !cols || !primer || !engage) return null;
       const panelBox = panel.getBoundingClientRect();
       const colsBox = cols.getBoundingClientRect();
@@ -775,11 +824,22 @@ async function runPlaytest({ report, session, options }) {
     { portraitLayout });
     await page.setViewportSize(options.viewport);
 
-    await click('ENGAGE');
+    await click('briefing', 'engage');
     await page.waitForFunction(() => ['countdown', 'flying'].includes(window.__LV?.phase()), null, { timeout: options.timeoutMs });
     await page.waitForFunction(() => window.__LV?.phase() === 'flying', null, { timeout: options.timeoutMs });
+    await page.waitForTimeout(800);
+    const closedCountdown = await countdownUiSnapshot(page);
+    verify(closedCountdown.screenOpen === '0' && closedCountdown.value === null,
+      'Closing the countdown did not clear its data-countdown-value contract.', closedCountdown);
 
-    return { atLoad, reachedBriefing: true, primerRows, portraitLayout, reachedFlying: true };
+    return {
+      atLoad,
+      reachedBriefing: true,
+      primerRows,
+      portraitLayout,
+      closedCountdown,
+      reachedFlying: true,
+    };
   });
 
   // hazard() and channelExcursion() were added to the harness with docstrings naming the exact
@@ -935,11 +995,11 @@ async function runPlaytest({ report, session, options }) {
     await callHarness(page, 'step', [240, 1 / 60]);
     const hudScale = await page.evaluate(() => {
       const row = document.querySelector('.lv-bar--boost');
-      const capacity = row?.querySelector('.lv-bar-cap');
       const ticks = [...(row?.querySelectorAll('.lv-bar-tick') ?? [])];
       return {
-        capacity: capacity?.textContent ?? '',
-        aria: row?.getAttribute('aria-label') ?? '',
+        usableSeconds: row?.getAttribute('data-usable-seconds') ?? null,
+        rearmPercent: row?.getAttribute('data-rearm-percent') ?? null,
+        availability: row?.getAttribute('data-availability') ?? null,
         tickPositions: ticks.map((tick) => tick.style.getPropertyValue('--i')),
       };
     });
@@ -959,9 +1019,9 @@ async function runPlaytest({ report, session, options }) {
         lockedHud = await page.evaluate(() => {
           const row = document.querySelector('.lv-bar--boost');
           return {
-            unavailable: row?.classList.contains('is-empty') ?? false,
-            capacity: row?.querySelector('.lv-bar-cap')?.textContent ?? '',
-            aria: row?.getAttribute('aria-label') ?? '',
+            availability: row?.getAttribute('data-availability') ?? null,
+            usableSeconds: row?.getAttribute('data-usable-seconds') ?? null,
+            rearmPercent: row?.getAttribute('data-rearm-percent') ?? null,
           };
         });
       }
@@ -1005,13 +1065,16 @@ async function runPlaytest({ report, session, options }) {
     verify(evidence.firstBurst >= 3, `A full reserve lasted only ${evidence.firstBurst} s; the longer burst is absent.`, evidence);
     verify(gaps.length > 0 && Math.min(...gaps) <= 2.6,
       `Fast recovery was not observed; gaps were ${gaps.join(', ')} s.`, evidence);
-    verify(hudScale.capacity === '3.2S' && hudScale.aria.includes('3.2 seconds usable'),
-      'The boost HUD does not state the current full usable drive time.', evidence);
+    const usableSeconds = Number(hudScale.usableSeconds);
+    verify(Math.abs(usableSeconds - 3.1724137931034484) <= 1e-12
+      && hudScale.rearmPercent === '45' && hudScale.availability === 'available',
+    'The boost HUD does not expose its initial raw numeric and availability contracts.', evidence);
     verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.3700', '0.6600', '0.9500']),
       'The boost HUD one-second marks do not match the latch floor plus drain rate.', evidence);
-    verify(lockedHud?.unavailable === true && lockedHud.capacity === 'LOCK'
-      && lockedHud.aria.includes('recharging to 45 percent'),
-    'The boost HUD still presents a depleted, latched reserve as usable.', evidence);
+    verify(lockedHud?.availability === 'unavailable'
+      && Math.abs(Number(lockedHud.usableSeconds) - usableSeconds) <= 1e-12
+      && lockedHud.rearmPercent === '45',
+    'The boost HUD does not expose a depleted, latched reserve through its raw state contracts.', evidence);
     return evidence;
   });
   void boostOutcome;
@@ -1504,9 +1567,7 @@ async function failureUiSnapshot(page) {
       rootPhase: root?.getAttribute('data-phase') ?? null,
       screenOpen: screen?.getAttribute('data-open') ?? null,
       bodyState: body?.getAttribute('data-state') ?? null,
-      text: body?.textContent ?? '',
-      buttonLabels: buttons.map((button) =>
-        button.querySelector('.lv-btn-t')?.textContent?.trim().toUpperCase() ?? ''),
+      buttonActions: buttons.map((button) => button.getAttribute('data-action')),
       buttonShortcuts: buttons.map((button) => button.getAttribute('aria-keyshortcuts')),
     };
   });
@@ -1517,8 +1578,7 @@ async function countdownUiSnapshot(page) {
     const screen = document.querySelector('.lv-screen--countdown');
     return {
       screenOpen: screen?.getAttribute('data-open') ?? null,
-      number: screen?.querySelector('.lv-count-n')?.textContent?.trim().toUpperCase() ?? null,
-      label: screen?.querySelector('.lv-count-k')?.textContent?.trim().toUpperCase() ?? null,
+      value: screen?.getAttribute('data-countdown-value') ?? null,
     };
   });
 }
@@ -1834,8 +1894,8 @@ async function collectChordOrderEvidence(page, options) {
   await callHarness(page, 'setDriven', [true]);
   await callHarness(page, 'setInput', [null]);
 
-  const focusedButtonLabel = () => page.evaluate(() =>
-    document.activeElement?.querySelector('.lv-btn-t')?.textContent?.trim().toUpperCase() ?? null);
+  const focusedButtonAction = () => page.evaluate(() =>
+    document.activeElement?.getAttribute('data-action') ?? null);
   const observeNextRealKeyDown = async (key, code) => {
     await page.evaluate((wantedCode) => {
       window.__lvChordRepeatProbe = null;
@@ -1863,9 +1923,9 @@ async function collectChordOrderEvidence(page, options) {
   try {
     const initialPhase = await callHarness(page, 'phase');
     await page.keyboard.press('s');
-    const afterSFocus = await focusedButtonLabel();
+    const afterSFocus = await focusedButtonAction();
     await page.keyboard.down('w');
-    const afterWFocus = await focusedButtonLabel();
+    const afterWFocus = await focusedButtonAction();
     await page.keyboard.press('Enter');
     const afterFirstEnter = await callHarness(page, 'phase');
     await page.keyboard.press('Enter');

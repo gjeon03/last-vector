@@ -537,6 +537,9 @@ export class Hud {
 
   private buildBoostBar(): HTMLElement {
     const row = this.buildBar('BOOST', 'boost');
+    row.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
+    row.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
+    row.dataset['availability'] = 'available';
     const track = row.querySelector('.lv-bar-track') as HTMLElement;
     const ticks = el('div', 'lv-bar-ticks');
     ticks.setAttribute('aria-hidden', 'true');
@@ -839,6 +842,9 @@ export class Hud {
     if (unavailable !== this.pBoostUnavailable) {
       this.pBoostUnavailable = unavailable;
       this.nBoostRow.classList.toggle('is-empty', unavailable);
+      this.nBoostRow.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
+      this.nBoostRow.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
+      this.nBoostRow.dataset['availability'] = unavailable ? 'unavailable' : 'available';
       this.nBoostCap.textContent = unavailable ? 'LOCK' : BOOST_USABLE_LABEL;
       this.nBoostRow.setAttribute(
         'aria-label',

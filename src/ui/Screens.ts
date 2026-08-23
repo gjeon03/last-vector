@@ -31,6 +31,18 @@ export type ScreenView =
 
 export type UiSound = 'hover' | 'click' | 'back' | 'move';
 
+export type ScreenAction =
+  | 'begin'
+  | 'settings'
+  | 'controls'
+  | 'engage'
+  | 'return'
+  | 'resume'
+  | 'restart'
+  | 'abort'
+  | 'again'
+  | 'retry';
+
 /**
  * Original pre-run fiction. Short: the visuals carry the mood.
  *
@@ -48,6 +60,8 @@ const BRIEF_LINES: readonly string[] = [
 ];
 
 interface ControlRow {
+  /** Stable semantic identifier for UI contracts, independent of the displayed copy. */
+  readonly id: string;
   /**
    * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
    * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
@@ -70,27 +84,29 @@ interface ControlRow {
  * or miss the cockpit that makes the ship readable from the pilot's seat.
  */
 const CONTROLS: readonly ControlRow[] = [
-  { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
-  { groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
-  { groups: [['A', 'D']], action: 'Roll left / right', primer: true },
-  { groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
-  { groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
-  { groups: [['Q', 'E']], action: 'Strafe left / right' },
-  { groups: [['R', 'F']], action: 'Strafe up / down' },
+  { id: 'mouse-steer', groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
+  { id: 'throttle', groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
+  { id: 'roll', groups: [['A', 'D']], action: 'Roll left / right', primer: true },
+  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
+  { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
+  { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'Strafe left / right' },
+  { id: 'strafe-vertical', groups: [['R', 'F']], action: 'Strafe up / down' },
   {
+    id: 'keyboard-steer',
     groups: [['↑', '↓', '←', '→']],
     action: 'Pitch / yaw without the mouse',
     primer: true,
     short: 'Steer without mouse',
   },
   {
+    id: 'camera-toggle',
     groups: [['C']],
     action: 'Toggle chase / first-person cockpit (launch / flight)',
     primer: true,
     short: 'Toggle first-person cockpit',
   },
-  { groups: [['ESC']], action: 'Pause' },
-  { groups: [['N']], action: 'Restart the run' },
+  { id: 'pause', groups: [['ESC']], action: 'Pause' },
+  { id: 'restart', groups: [['N']], action: 'Restart the run' },
 ];
 
 /** Key chips for one binding row, shared by the CONTROLS legend and the briefing primer. */
@@ -516,6 +532,7 @@ export class Screens {
 
   private makeView(name: ScreenView, label: string, cls = ''): HTMLElement {
     const view = el('section', `lv-screen lv-screen--${name} ${cls}`.trim());
+    view.dataset['view'] = name;
     view.dataset['open'] = '0';
     view.setAttribute('aria-hidden', 'true');
     view.setAttribute('role', 'dialog');
@@ -534,6 +551,7 @@ export class Screens {
   private button(
     text: string,
     cls: string,
+    action: ScreenAction,
     onClick: () => void,
     sub?: string,
     hint?: string,
@@ -541,6 +559,7 @@ export class Screens {
     const b = el('button', `lv-btn ${cls}`.trim());
     b.type = 'button';
     b.dataset['nav'] = 'button';
+    b.dataset['action'] = action;
     const marker = el('span', 'lv-btn-mark');
     const wrap = el('span', 'lv-btn-body');
     if (hint) {
@@ -605,9 +624,9 @@ export class Screens {
     const menu = el('nav', 'lv-menu');
     menu.setAttribute('aria-label', 'Main menu');
     menu.append(
-      this.button('BEGIN RUN', 'is-primary', () => this.host.start(), FICTION.destinationName),
-      this.button('SETTINGS', '', () => this.show('settings')),
-      this.button('CONTROLS', '', () => this.show('controls')),
+      this.button('BEGIN RUN', 'is-primary', 'begin', () => this.host.start(), FICTION.destinationName),
+      this.button('SETTINGS', '', 'settings', () => this.show('settings')),
+      this.button('CONTROLS', '', 'controls', () => this.show('controls')),
     );
 
     const foot = el('div', 'lv-title-foot');
@@ -675,6 +694,7 @@ export class Screens {
       const row = CONTROLS[i]!;
       if (!row.primer) continue;
       const li = el('li');
+      li.dataset['control'] = row.id;
       li.append(keyChips(row), el('span', '', row.short ?? row.action));
       keys.appendChild(li);
     }
@@ -684,8 +704,8 @@ export class Screens {
 
     const actions = el('div', 'lv-actions');
     actions.append(
-      this.button('ENGAGE', 'is-primary', () => this.host.engage()),
-      this.button('BACK', 'is-ghost', () => this.opts.onBack()),
+      this.button('ENGAGE', 'is-primary', 'engage', () => this.host.engage()),
+      this.button('BACK', 'is-ghost', 'return', () => this.opts.onBack()),
     );
 
     panel.append(head, cols, actions);
@@ -755,10 +775,12 @@ export class Screens {
     if (!view) return;
     if (value === null) {
       view.dataset['open'] = '0';
+      delete view.dataset['countdownValue'];
       return;
     }
     view.dataset['open'] = '1';
     const go = value <= 0;
+    view.dataset['countdownValue'] = go ? 'go' : String(value);
     this.nCountNum.textContent = go ? 'GO' : String(value);
     this.nCountNum.dataset['go'] = go ? '1' : '0';
     this.nCountLabel.textContent = go ? 'VECTOR LIVE' : 'LAUNCH SEQUENCE';
@@ -778,14 +800,14 @@ export class Screens {
     );
     const menu = el('nav', 'lv-menu lv-menu--tight');
     menu.append(
-      this.button('RESUME', 'is-primary', () => this.host.resume()),
+      this.button('RESUME', 'is-primary', 'resume', () => this.host.resume()),
       /* Second, where the genre puts it: in a time trial "go again" is the common verb, and
          N was previously the only way to do it and was documented nowhere. The sub-label
          teaches the shortcut at the point of use. */
-      this.button('RESTART', '', () => this.host.restart(), undefined, 'N'),
-      this.button('SETTINGS', '', () => this.show('settings')),
-      this.button('CONTROLS', '', () => this.show('controls')),
-      this.button('ABORT RUN', 'is-danger', () => this.host.quitToTitle()),
+      this.button('RESTART', '', 'restart', () => this.host.restart(), undefined, 'N'),
+      this.button('SETTINGS', '', 'settings', () => this.show('settings')),
+      this.button('CONTROLS', '', 'controls', () => this.show('controls')),
+      this.button('ABORT RUN', 'is-danger', 'abort', () => this.host.quitToTitle()),
     );
     panel.appendChild(menu);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -808,7 +830,7 @@ export class Screens {
     }
 
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', () => this.opts.onBack()));
+    actions.append(this.button('BACK', 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(body, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -825,6 +847,8 @@ export class Screens {
     if (row.kind === 'enum') {
       const group = el('div', 'lv-seg');
       group.dataset['nav'] = 'segmented';
+      group.dataset['setting'] = row.key;
+      group.dataset['value'] = String(this.host.getSettings()[row.key]);
       group.tabIndex = 0;
       group.setAttribute('role', 'radiogroup');
       group.setAttribute('aria-label', row.label);
@@ -845,6 +869,7 @@ export class Screens {
       this.settingNodes.push({
         row,
         apply: (v) => {
+          group.dataset['value'] = String(v);
           const buttons = group.querySelectorAll<HTMLElement>('[data-seg]');
           for (let i = 0; i < buttons.length; i++) {
             const b = buttons[i]!;
@@ -859,6 +884,8 @@ export class Screens {
       const sw = el('button', 'lv-switch');
       sw.type = 'button';
       sw.dataset['nav'] = 'switch';
+      sw.dataset['setting'] = row.key;
+      sw.dataset['value'] = String(this.host.getSettings()[row.key]);
       sw.setAttribute('role', 'switch');
       sw.setAttribute('aria-checked', 'false');
       sw.setAttribute('aria-label', row.label);
@@ -872,6 +899,7 @@ export class Screens {
       this.settingNodes.push({
         row,
         apply: (v) => {
+          sw.dataset['value'] = String(v);
           const on = v === true;
           sw.setAttribute('aria-checked', on ? 'true' : 'false');
           const t = sw.querySelector('.lv-switch-t');
@@ -888,6 +916,8 @@ export class Screens {
     input.max = String(row.max);
     input.step = String(row.step);
     input.dataset['nav'] = 'range';
+    input.dataset['setting'] = row.key;
+    input.dataset['value'] = String(this.host.getSettings()[row.key]);
     input.setAttribute('aria-label', row.label);
     const read = el('span', 'lv-slider-v', '');
     const track = el('div', 'lv-slider-track');
@@ -905,6 +935,7 @@ export class Screens {
       row,
       apply: (v) => {
         const num = typeof v === 'number' ? v : row.min;
+        input.dataset['value'] = String(num);
         input.value = String(num);
         fill.style.transform = `scaleX(${((num - row.min) / (row.max - row.min)).toFixed(4)})`;
         read.textContent = row.fmt(num);
@@ -942,6 +973,7 @@ export class Screens {
     for (let i = 0; i < CONTROLS.length; i++) {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
+      li.dataset['control'] = row.id;
       li.style.setProperty('--n', String(i));
       li.append(keyChips(row), el('span', 'lv-key-d', row.action));
       list.appendChild(li);
@@ -953,7 +985,7 @@ export class Screens {
       'Pointer lock captures the mouse on launch. ESC releases it and holds the flight.',
     );
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', () => this.opts.onBack()));
+    actions.append(this.button('BACK', 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(list, note, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -1146,8 +1178,8 @@ export class Screens {
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
     actions.append(
-      this.button('RUN AGAIN', 'is-primary', () => this.host.restart()),
-      this.button('RETURN', 'is-ghost', () => this.host.quitToTitle()),
+      this.button('RUN AGAIN', 'is-primary', 'again', () => this.host.restart()),
+      this.button('RETURN', 'is-ghost', 'return', () => this.host.quitToTitle()),
     );
     body.appendChild(actions);
 
@@ -1182,7 +1214,7 @@ export class Screens {
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
     actions.appendChild(
-      this.button('RETRY', 'is-primary', () => this.host.restart(), undefined, 'N'),
+      this.button('RETRY', 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
     );
 
     body.append(head, timeBlock, actions);
