@@ -117,18 +117,32 @@ await report.check(
         }
       }
     }
-    return { leafCount: leaves.length, dynamicArities: Object.fromEntries(DYNAMIC_ARITIES) };
+    const bestComparisonFixtures = {
+      ko: ko.results.bestComparison('+1.23', '01:02.34'),
+      en: en.results.bestComparison('+1.23', '01:02.34'),
+    };
+    verify(bestComparisonFixtures.ko === '최고 01:02.34 대비 +1.23',
+      'Korean bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
+    verify(bestComparisonFixtures.en === '+1.23 vs BEST 01:02.34',
+      'English bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
+    return {
+      leafCount: leaves.length,
+      dynamicArities: Object.fromEntries(DYNAMIC_ARITIES),
+      bestComparisonFixtures,
+    };
   },
 );
 
 await report.check(
   {
     id: 'I18N.compile-time-arguments',
-    name: 'Dynamic message arguments are guarded by source-owned type fixtures',
-    assertion: 'The TypeScript fixture contains the required @ts-expect-error calls and is exported.',
+    name: 'Dynamic arguments and safe DOM sinks are guarded at source level',
+    assertion:
+      'The TypeScript fixture contains the required @ts-expect-error calls and Screens avoids HTML sinks.',
   },
   async () => {
     const source = await readFile(new URL('../../src/i18n/typeFixtures.ts', import.meta.url), 'utf8');
+    const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
     const directives = source.match(/@ts-expect-error/g) ?? [];
     verify(directives.length >= 3, 'At least three @ts-expect-error fixtures are required', {
       count: directives.length,
@@ -140,7 +154,14 @@ await report.check(
     verify(/bestComparison\(\s*['"][^'"]+['"]\s*\)/.test(source),
       'Missing bestComparison one-argument fixture');
     verify(/export\s+const\s+typeFixtures/.test(source), 'The fixture array must be exported');
-    return { expectErrorDirectives: directives.length };
+    const unsafeDomSinks = [
+      ['innerHTML', /\.innerHTML\b/],
+      ['insertAdjacentHTML', /\.insertAdjacentHTML\s*\(/],
+      ['document.write', /\bdocument\.write\s*\(/],
+    ].filter(([, pattern]) => pattern.test(screensSource)).map(([name]) => name);
+    verify(unsafeDomSinks.length === 0,
+      'Screens.ts uses a forbidden HTML-parsing DOM sink.', { unsafeDomSinks });
+    return { expectErrorDirectives: directives.length, unsafeDomSinks };
   },
 );
 

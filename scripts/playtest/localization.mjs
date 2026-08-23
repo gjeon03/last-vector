@@ -159,6 +159,102 @@ const STATIC_COPY = {
     failure: { aria: 'Hull breach', title: 'HULL BREACH', time: 'TIME', retry: 'RETRY' },
   },
 };
+const TERMINAL_COPY = {
+  ko: {
+    clean: '무손상',
+    damaged: '손상',
+    speedUnit: 'M/S',
+    bestComparison: '최고 00:01.00 대비 +188.05',
+  },
+  en: {
+    clean: 'UNTOUCHED',
+    damaged: 'SCARRED',
+    speedUnit: 'M/S',
+    bestComparison: '+188.05 vs BEST 00:01.00',
+  },
+};
+const EXPECTED_VIEW_SEMANTICS = {
+  title: {
+    actions: ['begin', 'settings', 'controls'],
+    controls: [],
+    settings: [],
+  },
+  settings: {
+    actions: ['return'],
+    controls: [],
+    settings: [
+      { setting: 'assistLevel', value: 'standard', options: ['arcade', 'standard', 'raw'] },
+      { setting: 'cameraMode', value: 'chase', options: ['chase', 'cockpit'] },
+      { setting: 'mouseSensitivity', value: '1', options: [] },
+      { setting: 'invertY', value: 'false', options: [] },
+      { setting: 'fov', value: '76', options: [] },
+      { setting: 'cameraShake', value: '1', options: [] },
+      { setting: 'quality', value: 'high', options: ['low', 'medium', 'high', 'ultra'] },
+      { setting: 'renderScale', value: '1', options: [] },
+      { setting: 'showFps', value: 'false', options: [] },
+      { setting: 'motionBlur', value: 'true', options: [] },
+      { setting: 'filmGrain', value: 'true', options: [] },
+      { setting: 'chromaticAberration', value: 'true', options: [] },
+      { setting: 'masterVolume', value: '0.8', options: [] },
+      { setting: 'musicVolume', value: '0.65', options: [] },
+    ],
+  },
+  controls: {
+    actions: ['return'],
+    controls: [
+      'mouse-steer', 'throttle', 'roll', 'boost', 'brake', 'strafe-horizontal',
+      'strafe-vertical', 'keyboard-steer', 'camera-toggle', 'pause', 'restart',
+    ],
+    settings: [],
+  },
+  briefing: {
+    actions: ['engage', 'return'],
+    controls: [
+      'mouse-steer', 'throttle', 'roll', 'boost', 'brake', 'keyboard-steer', 'camera-toggle',
+    ],
+    settings: [],
+  },
+  pause: {
+    actions: ['resume', 'restart', 'settings', 'controls', 'abort'],
+    controls: [],
+    settings: [],
+  },
+  results: {
+    actions: ['again', 'return'],
+    controls: [],
+    settings: [],
+  },
+  failure: {
+    actions: ['retry'],
+    controls: [],
+    settings: [],
+  },
+};
+const EXPECTED_NAV_ORDER = {
+  title: ['action:begin', 'action:settings', 'action:controls', 'nav:segmented'],
+  settings: [
+    'setting:assistLevel',
+    'setting:cameraMode',
+    'setting:mouseSensitivity',
+    'setting:invertY',
+    'setting:fov',
+    'setting:cameraShake',
+    'setting:quality',
+    'setting:renderScale',
+    'setting:showFps',
+    'setting:motionBlur',
+    'setting:filmGrain',
+    'setting:chromaticAberration',
+    'setting:masterVolume',
+    'setting:musicVolume',
+    'action:return',
+  ],
+  controls: ['action:return'],
+  briefing: ['action:engage', 'action:return'],
+  pause: ['action:resume', 'action:restart', 'action:settings', 'action:controls', 'action:abort'],
+  results: ['action:again', 'action:return'],
+  failure: ['action:retry'],
+};
 const EXPECTED_METADATA = {
   ko: {
     title: 'LAST VECTOR — THE CAIRN DRIFT',
@@ -552,10 +648,29 @@ async function runLocalization({ report, session, options }) {
       const scenario = await openLocaleScenario(session, locale);
       try {
         await ready(scenario.page, options.timeoutMs);
-        evidence[locale] = await assertStaticCopyFlow(scenario.page, locale, options);
-        evidence[locale].requests = scenario.requests;
+        evidence[locale] = {
+          fresh: await assertStaticCopyFlow(scenario.page, locale, options),
+          freshRequests: scenario.requests,
+        };
       } finally {
         await scenario.close();
+      }
+
+      const existingBestScenario = await openLocaleScenario(session, locale, {
+        localStorageSeed: { [BEST_STORAGE_KEY]: BEST_STORAGE_VALUE },
+      });
+      try {
+        await ready(existingBestScenario.page, options.timeoutMs);
+        await finishAutopilot(existingBestScenario.page, options, { collision: true });
+        const terminal = await terminalResultSnapshot(existingBestScenario.page);
+        assertTerminalResult(locale, terminal, {
+          hull: TERMINAL_COPY[locale].damaged,
+          delta: TERMINAL_COPY[locale].bestComparison,
+        });
+        evidence[locale].existingBestDamaged = terminal;
+        evidence[locale].existingBestRequests = existingBestScenario.requests;
+      } finally {
+        await existingBestScenario.close();
       }
     }
     return evidence;
@@ -574,6 +689,12 @@ async function runLocalization({ report, session, options }) {
       try {
         await ready(scenario.page, options.timeoutMs);
         evidence[locale] = await collectSemanticFlow(scenario.page, options);
+        verify(JSON.stringify(evidence[locale]) === JSON.stringify(EXPECTED_VIEW_SEMANTICS),
+          `${locale} semantic map differs from the independent literal manifest.`, {
+            locale,
+            expected: EXPECTED_VIEW_SEMANTICS,
+            actual: evidence[locale],
+          });
       } finally {
         await scenario.close();
       }
@@ -643,45 +764,42 @@ async function runLocalization({ report, session, options }) {
     name: 'Localized screen copy is text-only and injection-safe',
     assertion:
       'The screens tree contains no executable/media nodes and catalog-copy children are only '
-      + 'text nodes or explicit lang=en spans; the injection marker remains unset.',
+      + 'text nodes or explicit lang=en spans across menus, countdown, pause, results, and failure.',
   }, async () => {
     const scenario = await openLocaleScenario(session, 'ko', {
-      initScripts: [() => { window.__LV_INJECTED = undefined; }],
+      localStorageSeed: { [BEST_STORAGE_KEY]: BEST_STORAGE_VALUE },
     });
     try {
       await ready(scenario.page, options.timeoutMs);
+      const evidence = { snapshots: [] };
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'title'));
       await clickAction(scenario.page, 'title', 'settings');
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'settings'));
       await clickAction(scenario.page, 'settings', 'return');
       await clickAction(scenario.page, 'title', 'controls');
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'controls'));
       await clickAction(scenario.page, 'controls', 'return');
       await clickAction(scenario.page, 'title', 'begin');
-      const evidence = await scenario.page.evaluate(() => {
-        const screens = document.querySelector('.lv-screens');
-        const copySelectors = [
-          '.lv-tagline', '.lv-title-foot > span', '.lv-brief-sub', '.lv-prose-l',
-          '.lv-set-label', '.lv-set-hint', '.lv-key-d', '.lv-note', '.lv-btn-t', '.lv-btn-s',
-        ];
-        const invalidCopyChildren = [];
-        for (const selector of copySelectors) {
-          for (const node of screens?.querySelectorAll(selector) ?? []) {
-            for (const child of node.childNodes) {
-              if (child.nodeType === Node.TEXT_NODE) continue;
-              if (child instanceof HTMLSpanElement && child.lang === 'en'
-                && Array.from(child.childNodes).every((nested) => nested.nodeType === Node.TEXT_NODE)) continue;
-              invalidCopyChildren.push({ selector, html: node.outerHTML });
-            }
-          }
-        }
-        return {
-          forbidden: screens?.querySelectorAll('script, img, iframe').length ?? -1,
-          invalidCopyChildren,
-          injected: window.__LV_INJECTED,
-        };
-      });
-      verify(evidence.forbidden === 0, 'Screens contain a forbidden executable/media node.', evidence);
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'briefing'));
+      await clickAction(scenario.page, 'briefing', 'engage');
+      await scenario.page.locator('[data-view="countdown"][data-open="1"]').waitFor({ state: 'visible' });
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'countdown'));
+      await scenario.page.waitForFunction(() => window.__LV?.phase() === 'flying');
+      await scenario.page.keyboard.press('Escape');
+      await scenario.page.locator('[data-view="pause"][data-open="1"]').waitFor({ state: 'visible' });
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'pause'));
+      await clickAction(scenario.page, 'pause', 'resume');
+      await finishAutopilot(scenario.page, options);
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'results'));
+      await clickAction(scenario.page, 'results', 'again');
+      await forceFailure(scenario.page, options);
+      evidence.snapshots.push(await safeDomSnapshot(scenario.page, 'failure'));
+
+      evidence.forbidden = evidence.snapshots.flatMap(({ forbidden }) => forbidden);
+      evidence.invalidCopyChildren = evidence.snapshots.flatMap(({ invalidCopyChildren }) => invalidCopyChildren);
+      verify(evidence.forbidden.length === 0, 'Screens contain a forbidden executable/media node.', evidence);
       verify(evidence.invalidCopyChildren.length === 0,
         'Catalog-derived copy contains a child other than a lang=en token span.', evidence);
-      verify(evidence.injected === undefined, 'The injected marker was executed.', evidence);
       return evidence;
     } finally {
       await scenario.close();
@@ -782,7 +900,7 @@ async function runLocalization({ report, session, options }) {
     name: 'Focus order is locale-independent across replacement and screen entry',
     assertion:
       'Arrow adjustment, Enter activation, and direct radio activation preserve semantic focus; '
-      + 'first focus plus W/S navigation order match between locales for every navigable screen.',
+      + 'literal DOM order plus real W/S and range-aware Tab traversal match between locales.',
   }, async () => {
     const replacement = await collectLocaleReplacementFocus(session, options);
     const evidence = { replacement, locales: {} };
@@ -898,6 +1016,11 @@ async function assertStaticCopyFlow(page, locale, options) {
   await finishAutopilot(page, options);
   evidence.results = await staticCopySnapshot(page, 'results');
   assertExactCopy(locale, 'results', evidence.results, expected.results);
+  evidence.resultsTerminal = await terminalResultSnapshot(page);
+  assertTerminalResult(locale, evidence.resultsTerminal, {
+    hull: TERMINAL_COPY[locale].clean,
+    delta: null,
+  });
 
   await page.locator('[data-view="results"][data-open="1"] [data-action="again"]').click();
   await forceFailure(page, options);
@@ -909,6 +1032,47 @@ async function assertStaticCopyFlow(page, locale, options) {
 function assertExactCopy(locale, view, actual, expected) {
   verify(JSON.stringify(actual) === JSON.stringify(expected),
     `${locale} ${view} copy differs from the independent literal fixture.`, { actual, expected });
+}
+
+function assertTerminalResult(locale, actual, expected) {
+  verify(actual.hull === expected.hull,
+    `${locale} results hull state differs from the literal fixture.`, { actual, expected });
+  verify(actual.delta === expected.delta,
+    `${locale} results best comparison differs from the literal fixture.`, { actual, expected });
+  verify(actual.speed.unitText === TERMINAL_COPY[locale].speedUnit
+    && actual.speed.unitLang === 'en'
+    && actual.speed.elementChildren === 1
+    && /^\d+ $/.test(actual.speed.numberText)
+    && actual.speed.text === `${actual.speed.numberText}${TERMINAL_COPY[locale].speedUnit}`,
+  `${locale} results speed value does not have the exact number + lang=en unit structure.`, {
+    actual,
+    expectedUnit: TERMINAL_COPY[locale].speedUnit,
+  });
+}
+
+async function terminalResultSnapshot(page) {
+  return page.evaluate(() => {
+    const result = document.querySelector('[data-view="results"][data-open="1"]');
+    if (!(result instanceof HTMLElement)) throw new Error('Open results view is missing.');
+    const stats = Array.from(result.querySelectorAll('.lv-res-stat'));
+    const speed = stats[1]?.querySelector('.lv-res-statv');
+    const hull = stats[2]?.querySelector('.lv-res-statv');
+    const unit = speed?.querySelector(':scope > span');
+    return {
+      hull: hull?.textContent ?? '',
+      delta: result.querySelector('.lv-res-delta')?.textContent ?? null,
+      speed: {
+        text: speed?.textContent ?? '',
+        numberText: Array.from(speed?.childNodes ?? [])
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent ?? '')
+          .join(''),
+        unitText: unit?.textContent ?? '',
+        unitLang: unit?.getAttribute('lang') ?? null,
+        elementChildren: speed?.children.length ?? -1,
+      },
+    };
+  });
 }
 
 async function staticCopySnapshot(page, viewName) {
@@ -1087,6 +1251,72 @@ async function collectEmbeddedLang(page) {
   return { tagline, briefingLine1, briefingLine2, cameraHint, pointerNote };
 }
 
+async function safeDomSnapshot(page, phase) {
+  const selectorsByPhase = {
+    title: [
+      '.lv-title-eyebrow > span:first-child', '.lv-title-sector', '.lv-tagline',
+      '.lv-btn-t', '.lv-btn-s', '.lv-title-foot > span',
+    ],
+    settings: [
+      '.lv-kicker', '.lv-panel-title', '.lv-set-grouptitle', '.lv-set-label',
+      '.lv-set-hint', '.lv-seg-b', '.lv-switch-t', '.lv-btn-t',
+    ],
+    controls: [
+      '.lv-kicker', '.lv-panel-title', '.lv-key-or', '.lv-key-d', '.lv-note', '.lv-btn-t',
+    ],
+    briefing: [
+      '.lv-brief-head .lv-kicker', '.lv-brief-title', '.lv-brief-sub', '.lv-stat dt',
+      '.lv-stat dd', '.lv-prose-l', '.lv-primer > .lv-kicker',
+      '.lv-primer-list [data-control] > span:last-child', '.lv-btn-t',
+    ],
+    countdown: ['.lv-count-n', '.lv-count-k'],
+    pause: ['.lv-kicker', '.lv-pause-title', '.lv-pause-sub', '.lv-btn-t'],
+    results: [
+      '.lv-res-headline .lv-kicker', '.lv-res-title', '.lv-res-rank .lv-res-k',
+      '.lv-res-letter', '.lv-res-timeblock > .lv-res-k', '.lv-res-delta',
+      '.lv-res-statk', '.lv-res-statv', '.lv-res-row.is-head > span', '.lv-res-idx',
+      '.lv-res-seg', '.lv-res-cum', '.lv-res-dlt', '.lv-btn-t',
+    ],
+    failure: ['.lv-res-title', '.lv-res-timeblock > .lv-res-k', '.lv-btn-t'],
+  };
+  const selectors = selectorsByPhase[phase];
+  verify(Array.isArray(selectors), `No safe-DOM selector manifest exists for ${phase}.`);
+  const evidence = await page.evaluate(({ currentPhase, copySelectors }) => {
+    const viewName = currentPhase === 'failure' ? 'results' : currentPhase;
+    const view = document.querySelector(`[data-view="${viewName}"][data-open="1"]`);
+    if (!(view instanceof HTMLElement)) throw new Error(`Open ${currentPhase} view is missing.`);
+    const invalidCopyChildren = [];
+    const counts = {};
+    for (const selector of copySelectors) {
+      const nodes = Array.from(view.querySelectorAll(selector));
+      counts[selector] = nodes.length;
+      for (const node of nodes) {
+        for (const child of node.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) continue;
+          if (child instanceof HTMLSpanElement && child.lang === 'en'
+            && Array.from(child.childNodes).every((nested) => nested.nodeType === Node.TEXT_NODE)) continue;
+          invalidCopyChildren.push({ selector, html: node.outerHTML });
+        }
+      }
+    }
+    return {
+      phase: currentPhase,
+      forbidden: Array.from(view.querySelectorAll('script, img, iframe'), (node) => node.outerHTML),
+      invalidCopyChildren,
+      counts,
+    };
+  }, { currentPhase: phase, copySelectors: selectors });
+  const unmatched = Object.entries(evidence.counts)
+    .filter(([, count]) => count === 0)
+    .map(([selector]) => selector);
+  verify(unmatched.length === 0,
+    `${phase} safe-DOM manifest contains selectors that matched no catalog-derived leaves.`, {
+      unmatched,
+      evidence,
+    });
+  return evidence;
+}
+
 async function langTokens(page, rootSelector, leafSelector) {
   return page.evaluate(({ rootSelector: root, leafSelector: leaf }) => {
     const owner = document.querySelector(root);
@@ -1254,20 +1484,85 @@ async function collectFocusFlow(page, options) {
   evidence.results = await collectViewFocus(page, 'results');
   await clickAction(page, 'results', 'again');
   await forceFailure(page, options);
-  evidence.failure = await collectViewFocus(page, 'results');
+  evidence.failure = await collectViewFocus(page, 'failure');
   return evidence;
 }
 
-async function collectViewFocus(page, expectedView) {
-  const first = await semanticFocus(page);
-  const count = await page.locator(`[data-view="${expectedView}"][data-open="1"] [data-nav]`).count();
-  const order = [first];
-  for (let i = 1; i < count; i++) {
-    await page.keyboard.press('s');
-    order.push(await semanticFocus(page));
+async function collectViewFocus(page, viewName) {
+  const expected = EXPECTED_NAV_ORDER[viewName];
+  verify(Array.isArray(expected), `No literal navigation manifest exists for ${viewName}.`);
+  const domView = viewName === 'failure' ? 'results' : viewName;
+  const domOrder = await page.evaluate((expectedView) => {
+    const view = document.querySelector(`[data-view="${expectedView}"][data-open="1"]`);
+    if (!(view instanceof HTMLElement)) throw new Error(`Open ${expectedView} view is missing.`);
+    return Array.from(view.querySelectorAll('[data-nav]'), (node) => {
+      const action = node.getAttribute('data-action');
+      if (action !== null) return `action:${action}`;
+      const setting = node.getAttribute('data-setting');
+      if (setting !== null) return `setting:${setting}`;
+      return `nav:${node.getAttribute('data-nav')}`;
+    });
+  }, domView);
+  verify(new Set(domOrder).size === domOrder.length,
+    `${viewName} DOM navigation tokens are not unique.`, { expected, domOrder });
+  verify(JSON.stringify(domOrder) === JSON.stringify(expected),
+    `${viewName} DOM navigation order differs from the independent literal manifest.`, {
+      expected,
+      domOrder,
+    });
+
+  const first = focusToken(await semanticFocus(page));
+  verify(first === expected[0], `${viewName} did not focus the first literal navigation token.`, {
+    expected,
+    first,
+  });
+  const forward = [first];
+  const transitions = [];
+  for (let i = 1; i < expected.length; i++) {
+    const fromRange = await activeElementIsRange(page);
+    const key = fromRange ? 'Tab' : 's';
+    const from = forward.at(-1);
+    await page.keyboard.press(key);
+    const to = focusToken(await semanticFocus(page));
+    transitions.push({ direction: 'forward', from, to, key, fromRange });
+    forward.push(to);
   }
-  if (count > 1) await page.keyboard.press('s');
-  return { first, order };
+  verify(JSON.stringify(forward) === JSON.stringify(expected),
+    `${viewName} forward focus traversal differs from the literal navigation manifest.`, {
+      expected,
+      forward,
+      transitions,
+    });
+
+  const backward = [forward.at(-1)];
+  const reversed = [...expected].reverse();
+  for (let i = 1; i < reversed.length; i++) {
+    const fromRange = await activeElementIsRange(page);
+    const key = fromRange ? 'Shift+Tab' : 'w';
+    const from = backward.at(-1);
+    await page.keyboard.press(key);
+    const to = focusToken(await semanticFocus(page));
+    transitions.push({ direction: 'backward', from, to, key, fromRange });
+    backward.push(to);
+  }
+  verify(JSON.stringify(backward) === JSON.stringify(reversed),
+    `${viewName} backward focus traversal differs from the reversed literal navigation manifest.`, {
+      expected: reversed,
+      backward,
+      transitions,
+    });
+  return { first, domOrder, forward, backward, transitions };
+}
+
+function focusToken(focus) {
+  if (focus.action !== null) return `action:${focus.action}`;
+  if (focus.setting !== null) return `setting:${focus.setting}`;
+  return `nav:${focus.nav}`;
+}
+
+async function activeElementIsRange(page) {
+  return page.evaluate(() => document.activeElement instanceof HTMLInputElement
+    && document.activeElement.type === 'range');
 }
 
 async function semanticFocus(page) {
@@ -1292,9 +1587,25 @@ async function localeVisibility(page, phase = 'title') {
   }), phase);
 }
 
-async function finishAutopilot(page, options) {
+async function finishAutopilot(page, options, run = {}) {
   await callHarness(page, 'setDriven', [true]);
   await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  if (run.collision === true) {
+    const before = await callHarness(page, 'telemetry');
+    const staged = await callHarness(page, 'stageCollision');
+    verify(staged !== null, 'Could not stage a genuine collision for the damaged results fixture.', {
+      before,
+      staged,
+    });
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    const after = await callHarness(page, 'telemetry');
+    verify(after.hull < before.hull,
+      'The staged collision did not apply real flight damage before the results run.', {
+        before,
+        after,
+        staged,
+      });
+  }
   await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
   const maxFrames = Math.ceil((options.maxSimSeconds ?? 300) * 60);
   let frames = 0;
