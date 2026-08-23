@@ -107,6 +107,8 @@ export const FLIGHT: Record<
   | 'maxSpeed'
   | 'spoolTime'
   | 'boostCapacity'
+  | 'boostEngageFraction'
+  | 'boostRearmFraction'
   | 'boostDrain'
   | 'boostRegen'
   | 'boostRegenDelay',
@@ -122,11 +124,42 @@ export const FLIGHT: Record<
   /** Seconds to reach cruise from rest at full throttle. */
   spoolTime: 2.4,
   boostCapacity: 100,
+  /** Fraction of capacity kept as the boost latch floor. */
+  boostEngageFraction: 0.08,
+  /** Fraction required before a depleted, held boost input may re-arm. */
+  boostRearmFraction: 0.45,
   // About 3.2 s from a full tank to the latch floor, followed by a noticeably shorter recovery.
   boostDrain: 29,
   boostRegen: 22,
   boostRegenDelay: 0.65,
 };
+
+/**
+ * Flight thresholds authored against the current 462 m/s cruise.
+ *
+ * The distance values are fixed amounts of cruise time; the velocity values are fixed fractions
+ * of cruise speed. Scaling every threshold from one exact reference keeps today's tuning bit-for-
+ * bit unchanged while making a future cruise-speed edit preserve the same warning time, cue timing,
+ * slip response and impact severity.
+ */
+const REFERENCE_CRUISE_SPEED = 462;
+const scaleWithCruiseSpeed = (valueAtReference: number): number =>
+  valueAtReference * (FLIGHT.cruiseSpeed / REFERENCE_CRUISE_SPEED);
+
+export const FLIGHT_THRESHOLDS = {
+  /** Collider broad-phase reach and the proximity-warning band, in metres. */
+  proximityRange: scaleWithCruiseSpeed(260),
+  /** Distance from a gate at which the approach tick begins, in metres. */
+  gateTickRange: scaleWithCruiseSpeed(900),
+  /** Distance divisor that maps gate approach to the tick repeat interval. */
+  gateTickIntervalDivisor: scaleWithCruiseSpeed(2600),
+  /** Distance over which the gate reticle tightens into its near-response shape. */
+  gateReticleRange: scaleWithCruiseSpeed(2600),
+  /** Lateral speed that reads as full slip, in metres per second. */
+  fullSlipSpeed: scaleWithCruiseSpeed(220),
+  /** Closing speed that produces a maximum-severity impact, in metres per second. */
+  maxImpactClosingSpeed: scaleWithCruiseSpeed(520),
+} as const;
 
 /**
  * Maximum pixels the renderer will allocate for the scene, before the dynamic scaler.

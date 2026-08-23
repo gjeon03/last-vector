@@ -29,7 +29,7 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
-import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, SCALE } from '../core/art.ts';
+import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
 import type {
@@ -585,6 +585,7 @@ export class Game {
       maxSpeed: FLIGHT.maxSpeed,
       throttle: 0,
       boosting: false,
+      boostLocked: false,
       energy: 1,
       hull: 1,
       roll: 0,
@@ -1086,7 +1087,7 @@ export class Game {
       const dy = rock.position.y - this.ship.position.y;
       const dz = rock.position.z - this.ship.position.z;
       const distSq = dx * dx + dy * dy + dz * dz;
-      const reach = rock.radius + shipRadius + 260;
+      const reach = rock.radius + shipRadius + FLIGHT_THRESHOLDS.proximityRange;
       if (distSq > reach * reach) continue;
 
       const dist = Math.sqrt(distSq);
@@ -1108,7 +1109,8 @@ export class Game {
         }
       }
     }
-    this.proximity = nearest === Infinity ? 0 : clamp01(1 - nearest / 260);
+    this.proximity =
+      nearest === Infinity ? 0 : clamp01(1 - nearest / FLIGHT_THRESHOLDS.proximityRange);
   }
 
   private updateProximity(dt: number): void {
@@ -1449,6 +1451,7 @@ export class Game {
     t.speed = num(this.ship.speed);
     t.throttle = num(this.ship.throttleSmoothed);
     t.boosting = this.ship.boosting;
+    t.boostLocked = this.ship.boostLocked;
     t.energy = num(this.ship.energy01);
     t.hull = num(this.ship.hull, 1);
     t.gLoad = num(this.ship.gForce);
@@ -1559,7 +1562,10 @@ export class Game {
     const gate = this.course.nextGate;
     if (gate && this.phase === 'flying') {
       const distance = this.ship.position.distanceTo(gate.position);
-      const band = distance < 900 ? Math.max(0.12, distance / 2600) : 0;
+      const band =
+        distance < FLIGHT_THRESHOLDS.gateTickRange
+          ? Math.max(0.12, distance / FLIGHT_THRESHOLDS.gateTickIntervalDivisor)
+          : 0;
       if (band > 0) {
         // Seconds, not frames. `band` is in seconds, and this ran once per RENDERED frame, so the
     // repeat interval was band * 60/fps: at 120 Hz the first tick at 900 m already fires at
@@ -1571,7 +1577,10 @@ export class Game {
     this.gateTickTimer -= dt;
         if (this.gateTickTimer <= 0) {
           this.gateTickTimer = band;
-          this.audio.play('gateNear', clamp01(1 - distance / 900));
+          this.audio.play(
+            'gateNear',
+            clamp01(1 - distance / FLIGHT_THRESHOLDS.gateTickRange),
+          );
         }
       } else {
         this.gateTickTimer = 0;
@@ -2135,7 +2144,7 @@ export class Game {
     if (!rock) return null;
 
     const overlap = Math.min(6, rock.radius * 0.5);
-    const closingSpeed = 520;
+    const closingSpeed = FLIGHT_THRESHOLDS.maxImpactClosingSpeed;
     this.tmpA.set(0.73, 0.41, -0.54).normalize();
     this.tmpC.copy(this.tmpA).negate();
     this.tmpQuat.setFromUnitVectors(this.tmpB.set(0, 0, -1), this.tmpC);

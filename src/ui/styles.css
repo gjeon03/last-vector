@@ -459,6 +459,37 @@
   overflow: hidden;
 }
 
+.lv-bar--boost .lv-bar-track {
+  width: clamp(96px, 12.4vmin, 216px);
+  height: clamp(6px, 0.68vmin, 9px);
+}
+
+.lv-bar-ticks {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.lv-bar-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--i) * 100%);
+  width: 1px;
+  background: rgba(4, 10, 18, 0.82);
+  box-shadow: 1px 0 0 rgba(167, 235, 255, 0.16);
+}
+
+.lv-bar-cap {
+  min-width: 3.2em;
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  color: var(--c-key-hi);
+  text-shadow: var(--scrim);
+}
+
 .lv-bar-fill,
 .lv-bar-ghost {
   position: absolute;
@@ -484,6 +515,10 @@
 .lv-bar--boost.is-empty .lv-bar-k,
 .lv-bar--boost.is-empty .lv-bar-track {
   animation: lv-empty 0.62s steps(2) infinite;
+}
+
+.lv-bar--boost.is-empty .lv-bar-cap {
+  color: var(--c-warn);
 }
 
 @keyframes lv-empty {

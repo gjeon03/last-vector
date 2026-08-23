@@ -251,6 +251,8 @@ export interface AsteroidMotionReport {
   playerResponseLimit: number;
   /** Smallest per-frame change in player distance caused by the proximity response. */
   minPlayerDistanceDelta: number;
+  /** Smallest observed surface clearance from a moving rock to a protected spawn/gate volume. */
+  minProtectedVolumeClearance: number;
   signature: string;
 }
 
@@ -310,17 +312,25 @@ export class AsteroidField {
   private readonly tmpScale = new THREE.Vector3();
   private readonly tmpMotionPosition = new THREE.Vector3();
   private readonly tmpReactionAxis = new THREE.Vector3();
+  private readonly protectedVolumes: { center: THREE.Vector3; radius: number }[];
   private readonly movingHazards: MovingHazard[] = [];
   private readonly tumblingAsteroids: TumblingAsteroid[] = [];
   private motionElapsed = 0;
   private peakMotionDisplacement = 0;
   private peakPlayerResponse = 0;
   private minPlayerDistanceDelta = Infinity;
+  private minProtectedVolumeClearance = Infinity;
 
   constructor(options: AsteroidFieldOptions) {
     const rng = new Rng(options.seed);
     // Independent stream: adding motion metadata cannot perturb placement of later rocks.
     const motionRng = new Rng(options.seed ^ 0x6d8f3a21);
+    // Keep the exact construction volumes available for runtime evidence. Cloning prevents a
+    // later course transform from silently changing what the placement pass originally proved.
+    this.protectedVolumes = (options.keepClear ?? []).map(({ center, radius }) => ({
+      center: center.clone(),
+      radius,
+    }));
 
     this.material = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
@@ -600,6 +610,12 @@ export class AsteroidField {
         this.minPlayerDistanceDelta,
         moving.instance.position.distanceTo(playerPosition) - distance,
       );
+      for (const zone of this.protectedVolumes) {
+        this.minProtectedVolumeClearance = Math.min(
+          this.minProtectedVolumeClearance,
+          moving.instance.position.distanceTo(zone.center) - moving.instance.radius - zone.radius,
+        );
+      }
 
       if (moving.mesh && moving.matrixIndex >= 0) {
         this.tmpMatrix.compose(
@@ -619,11 +635,18 @@ export class AsteroidField {
     this.peakMotionDisplacement = 0;
     this.peakPlayerResponse = 0;
     this.minPlayerDistanceDelta = Infinity;
+    this.minProtectedVolumeClearance = Infinity;
     for (const moving of this.movingHazards) {
       moving.instance.position.copy(moving.basePosition);
       moving.instance.quaternion.copy(moving.baseQuaternion);
       moving.displacement = 0;
       moving.playerResponse = 0;
+      for (const zone of this.protectedVolumes) {
+        this.minProtectedVolumeClearance = Math.min(
+          this.minProtectedVolumeClearance,
+          moving.instance.position.distanceTo(zone.center) - moving.instance.radius - zone.radius,
+        );
+      }
       if (moving.mesh && moving.matrixIndex >= 0) {
         this.tmpMatrix.compose(
           moving.instance.position,
@@ -648,6 +671,9 @@ export class AsteroidField {
       playerResponseLimit: PLAYER_RESPONSE_LIMIT,
       minPlayerDistanceDelta: Number.isFinite(this.minPlayerDistanceDelta)
         ? +this.minPlayerDistanceDelta.toFixed(6)
+        : 0,
+      minProtectedVolumeClearance: Number.isFinite(this.minProtectedVolumeClearance)
+        ? +this.minProtectedVolumeClearance.toFixed(6)
         : 0,
       signature: this.movingHazards.map(({ instance }) => (
         `${instance.id}:${instance.position.x.toFixed(4)},${instance.position.y.toFixed(4)},${instance.position.z.toFixed(4)}`

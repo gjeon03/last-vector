@@ -11,7 +11,7 @@
  */
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
-import { UI } from '../core/art.ts';
+import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -48,6 +48,11 @@ export class Eased {
 }
 
 const PAD2 = (n: number): string => (n < 10 ? '0' + n : '' + n);
+
+const BOOST_USABLE_SECONDS =
+  (FLIGHT.boostCapacity * (1 - FLIGHT.boostEngageFraction)) / FLIGHT.boostDrain;
+const BOOST_USABLE_LABEL = `${BOOST_USABLE_SECONDS.toFixed(1)}S`;
+const BOOST_REARM_PERCENT = Math.round(FLIGHT.boostRearmFraction * 100);
 
 /** `m:ss.cc` — the canonical run clock. */
 export function formatTime(seconds: number | null | undefined): string {
@@ -262,6 +267,7 @@ export class Hud {
   private readonly nBoostFill: HTMLElement;
   private readonly nBoostGhost: HTMLElement;
   private readonly nBoostRow: HTMLElement;
+  private readonly nBoostCap: HTMLElement;
   private readonly nHullFill: HTMLElement;
   private readonly nHullRow: HTMLElement;
   private readonly nGateCur: RollingNumber;
@@ -315,7 +321,7 @@ export class Hud {
   private pThrottlePct = -1;
   private pBoost = -1;
   private pBoostGhost = -1;
-  private pBoostEmpty = false;
+  private pBoostUnavailable = false;
   private pHull = -1;
   private pHullState = '';
   private pGload = -1;
@@ -457,9 +463,10 @@ export class Hud {
     speed.append(speedRow, this.nGload);
 
     const bars = el('div', 'lv-bars');
-    this.nBoostRow = this.buildBar('BOOST', 'boost');
+    this.nBoostRow = this.buildBoostBar();
     this.nBoostFill = this.nBoostRow.querySelector('.lv-bar-fill') as HTMLElement;
     this.nBoostGhost = this.nBoostRow.querySelector('.lv-bar-ghost') as HTMLElement;
+    this.nBoostCap = this.nBoostRow.querySelector('.lv-bar-cap') as HTMLElement;
     this.nHullRow = this.buildBar('HULL', 'hull');
     this.nHullFill = this.nHullRow.querySelector('.lv-bar-fill') as HTMLElement;
     bars.append(this.nBoostRow, this.nHullRow);
@@ -525,6 +532,26 @@ export class Hud {
     const track = el('div', 'lv-bar-track');
     track.append(el('div', 'lv-bar-ghost'), el('div', 'lv-bar-fill'));
     row.append(el('span', 'lv-bar-k', label), track);
+    return row;
+  }
+
+  private buildBoostBar(): HTMLElement {
+    const row = this.buildBar('BOOST', 'boost');
+    const track = row.querySelector('.lv-bar-track') as HTMLElement;
+    const ticks = el('div', 'lv-bar-ticks');
+    ticks.setAttribute('aria-hidden', 'true');
+    const engageFloor = FLIGHT.boostCapacity * FLIGHT.boostEngageFraction;
+    for (let second = 1; second <= Math.floor(BOOST_USABLE_SECONDS); second++) {
+      const energy = engageFloor + FLIGHT.boostDrain * second;
+      const tick = el('i', 'lv-bar-tick');
+      tick.style.setProperty('--i', clamp(energy / FLIGHT.boostCapacity, 0, 1).toFixed(4));
+      ticks.appendChild(tick);
+    }
+    track.appendChild(ticks);
+    const capacity = el('span', 'lv-bar-cap', BOOST_USABLE_LABEL);
+    capacity.title = 'Usable drive time from a full reserve';
+    row.appendChild(capacity);
+    row.setAttribute('aria-label', `Boost reserve, ${BOOST_USABLE_SECONDS.toFixed(1)} seconds usable`);
     return row;
   }
 
@@ -808,10 +835,17 @@ export class Hud {
       this.pBoostGhost = bgq;
       this.nBoostGhost.style.transform = `scaleX(${(bgq / 400).toFixed(4)})`;
     }
-    const empty = t.energy <= 0.035;
-    if (empty !== this.pBoostEmpty) {
-      this.pBoostEmpty = empty;
-      this.nBoostRow.classList.toggle('is-empty', empty);
+    const unavailable = t.boostLocked === true || t.energy <= 0.035;
+    if (unavailable !== this.pBoostUnavailable) {
+      this.pBoostUnavailable = unavailable;
+      this.nBoostRow.classList.toggle('is-empty', unavailable);
+      this.nBoostCap.textContent = unavailable ? 'LOCK' : BOOST_USABLE_LABEL;
+      this.nBoostRow.setAttribute(
+        'aria-label',
+        unavailable
+          ? `Boost reserve locked; recharging to ${BOOST_REARM_PERCENT} percent`
+          : `Boost reserve, ${BOOST_USABLE_SECONDS.toFixed(1)} seconds usable`,
+      );
     }
     if (t.boosting !== this.pBoosting) {
       this.pBoosting = t.boosting;
@@ -1165,7 +1199,7 @@ export class Hud {
    */
   private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState, vmin: number): void {
     const r = vs.gateR;
-    const near = clamp(1 - vs.gateDist / 2600, 0, 1);
+    const near = clamp(1 - vs.gateDist / FLIGHT_THRESHOLDS.gateReticleRange, 0, 1);
     /**
      * White, not amber. An armed cairn renders as a hot gold ring and its aperture blows out
      * to cyan at close range, so amber-on-gold and amber-on-cyan both vanish exactly when the

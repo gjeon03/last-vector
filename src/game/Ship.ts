@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { FlightCommand } from '../core/Input.ts';
-import { FLIGHT } from '../core/art.ts';
+import { FLIGHT, FLIGHT_THRESHOLDS } from '../core/art.ts';
 import { clamp, clamp01, damp } from '../core/mathx.ts';
 
 /**
@@ -149,7 +149,10 @@ export class Ship {
     if (this.speed < 1) return 0;
     this.getForward(this.scratch);
     const along = this.velocity.dot(this.scratch);
-    return clamp01(Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) / 220);
+    return clamp01(
+      Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) /
+        FLIGHT_THRESHOLDS.fullSlipSpeed,
+    );
   }
 
   get gForce(): number {
@@ -173,8 +176,8 @@ export class Ship {
     // The overdrive is a single latch with hysteresis. Without the floor it re-lit for one
     // frame every time regeneration crossed a hair above empty, so a held key produced a
     // buzzing stutter instead of either thrust or a clear "you are out".
-    const engageFloor = FLIGHT.boostCapacity * 0.08;
-    const rearmLevel = FLIGHT.boostCapacity * 0.45;
+    const engageFloor = FLIGHT.boostCapacity * FLIGHT.boostEngageFraction;
+    const rearmLevel = FLIGHT.boostCapacity * FLIGHT.boostRearmFraction;
     const wantsBoost = command.boost && command.throttle > 0.05;
     if (wantsBoost && !this.boostLocked && this.energy > engageFloor) {
       this.boosting = true;
@@ -329,7 +332,7 @@ export class Ship {
 
   applyImpact(normal: THREE.Vector3, penetration: number): number {
     const closing = Math.max(0, -this.velocity.dot(normal));
-    const severity = clamp01(closing / 520);
+    const severity = clamp01(closing / FLIGHT_THRESHOLDS.maxImpactClosingSpeed);
 
     // Slide along the surface rather than stopping dead: glancing a rock should cost time and
     // control, not end the run.
@@ -363,7 +366,12 @@ export class Ship {
       this.energy = Math.min(FLIGHT.boostCapacity, this.energy + amount);
       // A gate reward is meant to be usable now. It is already a deliberate one-shot refill, so
       // it may release the ordinary regeneration latch as soon as there is a usable reserve.
-      if (this.boostLocked && this.energy > FLIGHT.boostCapacity * 0.08) this.boostLocked = false;
+      if (
+        this.boostLocked &&
+        this.energy > FLIGHT.boostCapacity * FLIGHT.boostEngageFraction
+      ) {
+        this.boostLocked = false;
+      }
     }
     return { before, after: this.energy01 };
   }

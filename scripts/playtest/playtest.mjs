@@ -557,7 +557,10 @@ async function runPlaytest({ report, session, options }) {
       && evidence.realCollision.impacts.every((impact) => impact.staged !== null
         && Number.isInteger(impact.staged.rockId)
         && impact.staged.overlap > 0
-        && impact.staged.closingSpeed === 520),
+        && finiteNumber(impact.staged.closingSpeed)
+        && impact.staged.closingSpeed > 0)
+      && evidence.realCollision.impacts.every((impact) =>
+        impact.staged.closingSpeed === evidence.realCollision.impacts[0].staged.closingSpeed),
     'The production-collision loop did not stage bounded drawn-asteroid contacts.', evidence);
     verify(evidence.realCollision.impacts.every((impact) =>
       finiteNumber(impact.beforeHull)
@@ -843,7 +846,8 @@ async function runPlaytest({ report, session, options }) {
     assertion:
       'Only the fixed gameplay subset moves; after identical three-second traces low and ultra '
       + 'produce the same signature, a new run reproduces it, sway is non-zero but below the '
-      + 'declared small bound, and player response never exceeds two metres.',
+      + 'declared small bound, player response never exceeds two metres, and the full real run '
+      + 'keeps moving-rock surfaces outside every protected spawn/gate volume.',
   }, async () => {
     const trace = async (quality) => {
       await callHarness(page, 'setSettings', [{ quality }]);
@@ -878,6 +882,8 @@ async function runPlaytest({ report, session, options }) {
     'The real playthrough did not observe a bounded player-proximity response.', evidence);
     verify(playerRunMotion.minPlayerDistanceDelta >= -1e-6,
       'A proximity response moved a hazard closer to the player.', evidence);
+    verify(playerRunMotion.minProtectedVolumeClearance > 0,
+      'A moving hazard entered the protected spawn bubble or a gate aperture during the real run.', evidence);
     return evidence;
   });
 
@@ -919,19 +925,46 @@ async function runPlaytest({ report, session, options }) {
     assertion:
       'With boost held continuously for 24 simulated seconds, the drive produces a small number of '
       + 'sustained bursts (each at least 0.6 s) rather than many short re-ignitions, and the reserve '
-      + 'never sits pinned just above empty while the key is down.',
+      + 'never sits pinned just above empty while the key is down; the HUD states the full usable '
+      + 'drive time, places one-second marks at the corresponding reserve levels, and visibly '
+      + 'marks the depleted latch as unavailable until its re-arm threshold.',
   }, async () => {
     await callHarness(page, 'startRun', [{ skipIntro: true }]);
     await callHarness(page, 'setAutopilot', [false]);
     await callHarness(page, 'setDriven', [true]);
     await callHarness(page, 'step', [240, 1 / 60]);
+    const hudScale = await page.evaluate(() => {
+      const row = document.querySelector('.lv-bar--boost');
+      const capacity = row?.querySelector('.lv-bar-cap');
+      const ticks = [...(row?.querySelectorAll('.lv-bar-tick') ?? [])];
+      return {
+        capacity: capacity?.textContent ?? '',
+        aria: row?.getAttribute('aria-label') ?? '',
+        tickPositions: ticks.map((tick) => tick.style.getPropertyValue('--i')),
+      };
+    });
     await callHarness(page, 'setInput', [{ throttle: 1, boost: true }]);
 
     const samples = [];
+    let lockedHud = null;
     for (let i = 0; i < 120; i += 1) {
       await callHarness(page, 'step', [12, 1 / 60]);
       const telemetry = await callHarness(page, 'telemetry');
-      samples.push({ energy: telemetry.energy, boosting: telemetry.boosting });
+      samples.push({
+        energy: telemetry.energy,
+        boosting: telemetry.boosting,
+        boostLocked: telemetry.boostLocked,
+      });
+      if (telemetry.boostLocked && lockedHud === null) {
+        lockedHud = await page.evaluate(() => {
+          const row = document.querySelector('.lv-bar--boost');
+          return {
+            unavailable: row?.classList.contains('is-empty') ?? false,
+            capacity: row?.querySelector('.lv-bar-cap')?.textContent ?? '',
+            aria: row?.getAttribute('aria-label') ?? '',
+          };
+        });
+      }
     }
     await callHarness(page, 'setInput', [null]);
     await callHarness(page, 'setDriven', [false]);
@@ -963,6 +996,8 @@ async function runPlaytest({ report, session, options }) {
       trailingBurst,
       firstBurst: bursts[0] ?? null,
       shortest: bursts.length ? Math.min(...bursts) : null,
+      hudScale,
+      lockedHud,
     };
     verify(bursts.length > 0, 'Boost never engaged while the key was held.', evidence);
     verify(bursts.length <= 8, `Boost re-ignited ${bursts.length} times in 24 s; the latch is stuttering.`, evidence);
@@ -970,6 +1005,13 @@ async function runPlaytest({ report, session, options }) {
     verify(evidence.firstBurst >= 3, `A full reserve lasted only ${evidence.firstBurst} s; the longer burst is absent.`, evidence);
     verify(gaps.length > 0 && Math.min(...gaps) <= 2.6,
       `Fast recovery was not observed; gaps were ${gaps.join(', ')} s.`, evidence);
+    verify(hudScale.capacity === '3.2S' && hudScale.aria.includes('3.2 seconds usable'),
+      'The boost HUD does not state the current full usable drive time.', evidence);
+    verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.3700', '0.6600', '0.9500']),
+      'The boost HUD one-second marks do not match the latch floor plus drain rate.', evidence);
+    verify(lockedHud?.unavailable === true && lockedHud.capacity === 'LOCK'
+      && lockedHud.aria.includes('recharging to 45 percent'),
+    'The boost HUD still presents a depleted, latched reserve as usable.', evidence);
     return evidence;
   });
   void boostOutcome;

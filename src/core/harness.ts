@@ -386,6 +386,8 @@ export interface HazardReport {
     playerResponseLimit: number;
     /** Minimum distance change caused by reaction; non-negative means it never approaches. */
     minPlayerDistanceDelta: number;
+    /** Minimum observed surface clearance to the protected spawn bubble and gate apertures. */
+    minProtectedVolumeClearance: number;
     /** Stable ids and quantised positions, suitable for reset/seed determinism assertions. */
     signature: string;
   };

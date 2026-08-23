@@ -52,6 +52,11 @@ export interface Telemetry {
   /** Commanded throttle, 0..1. */
   throttle: number;
   boosting: boolean;
+  /**
+   * True while a depleted reserve is below the re-arm threshold. Optional so extending telemetry
+   * does not break an out-of-repo consumer that constructs the prior interface shape.
+   */
+  boostLocked?: boolean;
   /** Remaining boost energy, 0..1. */
   energy: number;
   /** Structural integrity, 0..1. */
