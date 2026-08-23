@@ -45,7 +45,9 @@
   - `data-countdown-value="3|2|1|go"`.
   - Numeric boost attributes: `data-usable-seconds`, `data-rearm-percent`, `data-availability`.
 
-  Remove behavior assertions that locate `ENGAGE`, `RETRY`, `GO`, `HULL BREACH`, or boost state by visible English text. Keep key-chip assertions because key names are intentionally invariant.
+  Remove behavior assertions that locate `ENGAGE`, `RETRY`, `GO`, `HULL BREACH`, or boost state by visible English text. Also migrate `INPUT.chord-order-recovery` focus evidence and `failureUiSnapshot.buttonLabels` to `activeElement.dataset.action` / semantic action IDs. Keep key-chip assertions because key names are intentionally invariant.
+
+  Scope every action query to the open view: `[data-view="X"][data-open="1"] [data-action="Y"]`. Action/control IDs need only be unique inside one `data-view`; the same settings, controls, return, or control-row ID may legitimately exist in another screen.
 
 - [ ] **Step 2: Run the focused test and confirm it fails for missing attributes**
 
@@ -62,15 +64,17 @@
 
   In `Screens.ts`:
 
-  - Define a `ScreenAction` union containing `begin`, `settings`, `controls`, `engage`, `back`, `resume`, `restart`, `abort`, `again`, `return-title`, and `retry`.
+  - Define a `ScreenAction` union containing `begin`, `settings`, `controls`, `engage`, `return`, `resume`, `restart`, `abort`, `again`, and `retry`. Every BACK or title-return action uses `return` and is disambiguated by `data-view`.
   - Add an `action` argument to `button()` and set `button.dataset.action`.
   - Preserve click order: play the UI sound before invoking the action callback.
   - Add stable IDs to `ControlRow` and render `data-control`.
   - Add `data-view` in `makeView()`.
   - Add `data-setting` and raw `data-value` to setting controls.
-  - Add `data-countdown-value` without changing visible copy yet.
+  - Add `data-countdown-value` without changing visible copy yet; explicitly delete it when `setCountdown(null)` closes the view.
 
-  In `Hud.ts` expose raw numeric/state values through dataset attributes; do not parse rendered strings in tests.
+  In `Hud.ts` expose raw numeric/state values through dataset attributes; do not parse rendered strings in tests. Seed `data-usable-seconds`, `data-rearm-percent`, and `data-availability="available"` when the boost DOM is built, then update them in the normal state-change path so initial reads cannot see `null`.
+
+  Correct the existing `UX.screen-flow` call to pass `options.timeoutMs` into `reloadHarness` rather than the entire options object.
 
 - [ ] **Step 4: Run behavior and accessibility checks**
 
@@ -275,9 +279,11 @@
 - Modify: `src/main.ts`
 - Test: `scripts/playtest/localization.mjs`
 
-- [ ] **Step 1: Add a pre-navigation test hook**
+- [ ] **Step 1: Add isolated boot scenarios**
 
-  Extend `runManagedSuite` with `prepareContext` that runs after request-boundary setup but before page creation/navigation. Use it to seed `last-vector.locale.v1=en` before the first document and font request.
+  Add `openBootScenario(session, { localStorageSeed })` to `runtime.mjs`. It creates a fresh browser context with the same viewport, device scale factor, service-worker policy, and loopback origin, seeds localStorage through Playwright `storageState` before navigation, installs a scenario-local request log, opens one page, and returns `{ page, requests, close }`.
+
+  Each clean-boot assertion owns and closes its scenario. Do not reuse the main suite context, request accumulator, HTTP cache, or an `addInitScript` that repeats on every reload.
 
 - [ ] **Step 2: Write red locale lifecycle checks**
 
@@ -293,8 +299,8 @@
 
   Assert:
 
-  - Empty storage boots Korean with `document.documentElement.lang === 'ko'`.
-  - Persisted English boots English before the loader and Overlay are constructed.
+  - A fresh empty-storage scenario boots Korean with `document.documentElement.lang === 'ko'`.
+  - A separate fresh `en` storageState scenario boots English before the loader and Overlay are constructed.
   - Title selection persists and replaces the visible Overlay.
   - Once briefing begins, locale controls are locked/absent.
   - Restart/retry preserve the locked locale.
@@ -356,7 +362,13 @@
 
 - [ ] **Step 7: Add the title selector**
 
-  Render a labeled `role="radiogroup"` after the main title actions so keyboard navigation and first focus remain stable. Each option uses `role="radio"`, `data-locale`, and `aria-checked`. Reject locale requests outside title without mutating storage.
+  Reuse the existing segmented-navigation contract after the main title actions so keyboard navigation and first focus remain stable:
+
+  - Group: `data-nav="segmented"`, `tabIndex=0`, `role="radiogroup"`, localized `aria-label`.
+  - Options: `data-seg="ko|en"`, `data-locale="ko|en"`, `role="radio"`, `aria-checked`.
+  - Existing W/S/arrow focus collection, A/D adjustment, and Enter activation must work without a new keyboard path.
+
+  Reject locale requests outside title without mutating storage.
 
 - [ ] **Step 8: Expose a narrow harness state**
 
@@ -416,7 +428,7 @@
   For both locales, open every screen through real controls and assert:
 
   - Title, briefing, settings, controls, pause, results, and failure have the expected catalog messages.
-  - Every `data-action` and `data-control` remains present and unique.
+  - Every `data-action` and `data-control` remains present and unique within its own `data-view`.
   - The selected language remains visible on title and cannot be changed in briefing or flight.
   - Proper nouns, controls, and units remain Latin.
   - At 1920×1080, 1280×720, 375×667, and 640×360, primary actions stay inside the viewport.
@@ -623,8 +635,8 @@
 
   Assert:
 
-  - Clean persisted English boot requests zero `NanumSquareNeo-*.woff2` files.
-  - Korean boot requests only declared weights and receives HTTP 200.
+  - A fresh persisted-English `openBootScenario` requests zero `NanumSquareNeo-*.woff2` files.
+  - A separate fresh Korean `openBootScenario` requests only declared weights and receives HTTP 200.
   - Korean title reaches either `ready` or bounded `fallback` without blocking forever.
   - A forced font failure still leaves the game playable and text visible.
   - Korean loader and fatal DOM compute a font-family containing `NanumSquare Neo Hangul` rather than silently using only the system fallback.
