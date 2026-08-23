@@ -563,12 +563,42 @@ async function runLocalization({ report, session, options }) {
       );
       const failed = await localeSnapshot(lateFailureScenario.page);
       const rejected = await fontControlSnapshot(lateFailureScenario.page);
+      const playableTitle = await lateFailureScenario.page.evaluate(() => {
+        const title = document.querySelector('[data-view="title"][data-open="1"]');
+        const begin = title?.querySelector('[data-action="begin"]');
+        return {
+          documentLang: document.documentElement.lang,
+          titleText: title?.textContent?.trim() ?? '',
+          titleVisible: title instanceof HTMLElement && title.getClientRects().length > 0,
+          begin: begin instanceof HTMLButtonElement ? {
+            text: begin.textContent ?? '',
+            disabled: begin.disabled,
+            visible: begin.getClientRects().length > 0,
+          } : null,
+        };
+      });
+      await clickAction(lateFailureScenario.page, 'title', 'begin');
+      await lateFailureScenario.page.waitForFunction(() => window.__LV?.phase() === 'briefing');
+      const afterBegin = {
+        phase: await callHarness(lateFailureScenario.page, 'phase'),
+        briefingVisible: await lateFailureScenario.page
+          .locator('[data-view="briefing"][data-open="1"]')
+          .isVisible(),
+      };
+      await clickAction(lateFailureScenario.page, 'briefing', 'return');
+      await lateFailureScenario.page.waitForFunction(() => window.__LV?.phase() === 'title');
+      const afterReturn = await localeSnapshot(lateFailureScenario.page);
+      const afterReturnControl = await fontControlSnapshot(lateFailureScenario.page);
       const errors = await callHarness(lateFailureScenario.page, 'errors');
       lateFailure = {
         fallback,
         held,
         failed,
         rejected,
+        playableTitle,
+        afterBegin,
+        afterReturn,
+        afterReturnControl,
         errors,
         consoleErrors: lateFailureScenario.consoleErrors,
         pageErrors: lateFailureScenario.pageErrors,
@@ -630,6 +660,21 @@ async function runLocalization({ report, session, options }) {
       && lateFailure.rejected.calls.every(({ status, error }) => status === 'rejected'
         && error === 'controlled late Korean font rejection'),
     'Controlled late rejection did not transition bounded fallback to failed.', evidence);
+    verify(lateFailure.failed.selected === 'ko'
+      && lateFailure.failed.documentLang === 'ko'
+      && lateFailure.playableTitle.documentLang === 'ko'
+      && lateFailure.playableTitle.titleVisible
+      && lateFailure.playableTitle.titleText.length > 0
+      && lateFailure.playableTitle.begin?.text.includes('비행 시작')
+      && lateFailure.playableTitle.begin.visible
+      && !lateFailure.playableTitle.begin.disabled
+      && lateFailure.afterBegin.phase === 'briefing'
+      && lateFailure.afterBegin.briefingVisible
+      && lateFailure.afterReturn.selected === 'ko'
+      && lateFailure.afterReturn.documentLang === 'ko'
+      && lateFailure.afterReturn.fontStatus === 'failed'
+      && lateFailure.afterReturnControl.calls.length === 3,
+    'Late font failure did not preserve an actionable Korean title and stable failed state.', evidence);
     verify(rapid.initial.fontStatus === 'not-required'
       && rapid.koreanPending.selected === 'ko' && rapid.koreanPending.fontStatus === 'fallback'
       && rapid.held.calls.length === 3,
