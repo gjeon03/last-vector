@@ -99,8 +99,9 @@ async function boot(): Promise<void> {
       ? { root: root!, localeStore }
       : { root: root!, localeStore, seed });
   } catch (error) {
+    const translator = createTranslator(localeStore.get());
     fail(
-      bootTranslator.messages.loader.launchFailedTitle,
+      translator.messages.loader.launchFailedTitle,
       String(error instanceof Error ? error.message : error),
     );
     return;
@@ -111,9 +112,11 @@ async function boot(): Promise<void> {
   let graphicsFailed = false;
   game.onContextLost = () => {
     graphicsFailed = true;
+    const locale = game.getLocaleState();
+    const translator = createTranslator(locale.active ?? locale.selected);
     fail(
-      bootTranslator.messages.loader.graphicsContextLostTitle,
-      bootTranslator.messages.loader.graphicsContextLostDetail,
+      translator.messages.loader.graphicsContextLostTitle,
+      translator.messages.loader.graphicsContextLostDetail,
     );
   };
 

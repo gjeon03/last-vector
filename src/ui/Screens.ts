@@ -393,10 +393,11 @@ export class Screens {
     if (!(active instanceof HTMLElement) || !this.el.contains(active)) return null;
     const view = active.closest<HTMLElement>('[data-view]');
     if (!view || view.dataset['open'] !== '1') return null;
+    const nav = active.closest<HTMLElement>('[data-nav]');
     return {
       view: view.dataset['view'] as ScreenView,
       action: active.dataset['action'] as ScreenAction | undefined,
-      nav: active.dataset['nav'],
+      nav: nav?.dataset['nav'],
       locale: active.dataset['locale'] as Locale | undefined,
     };
   }
@@ -405,18 +406,20 @@ export class Screens {
     if (!token || token.view !== this.view) return;
     const view = this.views.get(token.view);
     if (!view) return;
-    const candidates = view.querySelectorAll<HTMLElement>('[data-nav]');
+    const candidates = view.querySelectorAll<HTMLElement>('[data-nav], [data-locale]');
     let match: HTMLElement | null = null;
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
+      const candidateNav = candidate.closest<HTMLElement>('[data-nav]');
       if (token.action !== undefined && candidate.dataset['action'] !== token.action) continue;
-      if (token.nav !== undefined && candidate.dataset['nav'] !== token.nav) continue;
+      if (token.nav !== undefined && candidateNav?.dataset['nav'] !== token.nav) continue;
       if (token.locale !== undefined && candidate.dataset['locale'] !== token.locale) continue;
       match = candidate;
       break;
     }
     if (!match) return;
-    const index = this.navItems.indexOf(match);
+    const nav = match.closest<HTMLElement>('[data-nav]');
+    const index = nav ? this.navItems.indexOf(nav) : -1;
     if (index >= 0) this.navIndex = index;
     match.focus({ preventScroll: true });
     match.scrollIntoView({ block: 'nearest', inline: 'nearest' });

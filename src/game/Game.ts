@@ -308,7 +308,7 @@ export class Game {
     this.localeStore = options.localeStore ?? new LocaleStore();
     this.selectedLocale = this.localeStore.get();
     this.activeTranslator = createTranslator(this.selectedLocale);
-    document.documentElement.lang = this.selectedLocale;
+    this.applyDocumentLocale(this.activeTranslator);
 
     const seed = options.seed ?? hashSeed('cairn-drift-01');
     this.seed = seed;
@@ -617,7 +617,7 @@ export class Game {
     const changed = locale !== this.selectedLocale;
     this.selectedLocale = locale;
     this.activeTranslator = createTranslator(locale);
-    document.documentElement.lang = locale;
+    this.applyDocumentLocale(this.activeTranslator);
     if (changed) this.replaceOverlay(this.activeTranslator);
   }
 
@@ -625,7 +625,16 @@ export class Game {
     if (this.activeRunLocale !== null) return;
     this.activeRunLocale = this.selectedLocale;
     this.activeTranslator = createTranslator(this.activeRunLocale);
-    document.documentElement.lang = this.activeRunLocale;
+    this.applyDocumentLocale(this.activeTranslator);
+  }
+
+  private applyDocumentLocale(translator: Translator): void {
+    document.documentElement.lang = translator.locale;
+    document.title = translator.messages.meta.documentTitle;
+    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute(
+      'content',
+      translator.messages.meta.documentDescription,
+    );
   }
 
   private unlockLocaleAtTitle(): void {

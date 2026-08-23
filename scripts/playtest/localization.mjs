@@ -11,6 +11,16 @@ import {
 
 const LOCALE_STORAGE_KEY = 'last-vector.locale.v1';
 const REQUIRED_METHODS = ['ready', 'startRun', 'phase', 'damageHull', 'setDriven', 'step', 'locale', 'errors'];
+const EXPECTED_METADATA = {
+  ko: {
+    title: 'LAST VECTOR — THE CAIRN DRIFT',
+    description: '붕괴하는 잔해 항로를 가르는 우주 비행 게임.',
+  },
+  en: {
+    title: 'LAST VECTOR — The Cairn Drift',
+    description: 'Fly the cairn line through a collapsing debris corridor.',
+  },
+};
 
 await runManagedSuite({
   suite: 'localization',
@@ -91,11 +101,12 @@ async function runLocalization({ report, session, options }) {
 
   await report.check({
     id: 'I18N.title-selector',
-    name: 'The title locale selector round-trips by keyboard and preserves semantic focus',
+    name: 'Title locale changes update document state and preserve semantic focus',
     assertion:
       'From the initially focused BEGIN RUN action, keyboard navigation performs ko -> en -> ko; '
-      + 'each change persists, replaces the visible Overlay, keeps focus on the locale radiogroup, '
-      + 'and leaves exactly one checked option matching locale().selected.',
+      + 'each change persists, replaces the visible Overlay, updates metadata, and keeps focus on '
+      + 'the locale radiogroup; directly focused radios are restored, and an independent context-loss '
+      + 'scenario resolves fatal copy from the current locale.',
   }, async () => {
     const initial = await localeSnapshot(page);
     verify(initial.selected === 'ko' && initial.active === null, 'Managed title did not start unlocked in Korean.', initial);
@@ -109,6 +120,7 @@ async function runLocalization({ report, session, options }) {
     await waitForSelected(page, 'en');
     const english = await localeSnapshot(page);
     const englishTitle = await titleLocaleEvidence(page);
+    const englishMetadata = await metadataEvidence(page);
     const englishFocus = await assertLocaleFocus(page);
     const englishStored = await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY);
     const koreanDetached = koreanRoot ? !(await koreanRoot.evaluate((node) => node.isConnected)) : false;
@@ -118,14 +130,79 @@ async function runLocalization({ report, session, options }) {
     await waitForSelected(page, 'ko');
     const korean = await localeSnapshot(page);
     const koreanTitle = await titleLocaleEvidence(page);
+    const koreanMetadata = await metadataEvidence(page);
     const koreanFocus = await assertLocaleFocus(page);
     const koreanStored = await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY);
     const englishDetached = englishRoot ? !(await englishRoot.evaluate((node) => node.isConnected)) : false;
 
+    const directEnglishRoot = await page.locator('.lv-root').elementHandle();
+    await page.locator('[data-view="title"][data-open="1"] [data-locale="en"]').evaluate((radio) => {
+      radio.focus();
+      radio.click();
+    });
+    await waitForSelected(page, 'en');
+    const directEnglishFocus = await directLocaleFocus(page);
+    const directEnglishDetached = directEnglishRoot
+      ? !(await directEnglishRoot.evaluate((node) => node.isConnected))
+      : false;
+
+    const directKoreanRoot = await page.locator('.lv-root').elementHandle();
+    await page.locator('[data-view="title"][data-open="1"] [data-locale="ko"]').evaluate((radio) => {
+      radio.focus();
+      radio.click();
+    });
+    await waitForSelected(page, 'ko');
+    const directKoreanFocus = await directLocaleFocus(page);
+    const directKoreanDetached = directKoreanRoot
+      ? !(await directKoreanRoot.evaluate((node) => node.isConnected))
+      : false;
+
+    const lossScenario = await openBootScenario(session);
+    let contextLoss;
+    try {
+      await ready(lossScenario.page, options.timeoutMs);
+      await focusLocale(lossScenario.page);
+      await lossScenario.page.keyboard.press('ArrowRight');
+      await waitForSelected(lossScenario.page, 'en');
+      const beforeLoss = await metadataEvidence(lossScenario.page);
+      await lossScenario.page.evaluate(() => {
+        const canvas = document.querySelector('.lv-canvas');
+        if (!canvas) throw new Error('Game canvas is missing.');
+        canvas.dispatchEvent(new Event('webglcontextlost', { bubbles: false, cancelable: true }));
+      });
+      await lossScenario.page.locator('.lv-fatal').waitFor({ state: 'visible', timeout: 5_000 });
+      const fatal = await lossScenario.page.evaluate(() => ({
+        title: document.querySelector('.lv-fatal h1')?.textContent ?? null,
+        detail: document.querySelector('.lv-fatal p')?.textContent ?? null,
+      }));
+      contextLoss = { beforeLoss, fatal };
+    } finally {
+      await lossScenario.close();
+    }
+
     const evidence = {
       initial,
-      english: { locale: english, title: englishTitle, focus: englishFocus, stored: englishStored, oldRootDetached: koreanDetached },
-      korean: { locale: korean, title: koreanTitle, focus: koreanFocus, stored: koreanStored, oldRootDetached: englishDetached },
+      english: {
+        locale: english,
+        title: englishTitle,
+        metadata: englishMetadata,
+        focus: englishFocus,
+        stored: englishStored,
+        oldRootDetached: koreanDetached,
+      },
+      korean: {
+        locale: korean,
+        title: koreanTitle,
+        metadata: koreanMetadata,
+        focus: koreanFocus,
+        stored: koreanStored,
+        oldRootDetached: englishDetached,
+      },
+      directRadio: {
+        english: { focus: directEnglishFocus, oldRootDetached: directEnglishDetached },
+        korean: { focus: directKoreanFocus, oldRootDetached: directKoreanDetached },
+      },
+      contextLoss,
     };
     verify(english.selected === 'en' && englishStored === 'en' && koreanDetached,
       'The Korean-to-English keyboard change did not persist and replace the Overlay.', evidence);
@@ -135,6 +212,19 @@ async function runLocalization({ report, session, options }) {
       verify(state.checked.length === 1 && state.checked[0] === state.value,
         'A reconstructed selector does not have exactly one checked option matching its value.', evidence);
     }
+    verify(JSON.stringify(englishMetadata) === JSON.stringify({ lang: 'en', ...EXPECTED_METADATA.en })
+      && JSON.stringify(koreanMetadata) === JSON.stringify({ lang: 'ko', ...EXPECTED_METADATA.ko }),
+    'Title locale switching did not update lang, document title, and meta description together.', evidence);
+    verify(directEnglishDetached && directEnglishFocus.locale === 'en'
+      && directEnglishFocus.checked === 'true'
+      && directKoreanDetached && directKoreanFocus.locale === 'ko'
+      && directKoreanFocus.checked === 'true',
+    'A directly focused locale radio was not restored after Overlay replacement.', evidence);
+    verify(contextLoss.beforeLoss.lang === 'en'
+      && contextLoss.fatal.title === 'GRAPHICS CONTEXT LOST'
+      && contextLoss.fatal.detail
+        === 'The browser dropped the WebGL context — usually a driver reset, a GPU switch, or another tab exhausting video memory. Reload the page to continue.',
+    'Context-loss fatal UI did not resolve the current English locale at event time.', evidence);
     return evidence;
   });
 
@@ -335,6 +425,22 @@ async function titleLocaleEvidence(page) {
         : [],
     };
   });
+}
+
+async function metadataEvidence(page) {
+  return page.evaluate(() => ({
+    lang: document.documentElement.lang,
+    title: document.title,
+    description: document.querySelector('meta[name="description"]')?.getAttribute('content') ?? null,
+  }));
+}
+
+async function directLocaleFocus(page) {
+  return page.evaluate(() => ({
+    locale: document.activeElement?.getAttribute('data-locale') ?? null,
+    checked: document.activeElement?.getAttribute('aria-checked') ?? null,
+    view: document.activeElement?.closest('[data-view]')?.getAttribute('data-view') ?? null,
+  }));
 }
 
 async function focusLocale(page) {
