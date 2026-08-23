@@ -666,6 +666,8 @@ async function runPlaytest({ report, session, options }) {
       && evidence.staleGo.goUi.screenOpen === '1'
       && evidence.staleGo.goUi.value === 'go',
     'The timer regression setup did not reach the visible GO card.', evidence);
+    verify(JSON.stringify(evidence.staleGo.countdownValues) === JSON.stringify(['3', '2', '1']),
+      'The countdown did not expose each intermediate semantic value in order.', evidence);
     verify(evidence.staleGo.restartDelayMs >= 0 && evidence.staleGo.restartDelayMs < 700,
       'Failure/retry did not occur while the old 700 ms GO-dismiss timer was still pending.', evidence);
     verify(evidence.staleGo.afterWait.phase === 'countdown'
@@ -1475,7 +1477,10 @@ async function collectHullFailureEvidence(page, options, exactFinishFrame) {
     await callHarness(page, 'setAutopilot', [false]);
     await callHarness(page, 'setInput', [neutral]);
     let goFrames = 0;
+    const countdownValues = [];
     while ((await callHarness(page, 'phase')) === 'countdown' && goFrames < 240) {
+      const ui = await countdownUiSnapshot(page);
+      if (ui.value !== null && countdownValues.at(-1) !== ui.value) countdownValues.push(ui.value);
       await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
       goFrames += 1;
     }
@@ -1525,6 +1530,7 @@ async function collectHullFailureEvidence(page, options, exactFinishFrame) {
       },
       staleGo: {
         goFrames,
+        countdownValues,
         go,
         goUi,
         restartDelayMs: restartedAt - goAt,
@@ -1560,9 +1566,10 @@ async function stepHarnessFrames(page, totalFrames, timeoutMs) {
 async function failureUiSnapshot(page) {
   return page.evaluate(() => {
     const root = document.querySelector('.lv-root');
-    const screen = document.querySelector('.lv-screen--results');
+    const screen = document.querySelector('[data-view="results"][data-open="1"]');
     const body = screen?.querySelector('.lv-res-body');
-    const buttons = body ? [...body.querySelectorAll('button')] : [];
+    const selector = '[data-view="results"][data-open="1"] [data-action="retry"]';
+    const buttons = [...document.querySelectorAll(selector)];
     return {
       rootPhase: root?.getAttribute('data-phase') ?? null,
       screenOpen: screen?.getAttribute('data-open') ?? null,
