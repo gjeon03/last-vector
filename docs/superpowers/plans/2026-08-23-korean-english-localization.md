@@ -108,6 +108,7 @@
 - Create: `src/i18n/en.ts`
 - Create: `src/i18n/domain.ts`
 - Create: `src/i18n/index.ts`
+- Create: `src/i18n/typeFixtures.ts`
 - Create: `scripts/playtest/i18n-contract.mjs`
 - Modify: `src/core/contracts.ts`
 - Modify: `package.json`
@@ -117,7 +118,9 @@
 
   Add fixtures and these exact checks:
 
+  - `I18N.module-load`: dynamically import every i18n TypeScript module under Node's type stripper.
   - `I18N.catalog-parity`: Korean and English recursively have identical keys and leaf types.
+  - `I18N.compile-time-arguments`: verify the dedicated source fixture contains and exercises at least three `@ts-expect-error` dynamic-argument failures.
   - `I18N.preserved-tokens`: proper nouns, key names, units, and rank codes remain unchanged.
   - `I18N.locale-store`: missing/invalid/corrupt storage resolves to `ko`; valid `en` persists; write failures do not corrupt in-memory state.
   - `I18N.descriptor-roundtrip`: every domain descriptor survives JSON serialization.
@@ -126,7 +129,9 @@
 
   Include both camera modes, all three gate accuracies, remaining counts 0/1/2, unsafe reason text, percentages, and fractional seconds.
 
-  Add compile-time fixtures guarded by `@ts-expect-error` proving that a dynamic message cannot omit its numeric argument or receive a string in its place.
+  Put compile-time fixtures in `src/i18n/typeFixtures.ts` so the existing `tsc --noEmit` includes them. Export the fixture array to satisfy `noUnusedLocals`. Guard calls with `@ts-expect-error` proving that `boostUsable` cannot omit its numeric argument or receive a string, and `gateClearedLog` cannot omit either required argument. If a signature becomes loose, TypeScript must fail with an unused directive.
+
+  `i18n-contract.mjs` is browser-free and dist-free. Reuse only `Report`, `parseOptions`, and `verify` from `runtime.mjs`; do not call `runManagedSuite` or launch Playwright.
 
 - [ ] **Step 2: Add the test command and verify red**
 
@@ -213,9 +218,25 @@
 
   Define every subinterface leaf explicitly, without index signatures, then define `ko` and `en` with `satisfies Messages`. Call dynamic functions directly so key-specific argument count and types are checked by TypeScript. Keep interpolation text-only and do not permit HTML.
 
+  All `src/i18n` imports include the `.ts` extension and use `import type` for erased symbols. Keep the modules compatible with Node 22 type stripping: no `enum`, namespace, constructor parameter properties, or `import = require`.
+
+  `I18N.catalog-parity` also compares dynamic `fn.length` against this table and proves marker arguments appear in rendered output:
+
+  | Path | Arity |
+  |---|---:|
+  | hud.boostUsable | 1 |
+  | hud.boostRecharging | 1 |
+  | results.splitDelta | 1 |
+  | events.hullContact | 1 |
+  | events.gateProgress | 1 |
+  | events.gateClearedLog | 2 |
+  | events.gateMissedLog | 1 |
+
 - [ ] **Step 5: Implement the isolated LocaleStore**
 
-  Use storage key `last-vector.locale.v1` and default `ko`. The store writes memory before attempting localStorage and swallows storage exceptions. `reload()` rereads storage only when Game returns to title. Do not add storage-event synchronization.
+  Use storage key `last-vector.locale.v1` and default `ko`. The store writes memory before attempting localStorage and swallows storage exceptions. `reload()` rereads storage only when Game returns to title and changes memory only when it successfully reads a valid `ko`/`en` value; missing or unreadable storage retains the current in-memory selection. Catch access to the global `localStorage` getter as well as `getItem`/`setItem`. Never touch localStorage at module evaluation time and do not add storage-event synchronization.
+
+  Contract fixtures cover null storage, empty storage, invalid `jp`, JSON-like `{"locale":"en"}`, throwing getter/read, and throwing write. After a failed write, `set('en')` and then `reload()` must both retain in-memory `en`.
 
 - [ ] **Step 6: Fill the canonical catalog**
 
@@ -243,6 +264,26 @@
 
   - Korean UI: `한국어` / `영어`
   - English UI: `Korean` / `English`
+
+  Independent legacy-English fixtures live as literal strings in `i18n-contract.mjs`, never imported from `en.ts` or Game:
+
+  | Descriptor | Exact English |
+  |---|---|
+  | terminus approach | `TERMINUS APPROACH` |
+  | pointer lock title/sub | `MOUSE CAPTURE UNAVAILABLE` / `W A S D / ARROWS STILL FLY` |
+  | camera cockpit/chase title | `COCKPIT VIEW` / `CHASE VIEW` |
+  | camera cockpit/chase sub | `PILOT CAMERA ACTIVE` / `EXTERIOR CAMERA ACTIVE` |
+  | engage / impact | `ENGAGE` / `HULL IMPACT` |
+  | boost title/sub/log | `DRIVE DRY` / `RESERVE RECHARGING` / `overdrive reserve depleted` |
+  | gate accuracy | `DEAD CENTRE` / `CLEAN` / `CLEARED` |
+  | gate progress 2/1/0 | `2 CAIRNS REMAINING` / `1 CAIRN REMAINING` / `TERMINUS AHEAD` |
+  | missed title/sub | `MISSED` / `REALIGN AND RE-ENTER` |
+  | pointer log | `mouse capture refused \u00B7 <reason>` |
+  | hull log | `hull contact \u00B7 <percent>%` |
+  | cleared log fixture | `cairn 07 \u00B7 12.34s` |
+  | missed log fixture | `cairn 07 missed` |
+
+  Gate numbers in log descriptors are already 1-based and render with two-digit zero padding. Hull percent is already rounded at the caller. Descriptor round-trip compares exact key sets as well as values and rendered output so an explicit `undefined` key cannot silently disappear.
 
 - [ ] **Step 7: Verify and commit**
 
