@@ -137,7 +137,7 @@ export const en = {
     fps: 'FPS',
     terminus: 'TERMINUS',
     boostCapacityTitle: 'Usable drive time from a full reserve',
-    boostUsable: (seconds: number) => `Boost reserve, ${seconds} seconds usable`,
+    boostUsable: (seconds: number) => `Boost reserve, ${seconds.toFixed(1)} seconds usable`,
     boostRecharging: (percent: number) => `Boost reserve locked; recharging to ${percent} percent`,
   },
   events: {

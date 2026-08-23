@@ -12,6 +12,7 @@
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
 import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
+import type { Messages, Translator } from '../i18n/index.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -240,6 +241,9 @@ interface VecState {
 export class Hud {
   readonly el: HTMLElement;
 
+  private readonly translator: Translator;
+  private readonly messages: Messages;
+
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private cw = 1;
@@ -330,6 +334,7 @@ export class Hud {
   private pFps = -1;
   private pGateTot = -1;
   private pGateName = '';
+  private pGateNameType = '';
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -387,7 +392,9 @@ export class Hud {
     reduced: false,
   };
 
-  constructor() {
+  constructor(translator: Translator) {
+    this.translator = translator;
+    this.messages = translator.messages;
     this.reduced =
       typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.vs.reduced = this.reduced;
@@ -413,6 +420,8 @@ export class Hud {
     this.nGateLabel = el('div', 'lv-gatetag');
     this.nGateLabelDist = el('span', 'lv-gatetag-n', '0');
     this.nGateLabelUnit = el('span', 'lv-gatetag-u', 'M');
+    this.nGateLabelDist.lang = 'en';
+    this.nGateLabelUnit.lang = 'en';
     this.nGateLabel.append(this.nGateLabelDist, this.nGateLabelUnit);
     this.el.appendChild(this.nGateLabel);
 
@@ -423,17 +432,21 @@ export class Hud {
     /* top strip */
     const top = el('div', 'lv-top');
     this.nSector = el('div', 'lv-sector');
+    this.nSector.lang = 'en';
     const fpsWrap = el('div', 'lv-fpswrap');
     this.nFpsFrame = fpsWrap;
-    fpsWrap.append(el('span', 'lv-fps-k', 'FPS'));
+    const fpsLabel = el('span', 'lv-fps-k', this.messages.hud.fps);
+    fpsLabel.lang = 'en';
+    fpsWrap.append(fpsLabel);
     this.nFps = el('span', 'lv-fps-v', '--');
+    this.nFps.lang = 'en';
     fpsWrap.appendChild(this.nFps);
     /**
      * Shown only when the browser refused mouse capture. The game already raises a callout for
      * it, but a callout is transient and this condition lasts the whole run: the player needs
      * to know why the mouse is dead for as long as it is dead, not for two seconds at the start.
      */
-    this.nInputMode = el('div', 'lv-inputmode', 'KEYBOARD FLIGHT');
+    this.nInputMode = el('div', 'lv-inputmode', this.messages.hud.keyboardFlight);
     this.nInputMode.dataset['on'] = '0';
     top.append(this.nSector, this.nInputMode, fpsWrap);
     frame.appendChild(top);
@@ -453,13 +466,18 @@ export class Hud {
     }
     thrTrack.append(this.nThrottleGhost, this.nThrottleFill, thrTicks);
     this.nThrottlePct = el('div', 'lv-thr-pct', '000');
-    thr.append(el('div', 'lv-thr-k', 'THR'), thrTrack, this.nThrottlePct);
+    this.nThrottlePct.lang = 'en';
+    thr.append(el('div', 'lv-thr-k', this.messages.hud.throttle), thrTrack, this.nThrottlePct);
 
     const speed = el('div', 'lv-speed');
     this.nSpeed = el('div', 'lv-readout lv-readout--speed', '0');
+    this.nSpeed.lang = 'en';
     const speedRow = el('div', 'lv-speed-row');
-    speedRow.append(this.nSpeed, el('span', 'lv-speed-u', 'M/S'));
+    const speedUnit = el('span', 'lv-speed-u', this.messages.hud.speedUnit);
+    speedUnit.lang = 'en';
+    speedRow.append(this.nSpeed, speedUnit);
     this.nGload = el('div', 'lv-gload', '0.0 G');
+    this.nGload.lang = 'en';
     speed.append(speedRow, this.nGload);
 
     const bars = el('div', 'lv-bars');
@@ -467,7 +485,7 @@ export class Hud {
     this.nBoostFill = this.nBoostRow.querySelector('.lv-bar-fill') as HTMLElement;
     this.nBoostGhost = this.nBoostRow.querySelector('.lv-bar-ghost') as HTMLElement;
     this.nBoostCap = this.nBoostRow.querySelector('.lv-bar-cap') as HTMLElement;
-    this.nHullRow = this.buildBar('HULL', 'hull');
+    this.nHullRow = this.buildBar(this.messages.hud.hull, 'hull');
     this.nHullFill = this.nHullRow.querySelector('.lv-bar-fill') as HTMLElement;
     bars.append(this.nBoostRow, this.nHullRow);
 
@@ -478,17 +496,21 @@ export class Hud {
     const right = el('div', 'lv-right');
     const gateCount = el('div', 'lv-gatecount');
     this.nGateCur = new RollingNumber(2, 'lv-roll lv-roll--gate');
+    this.nGateCur.el.lang = 'en';
     this.nGateTot = el('span', 'lv-gatecount-t', '00');
-    gateCount.append(this.nGateCur.el, el('span', 'lv-gatecount-s', '/'), this.nGateTot);
+    this.nGateTot.lang = 'en';
+    const gateSeparator = el('span', 'lv-gatecount-s', '/');
+    gateSeparator.lang = 'en';
+    gateCount.append(this.nGateCur.el, gateSeparator, this.nGateTot);
     this.nGateName = el('div', 'lv-gatename', '');
 
     const times = el('dl', 'lv-times');
-    this.nSplit = this.buildTime(times, 'SPLIT', 'is-split');
-    this.nTotal = this.buildTime(times, 'ELAPSED', 'is-total');
-    this.nBest = this.buildTime(times, 'BEST', 'is-best');
+    this.nSplit = this.buildTime(times, this.messages.hud.segment, 'is-split');
+    this.nTotal = this.buildTime(times, this.messages.hud.elapsed, 'is-total');
+    this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    right.append(el('div', 'lv-right-k', 'NEXT MARKER'), gateCount, this.nGateName, times, this.nSplitFeed);
+    right.append(el('div', 'lv-right-k', this.messages.hud.nextMarker), gateCount, this.nGateName, times, this.nSplitFeed);
     frame.appendChild(right);
 
     /* ---- centre-upper callout ---- */
@@ -504,6 +526,7 @@ export class Hud {
     const feed = el('div', 'lv-feed');
     this.nRadio = el('div', 'lv-radio');
     this.nRadioWho = el('span', 'lv-radio-who', '');
+    this.nRadioWho.lang = 'en';
     this.nRadioText = el('span', 'lv-radio-text', '');
     const bars3 = el('span', 'lv-radio-eq');
     bars3.append(el('i'), el('i'), el('i'), el('i'));
@@ -520,7 +543,9 @@ export class Hud {
     this.nRailTicks = el('div', 'lv-rail-ticks');
     railTrack.append(this.nRailFill, this.nRailTicks);
     const railKeys = el('div', 'lv-rail-keys');
-    railKeys.append(el('span', '', 'DEPARTURE'), el('span', 'lv-rail-dest', 'TERMINUS'));
+    const railDestination = el('span', 'lv-rail-dest', this.messages.hud.terminus);
+    railDestination.lang = 'en';
+    railKeys.append(el('span', '', this.messages.hud.departure), railDestination);
     this.nRail.append(railKeys, railTrack);
     frame.appendChild(this.nRail);
 
@@ -536,7 +561,7 @@ export class Hud {
   }
 
   private buildBoostBar(): HTMLElement {
-    const row = this.buildBar('BOOST', 'boost');
+    const row = this.buildBar(this.messages.hud.boost, 'boost');
     row.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
     row.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
     row.dataset['availability'] = 'available';
@@ -552,9 +577,10 @@ export class Hud {
     }
     track.appendChild(ticks);
     const capacity = el('span', 'lv-bar-cap', BOOST_USABLE_LABEL);
-    capacity.title = 'Usable drive time from a full reserve';
+    capacity.lang = 'en';
+    capacity.title = this.messages.hud.boostCapacityTitle;
     row.appendChild(capacity);
-    row.setAttribute('aria-label', `Boost reserve, ${BOOST_USABLE_SECONDS.toFixed(1)} seconds usable`);
+    row.setAttribute('aria-label', this.messages.hud.boostUsable(BOOST_USABLE_SECONDS));
     return row;
   }
 
@@ -562,6 +588,7 @@ export class Hud {
     const row = el('div', `lv-time ${cls}`);
     const dt = el('dt', 'lv-time-k', label);
     const dd = el('dd', 'lv-time-v', '--:--.--');
+    dd.lang = 'en';
     row.append(dt, dd);
     parent.appendChild(row);
     return dd;
@@ -612,10 +639,10 @@ export class Hud {
     if (dest) dest.textContent = name;
   }
 
-  radio(speaker: string, text: string): void {
+  radio(speaker: string, text: string, durationBasisLength = text.length): void {
     this.nRadioWho.textContent = speaker;
     this.nRadioText.textContent = text;
-    this.radioTtl = 3.2 + Math.min(text.length, 120) * 0.035;
+    this.radioTtl = 3.2 + Math.min(durationBasisLength, 120) * 0.035;
     retrigger(this.nRadio, 'is-in');
     this.nRadio.dataset['on'] = '1';
   }
@@ -748,9 +775,17 @@ export class Hud {
       this.pGateTot = total;
       this.nGateTot.textContent = PAD2(total);
     }
-    if (t.gate.name !== this.pGateName) {
+    const gateNameType = t.gate.nameMessage?.type ?? '';
+    if (t.gate.name !== this.pGateName || gateNameType !== this.pGateNameType) {
       this.pGateName = t.gate.name;
-      this.nGateName.textContent = t.gate.name;
+      this.pGateNameType = gateNameType;
+      if (t.gate.nameMessage) {
+        this.nGateName.textContent = this.translator.domain(t.gate.nameMessage);
+        this.nGateName.removeAttribute('lang');
+      } else {
+        this.nGateName.textContent = t.gate.name;
+        this.nGateName.lang = 'en';
+      }
       retrigger(this.nGateName, 'is-in');
     }
 
@@ -845,12 +880,14 @@ export class Hud {
       this.nBoostRow.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
       this.nBoostRow.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
       this.nBoostRow.dataset['availability'] = unavailable ? 'unavailable' : 'available';
-      this.nBoostCap.textContent = unavailable ? 'LOCK' : BOOST_USABLE_LABEL;
+      this.nBoostCap.textContent = unavailable ? this.messages.hud.locked : BOOST_USABLE_LABEL;
+      if (!unavailable || this.translator.locale === 'en') this.nBoostCap.lang = 'en';
+      else this.nBoostCap.removeAttribute('lang');
       this.nBoostRow.setAttribute(
         'aria-label',
         unavailable
-          ? `Boost reserve locked; recharging to ${BOOST_REARM_PERCENT} percent`
-          : `Boost reserve, ${BOOST_USABLE_SECONDS.toFixed(1)} seconds usable`,
+          ? this.messages.hud.boostRecharging(BOOST_REARM_PERCENT)
+          : this.messages.hud.boostUsable(BOOST_USABLE_SECONDS),
       );
     }
     if (t.boosting !== this.pBoosting) {
@@ -884,9 +921,12 @@ export class Hud {
     }
     if (c.id !== this.pCalloutId) {
       this.pCalloutId = c.id;
-      this.nCalloutTitle.textContent = c.title;
-      this.nCalloutSub.textContent = c.sub ?? '';
-      this.nCalloutSub.dataset['on'] = c.sub ? '1' : '0';
+      this.nCalloutTitle.textContent = c.titleMessage
+        ? this.translator.domain(c.titleMessage)
+        : c.title;
+      const sub = c.subMessage ? this.translator.domain(c.subMessage) : c.sub;
+      this.nCalloutSub.textContent = sub ?? '';
+      this.nCalloutSub.dataset['on'] = sub ? '1' : '0';
       if (c.tone !== this.pCalloutTone) {
         this.pCalloutTone = c.tone;
         this.nCallout.dataset['tone'] = c.tone;
@@ -939,7 +979,7 @@ export class Hud {
         if (!node) {
           node = this.logPool.pop() ?? el('li', 'lv-log-line');
           node.className = 'lv-log-line';
-          node.textContent = line.text;
+          node.textContent = line.message ? this.translator.domain(line.message) : line.text;
           node.dataset['tone'] = line.tone;
           this.logNodes.set(line.id, node);
           this.nLog.appendChild(node);
@@ -975,14 +1015,16 @@ export class Hud {
         const prev = i > 0 ? t.splits[i - 1]! : 0;
         const seg = t.splits[i]! - prev;
         const node = el('li', 'lv-splitfeed-row');
-        node.append(
-          el('span', 'lv-splitfeed-i', PAD2(i + 1)),
-          el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!)),
-          /* Unsigned. This is a leg duration, which cannot be negative, so a leading "+"
-             reads as a delta and tells a player they are down time they may in fact be up.
-             The results table prints the identical quantity unsigned; these must agree. */
-          el('span', 'lv-splitfeed-d', seg.toFixed(2)),
-        );
+        const splitIndex = el('span', 'lv-splitfeed-i', PAD2(i + 1));
+        const splitTime = el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!));
+        /* Unsigned. This is a leg duration, which cannot be negative, so a leading "+"
+           reads as a delta and tells a player they are down time they may in fact be up.
+           The results table prints the identical quantity unsigned; these must agree. */
+        const splitDuration = el('span', 'lv-splitfeed-d', seg.toFixed(2));
+        splitIndex.lang = 'en';
+        splitTime.lang = 'en';
+        splitDuration.lang = 'en';
+        node.append(splitIndex, splitTime, splitDuration);
         this.nSplitFeed.appendChild(node);
         retrigger(node, 'is-in');
         this.splitNodes.push(node);

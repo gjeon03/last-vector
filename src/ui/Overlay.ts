@@ -49,7 +49,7 @@ export class Overlay {
     this.grain.append(el('i', 'lv-veneer-scan'), el('i', 'lv-veneer-grain'));
     this.root.appendChild(this.grain);
 
-    this.hud = new Hud();
+    this.hud = new Hud(translator);
     this.hud.mount(this.root);
 
     this.screens = new Screens(this.proxyHost(), {
@@ -202,8 +202,8 @@ export class Overlay {
     this.applyHudActivity();
   }
 
-  radio(speaker: string, text: string): void {
-    this.hud.radio(speaker, text);
+  radio(speaker: string, text: string, durationBasisLength?: number): void {
+    this.hud.radio(speaker, text, durationBasisLength);
   }
 
   setPointerLocked(locked: boolean): void {

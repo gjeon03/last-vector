@@ -37,7 +37,11 @@ import type {
   AudioBus,
   CameraMode,
   Callout,
+  CalloutSubMessage,
+  CalloutTitleMessage,
+  GateAccuracy,
   LogLine,
+  LogMessage,
   Locale,
   Phase,
   RunResult,
@@ -67,13 +71,69 @@ import type {
  * and a 40 cm hull panel share a frame without z-fighting.
  */
 
-const RADIO_LINES: { at: number; speaker: string; text: string }[] = [
-  { at: 0, speaker: 'DRIFT CONTROL', text: 'Kestrel, you are clear on the cairn line. Good hunting.' },
-  { at: 2, speaker: 'DRIFT CONTROL', text: 'Shelf density climbing. Watch your left.' },
-  { at: 4, speaker: 'VESPER TERMINUS', text: 'We have your transponder. Hold the line.' },
-  { at: 6, speaker: 'VESPER TERMINUS', text: 'Long run ahead, Kestrel. Burn it.' },
-  { at: 8, speaker: 'VESPER TERMINUS', text: 'Approach lit. Bring her in.' },
+type RadioKey = 'radio1' | 'radio2' | 'radio3' | 'radio4' | 'radio5';
+
+const RADIO_LINES: readonly { at: number; speaker: string; key: RadioKey }[] = [
+  { at: 0, speaker: 'DRIFT CONTROL', key: 'radio1' },
+  { at: 2, speaker: 'DRIFT CONTROL', key: 'radio2' },
+  { at: 4, speaker: 'VESPER TERMINUS', key: 'radio3' },
+  { at: 6, speaker: 'VESPER TERMINUS', key: 'radio4' },
+  { at: 8, speaker: 'VESPER TERMINUS', key: 'radio5' },
 ];
+
+/** Public telemetry keeps canonical English regardless of the active run locale. */
+const LEGACY_ENGLISH = createTranslator('en');
+
+const POINTER_LOCK_TITLE_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.pointer-lock-unavailable',
+});
+const KEYBOARD_FLIGHT_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.keyboard-flight-available',
+});
+const CAMERA_TITLE_MESSAGES: Readonly<Record<CameraMode, CalloutTitleMessage>> = Object.freeze({
+  cockpit: Object.freeze({ type: 'callout-title.camera-view', mode: 'cockpit' }),
+  chase: Object.freeze({ type: 'callout-title.camera-view', mode: 'chase' }),
+});
+const CAMERA_SUB_MESSAGES: Readonly<Record<CameraMode, CalloutSubMessage>> = Object.freeze({
+  cockpit: Object.freeze({ type: 'callout-sub.camera-active', mode: 'cockpit' }),
+  chase: Object.freeze({ type: 'callout-sub.camera-active', mode: 'chase' }),
+});
+const ENGAGE_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.engage' });
+const HULL_IMPACT_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.hull-impact' });
+const BOOST_DEPLETED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.boost-depleted',
+});
+const BOOST_RECHARGING_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.boost-recharging',
+});
+const BOOST_DEPLETED_LOG_MESSAGE: LogMessage = Object.freeze({ type: 'log.boost-depleted' });
+const GATE_ACCURACY_MESSAGES: Readonly<Record<GateAccuracy, CalloutTitleMessage>> = Object.freeze({
+  'dead-centre': Object.freeze({
+    type: 'callout-title.gate-cleared',
+    accuracy: 'dead-centre',
+  }),
+  clean: Object.freeze({ type: 'callout-title.gate-cleared', accuracy: 'clean' }),
+  cleared: Object.freeze({ type: 'callout-title.gate-cleared', accuracy: 'cleared' }),
+});
+const GATE_MISSED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.gate-missed',
+});
+const GATE_REALIGN_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.gate-realign',
+});
+
+interface CalloutSpec {
+  titleMessage: CalloutTitleMessage;
+  sub: string | undefined;
+  subMessage: CalloutSubMessage | undefined;
+  tone: Callout['tone'];
+  ttl: number;
+}
+
+interface LogSpec {
+  message: LogMessage;
+  tone: LogLine['tone'];
+}
 
 /** Shader precompilation is optional polish; a slow or unsupported driver must still boot. */
 const COCKPIT_PREWARM_TIMEOUT_MS = 1500;
@@ -477,8 +537,17 @@ export class Game {
       // not a game fault, and filing it there turned an expected headless condition into a red
       // suite. Observable to a test through telemetry instead.
       this.telemetry.pointerLockRefused = true;
-      this.pushCallout('MOUSE CAPTURE UNAVAILABLE', 'W A S D / ARROWS STILL FLY', 'bad', 4.5);
-      this.pushLog(`mouse capture refused · ${reason}`, 'bad');
+      this.pushCallout({
+        titleMessage: POINTER_LOCK_TITLE_MESSAGE,
+        sub: undefined,
+        subMessage: KEYBOARD_FLIGHT_MESSAGE,
+        tone: 'bad',
+        ttl: 4.5,
+      });
+      this.pushLog({
+        message: { type: 'log.pointer-lock-refused', reason },
+        tone: 'bad',
+      });
     };
     this.input.onAction = (action) => {
       if (
@@ -494,12 +563,13 @@ export class Game {
         // resolved in updateVisuals, but projection state (notably the cockpit near plane) must
         // not report the previous mode for a driven frame after the persisted setting has moved.
         if (this.activeVantage === null && !this.cinematic) this.chase.setCameraMode(next);
-        this.pushCallout(
-          next === 'cockpit' ? 'COCKPIT VIEW' : 'CHASE VIEW',
-          next === 'cockpit' ? 'PILOT CAMERA ACTIVE' : 'EXTERIOR CAMERA ACTIVE',
-          'neutral',
-          1.1,
-        );
+        this.pushCallout({
+          titleMessage: CAMERA_TITLE_MESSAGES[next],
+          sub: undefined,
+          subMessage: CAMERA_SUB_MESSAGES[next],
+          tone: 'neutral',
+          ttl: 1.1,
+        });
       }
     };
 
@@ -664,6 +734,7 @@ export class Game {
         index: 0,
         total: this.course.gates.length,
         name: this.course.gates[0]?.name ?? '',
+        nameMessage: this.course.gates[0]?.nameMessage,
         distance: 0,
         anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
         alignment: 0,
@@ -1036,7 +1107,13 @@ export class Game {
           this.audio.play('countdownGo');
           this.countdown = null;
           this.setPhase('flying');
-          this.pushCallout('ENGAGE', FICTION.destinationName, 'good', 1.6);
+          this.pushCallout({
+            titleMessage: ENGAGE_MESSAGE,
+            sub: FICTION.destinationName,
+            subMessage: undefined,
+            tone: 'good',
+            ttl: 1.6,
+          });
           this.radio(0);
           this.cancelCountdownClear();
           this.countdownClearTimer = window.setTimeout(() => {
@@ -1175,8 +1252,19 @@ export class Game {
           this.impacts++;
           this.damageFlash = Math.min(1, this.damageFlash + severity * 1.4 + 0.2);
           this.audio.play('impact', severity);
-          if (severity > 0.25) this.pushCallout('HULL IMPACT', null, 'bad', 1.1);
-          this.pushLog(`hull contact · ${Math.round(severity * 100)}%`, 'bad');
+          if (severity > 0.25) {
+            this.pushCallout({
+              titleMessage: HULL_IMPACT_MESSAGE,
+              sub: undefined,
+              subMessage: undefined,
+              tone: 'bad',
+              ttl: 1.1,
+            });
+          }
+          this.pushLog({
+            message: { type: 'log.hull-contact', percent: Math.round(severity * 100) },
+            tone: 'bad',
+          });
         }
       }
     }
@@ -1571,6 +1659,7 @@ export class Game {
     t.gate.index = this.course.nextIndex;
     t.gate.total = this.course.gates.length;
     t.gate.name = gate ? gate.name : FICTION.destinationName;
+    t.gate.nameMessage = gate?.nameMessage;
     t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
     this.tmpA.copy(targetPosition).project(this.chase.camera);
@@ -1624,8 +1713,14 @@ export class Game {
     }
     if (ranDry) {
       this.audio.play('boostEmpty');
-      this.pushCallout('DRIVE DRY', 'RESERVE RECHARGING', 'warn', 1.2);
-      this.pushLog('overdrive reserve depleted', 'warn');
+      this.pushCallout({
+        titleMessage: BOOST_DEPLETED_MESSAGE,
+        sub: undefined,
+        subMessage: BOOST_RECHARGING_MESSAGE,
+        tone: 'warn',
+        ttl: 1.2,
+      });
+      this.pushLog({ message: BOOST_DEPLETED_LOG_MESSAGE, tone: 'warn' });
     }
     this.wasBoostLocked = locked;
 
@@ -1710,22 +1805,39 @@ export class Game {
       this.telemetry.splits = this.course.passes.map((p) => p.time);
       const precision = 1 - event.offset;
       this.audio.play('gatePass', clamp01(0.4 + precision * 0.6));
-      const label = precision > 0.86 ? 'DEAD CENTRE' : precision > 0.6 ? 'CLEAN' : 'CLEARED';
+      const accuracy: GateAccuracy = precision > 0.86
+        ? 'dead-centre'
+        : precision > 0.6
+          ? 'clean'
+          : 'cleared';
       const remaining = this.course.gates.length - this.course.nextIndex;
-      this.pushCallout(
-        label,
-        remaining > 0 ? `${remaining} CAIRN${remaining === 1 ? '' : 'S'} REMAINING` : 'TERMINUS AHEAD',
-        precision > 0.6 ? 'good' : 'neutral',
-        1.15,
-      );
-      this.pushLog(`cairn ${String(event.index + 1).padStart(2, '0')} · ${event.time.toFixed(2)}s`, 'good');
+      this.pushCallout({
+        titleMessage: GATE_ACCURACY_MESSAGES[accuracy],
+        sub: undefined,
+        subMessage: { type: 'callout-sub.gate-progress', remaining },
+        tone: precision > 0.6 ? 'good' : 'neutral',
+        ttl: 1.15,
+      });
+      this.pushLog({
+        message: { type: 'log.gate-cleared', gate: event.index + 1, seconds: event.time },
+        tone: 'good',
+      });
       this.radio(event.index + 1);
     };
 
     this.course.onMiss = (gate) => {
       this.audio.play('gateMiss');
-      this.pushCallout('MISSED', 'REALIGN AND RE-ENTER', 'warn', 1.6);
-      this.pushLog(`cairn ${String(gate.index + 1).padStart(2, '0')} missed`, 'warn');
+      this.pushCallout({
+        titleMessage: GATE_MISSED_MESSAGE,
+        sub: undefined,
+        subMessage: GATE_REALIGN_MESSAGE,
+        tone: 'warn',
+        ttl: 1.6,
+      });
+      this.pushLog({
+        message: { type: 'log.gate-missed', gate: gate.index + 1 },
+        tone: 'warn',
+      });
     };
   }
 
@@ -1734,22 +1846,36 @@ export class Game {
     if (!line || this.lastRadio === step) return;
     this.lastRadio = step;
     this.audio.play('radio');
-    this.overlay.radio(line.speaker, line.text);
+    const localizedText = this.activeTranslator.messages.events[line.key];
+    const legacyDurationBasis = LEGACY_ENGLISH.messages.events[line.key].length;
+    this.overlay.radio(line.speaker, localizedText, legacyDurationBasis);
   }
 
-  private pushCallout(title: string, sub: string | null, tone: Callout['tone'], ttl: number): void {
+  private pushCallout(spec: CalloutSpec): void {
+    const title = LEGACY_ENGLISH.domain(spec.titleMessage);
+    const sub = spec.subMessage
+      ? LEGACY_ENGLISH.domain(spec.subMessage)
+      : spec.sub;
     this.telemetry.callout = {
       id: ++this.calloutId,
       title,
-      sub: sub ?? undefined,
-      tone,
-      ttl,
-      ttlMax: ttl,
+      titleMessage: spec.titleMessage,
+      sub,
+      subMessage: spec.subMessage,
+      tone: spec.tone,
+      ttl: spec.ttl,
+      ttlMax: spec.ttl,
     };
   }
 
-  private pushLog(text: string, tone: LogLine['tone']): void {
-    this.logLines.push({ id: ++this.logId, text, tone, age: 0 });
+  private pushLog(spec: LogSpec): void {
+    this.logLines.push({
+      id: ++this.logId,
+      text: LEGACY_ENGLISH.domain(spec.message),
+      message: spec.message,
+      tone: spec.tone,
+      age: 0,
+    });
     if (this.logLines.length > 6) this.logLines.shift();
   }
 

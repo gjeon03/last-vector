@@ -4,6 +4,7 @@ import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.t
 import { PALETTE } from '../core/art.ts';
 import { Rng } from '../core/rng.ts';
 import { clamp01, damp, smoothstep } from '../core/mathx.ts';
+import type { GateNameMessage } from '../core/contracts.ts';
 
 /**
  * A CAIRN — one of the navigation markers the drift is strung with. Not a neon hoop: five
@@ -17,6 +18,10 @@ import { clamp01, damp, smoothstep } from '../core/mathx.ts';
  */
 
 export type GateState = 'dormant' | 'armed' | 'cleared' | 'missed';
+
+const TERMINUS_APPROACH_MESSAGE: GateNameMessage = Object.freeze({
+  type: 'gate-name.terminus-approach',
+});
 
 const MONOLITH_VERT = /* glsl */ `
   varying vec3 vWorldPos;
@@ -207,6 +212,7 @@ export class Gate {
   readonly normal: THREE.Vector3;
   readonly radius: number;
   readonly name: string;
+  readonly nameMessage: GateNameMessage | undefined;
 
   state: GateState = 'dormant';
 
@@ -227,7 +233,11 @@ export class Gate {
     this.position = options.position.clone();
     this.normal = options.normal.clone().normalize();
     this.radius = options.radius;
-    this.name = options.index === options.total - 1 ? 'TERMINUS APPROACH' : `CAIRN ${String(options.index + 1).padStart(2, '0')}`;
+    const isTerminusApproach = options.index === options.total - 1;
+    this.name = isTerminusApproach
+      ? 'TERMINUS APPROACH'
+      : `CAIRN ${String(options.index + 1).padStart(2, '0')}`;
+    this.nameMessage = isTerminusApproach ? TERMINUS_APPROACH_MESSAGE : undefined;
 
     const rng = new Rng(options.seed);
 
@@ -594,4 +604,3 @@ export class Gate {
     this.shockMat.dispose();
   }
 }
-

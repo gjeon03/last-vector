@@ -265,6 +265,74 @@ const EXPECTED_METADATA = {
     description: 'Fly the cairn line through a collapsing debris corridor.',
   },
 };
+const HUD_COPY = {
+  ko: {
+    inputMode: '키보드 비행',
+    labels: ['추력', '부스터', '선체', '구간', '경과', '최고', '다음 표식', '출발'],
+    capacityTitle: '완전 충전 시 사용 가능한 추진 시간',
+    usableAria: '부스터 3.2초 사용 가능',
+    lockedCaption: '잠김',
+    lockedAria: '부스터 잠김 · 45%까지 충전 중',
+  },
+  en: {
+    inputMode: 'KEYBOARD FLIGHT',
+    labels: ['THR', 'BOOST', 'HULL', 'SPLIT', 'ELAPSED', 'BEST', 'NEXT MARKER', 'DEPARTURE'],
+    capacityTitle: 'Usable drive time from a full reserve',
+    usableAria: 'Boost reserve, 3.2 seconds usable',
+    lockedCaption: 'LOCK',
+    lockedAria: 'Boost reserve locked; recharging to 45 percent',
+  },
+};
+const EVENT_COPY = {
+  ko: {
+    engage: ['출격', 'VESPER TERMINUS'],
+    camera: {
+      cockpit: ['조종석 시점', '조종석 카메라 활성'],
+      chase: ['추적 시점', '외부 카메라 활성'],
+    },
+    pointer: ['마우스 고정 불가', 'W A S D / 방향키로 비행 가능'],
+    boost: ['동력 고갈', '예비 동력 충전 중'],
+    hullTitle: '선체 충격',
+    accuracies: { 'dead-centre': '정중앙', clean: '정확', cleared: '통과' },
+    progress: { 2: 'CAIRN 2기 남음', 1: 'CAIRN 1기 남음', 0: 'TERMINUS 전방' },
+    missed: ['놓침', '재정렬 후 다시 진입'],
+  },
+  en: {
+    engage: ['ENGAGE', 'VESPER TERMINUS'],
+    camera: {
+      cockpit: ['COCKPIT VIEW', 'PILOT CAMERA ACTIVE'],
+      chase: ['CHASE VIEW', 'EXTERIOR CAMERA ACTIVE'],
+    },
+    pointer: ['MOUSE CAPTURE UNAVAILABLE', 'W A S D / ARROWS STILL FLY'],
+    boost: ['DRIVE DRY', 'RESERVE RECHARGING'],
+    hullTitle: 'HULL IMPACT',
+    accuracies: { 'dead-centre': 'DEAD CENTRE', clean: 'CLEAN', cleared: 'CLEARED' },
+    progress: { 2: '2 CAIRNS REMAINING', 1: '1 CAIRN REMAINING', 0: 'TERMINUS AHEAD' },
+    missed: ['MISSED', 'REALIGN AND RE-ENTER'],
+  },
+};
+const RADIO_COPY = {
+  ko: [
+    ['DRIFT CONTROL', 'Kestrel, CAIRN 항로 진입을 허가한다. 행운을 빈다.'],
+    ['DRIFT CONTROL', '선반 밀도가 높아진다. 좌현을 주의하라.'],
+    ['VESPER TERMINUS', '트랜스폰더를 확인했다. 항로를 유지하라.'],
+    ['VESPER TERMINUS', '갈 길이 멀다, Kestrel. 태워 버려라.'],
+    ['VESPER TERMINUS', '접근등 점등. 무사히 들어와라.'],
+  ],
+  en: [
+    ['DRIFT CONTROL', 'Kestrel, you are clear on the cairn line. Good hunting.'],
+    ['DRIFT CONTROL', 'Shelf density climbing. Watch your left.'],
+    ['VESPER TERMINUS', 'We have your transponder. Hold the line.'],
+    ['VESPER TERMINUS', 'Long run ahead, Kestrel. Burn it.'],
+    ['VESPER TERMINUS', 'Approach lit. Bring her in.'],
+  ],
+};
+const HOSTILE_REASON = '<img src=x onerror=window.__LV_INJECTED=1>';
+const LEGACY_FALLBACK = {
+  title: 'LEGACY TITLE · DESCRIPTOR ABSENT',
+  sub: 'LEGACY SUB · KEEP ENGLISH',
+  log: 'legacy log · descriptor absent',
+};
 
 await runManagedSuite({
   suite: 'localization',
@@ -977,6 +1045,340 @@ async function runLocalization({ report, session, options }) {
       await scenario.close();
     }
   });
+
+  await report.check({
+    id: 'I18N.event-descriptors',
+    name: 'Production HUD events carry localized descriptors and unchanged legacy English',
+    assertion:
+      'Isolated Korean and English runs exercise engage, both cameras, pointer refusal, impact, '
+      + 'boost depletion, every gate accuracy and remaining branch, gate clear/miss logs, and exact DOM copy.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockSuccess],
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await callHarness(scenario.page, 'setDriven', [true]);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: false }]);
+        await callHarness(scenario.page, 'step', [181, 1 / 60], options.timeoutMs);
+        const engage = await hudEventSnapshot(scenario.page);
+        assertCalloutEvent(locale, engage, {
+          legacyTitle: 'ENGAGE',
+          legacySub: 'VESPER TERMINUS',
+          titleMessage: { type: 'callout-title.engage' },
+          subMessage: undefined,
+          dom: EVENT_COPY[locale].engage,
+        });
+
+        const cameras = {};
+        for (const mode of ['cockpit', 'chase']) {
+          await scenario.page.keyboard.press('c');
+          await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+          cameras[mode] = await hudEventSnapshot(scenario.page);
+          const legacy = EVENT_COPY.en.camera[mode];
+          assertCalloutEvent(locale, cameras[mode], {
+            legacyTitle: legacy[0],
+            legacySub: legacy[1],
+            titleMessage: { type: 'callout-title.camera-view', mode },
+            subMessage: { type: 'callout-sub.camera-active', mode },
+            dom: EVENT_COPY[locale].camera[mode],
+          });
+        }
+
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        const beforeImpact = await callHarness(scenario.page, 'telemetry');
+        const staged = await callHarness(scenario.page, 'stageCollision');
+        verify(staged !== null, 'Could not stage the production hull-impact path.', { locale, staged });
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const impact = await hudEventSnapshot(scenario.page);
+        assertImpactEvent(locale, impact, beforeImpact);
+
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        await callHarness(scenario.page, 'setInput', [{ throttle: 1, boost: true }]);
+        let boost = null;
+        for (let frames = 0; frames < 300 && boost === null; frames += 12) {
+          await callHarness(scenario.page, 'step', [12, 1 / 60], options.timeoutMs);
+          const snapshot = await hudEventSnapshot(scenario.page);
+          if (snapshot.telemetry.boostLocked === true) boost = snapshot;
+        }
+        await callHarness(scenario.page, 'setInput', [null]);
+        verify(boost !== null, 'The production boost reserve did not reach its depleted transition.', { locale });
+        assertBoostEvent(locale, boost);
+
+        const gateEvents = await collectGateEventFlow(scenario.page, options);
+        assertGateEventFlow(locale, gateEvents);
+        evidence[locale] = { engage, cameras, impact, boost, gateEvents };
+      } finally {
+        await scenario.close();
+      }
+
+      const pointerScenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockRefusal],
+      });
+      try {
+        await ready(pointerScenario.page, options.timeoutMs);
+        await callHarness(pointerScenario.page, 'setDriven', [true]);
+        await callHarness(pointerScenario.page, 'startRun', [{ skipIntro: true }]);
+        await pointerScenario.page.waitForFunction(() => window.__LV?.telemetry().pointerLockRefused === true);
+        await callHarness(pointerScenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const pointer = await hudEventSnapshot(pointerScenario.page);
+        assertPointerEvent(locale, pointer, 'ordinary refusal');
+        evidence[locale].pointer = pointer;
+      } finally {
+        await pointerScenario.close();
+      }
+    }
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.gate-name-descriptor',
+    name: 'Only the final gate owns the frozen localized name descriptor',
+    assertion:
+      'Gates 1-8 retain CAIRN NN without descriptors, the final gate localizes with stable identity '
+      + 'across frames, and course completion clears the descriptor while preserving VESPER TERMINUS.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockSuccess],
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await callHarness(scenario.page, 'setDriven', [true]);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        const early = [];
+        for (let index = 0; index < 8; index++) {
+          await callHarness(scenario.page, 'seekCourse', [index / 9]);
+          await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+          early.push(await gateNameSnapshot(scenario.page));
+        }
+        await callHarness(scenario.page, 'seekCourse', [0.999]);
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const final = await gateNameSnapshot(scenario.page);
+        await scenario.page.evaluate(() => {
+          window.__LV_GATE_MESSAGE_REF = window.__LV?.telemetry().gate.nameMessage;
+        });
+        await callHarness(scenario.page, 'step', [3, 1 / 60], options.timeoutMs);
+        const stable = await scenario.page.evaluate(() => ({
+          same: window.__LV_GATE_MESSAGE_REF === window.__LV?.telemetry().gate.nameMessage,
+          descriptor: window.__LV?.telemetry().gate.nameMessage,
+        }));
+        await callHarness(scenario.page, 'vantage', ['terminus']);
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const complete = await gateNameSnapshot(scenario.page);
+        const expectedFinal = locale === 'ko' ? 'TERMINUS 접근 항로' : 'TERMINUS APPROACH';
+        verify(early.every((entry, index) => entry.name === `CAIRN ${String(index + 1).padStart(2, '0')}`
+          && entry.nameMessage === undefined && entry.domText === entry.name && entry.domLang === 'en'),
+        `${locale} early gate fallback changed or acquired a descriptor.`, { early });
+        verify(final.name === 'TERMINUS APPROACH'
+          && JSON.stringify(final.nameMessage) === JSON.stringify({ type: 'gate-name.terminus-approach' })
+          && final.domText === expectedFinal && final.domLang === null,
+        `${locale} final gate descriptor or localized DOM differs.`, { final, expectedFinal });
+        verify(stable.same === true, `${locale} final gate descriptor identity changed across frames.`, stable);
+        verify(complete.name === 'VESPER TERMINUS' && complete.nameMessage === undefined
+          && complete.domText === 'VESPER TERMINUS' && complete.domLang === 'en',
+        `${locale} completion did not clear the gate descriptor into the legacy destination fallback.`, complete);
+        evidence[locale] = { early, final, stable, complete };
+      } finally {
+        await scenario.close();
+      }
+    }
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.radio-lines',
+    name: 'All five radio lines use the run-locked locale with timing parity',
+    assertion:
+      'Actual radio events preserve speakers, render exact localized bodies, agree with a same-run '
+      + 'callout locale, and remain visible through the same English-length boundary in both locales.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockSuccess],
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await callHarness(scenario.page, 'setDriven', [true]);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        const first = await radioSnapshot(scenario.page);
+        await callHarness(scenario.page, 'step', [307, 1 / 60], options.timeoutMs);
+        const beforeBoundary = await radioSnapshot(scenario.page);
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const atBoundary = await radioSnapshot(scenario.page);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        const run = await collectRadioFlow(scenario.page, options);
+        const expected = RADIO_COPY[locale].map(([speaker, text]) => ({ speaker, text }));
+        verify(JSON.stringify(run.lines) === JSON.stringify(expected),
+          `${locale} radio event sequence differs from the independent literal fixture.`, { run, expected });
+        verify(first.speaker === expected[0].speaker && first.text === expected[0].text
+          && first.speakerLang === 'en', `${locale} first radio event differs.`, { first, expected });
+        verify(beforeBoundary.on === '1' && atBoundary.on === '0',
+          `${locale} radio dwell does not use the 55-character legacy-English boundary.`, {
+            beforeBoundary,
+            atBoundary,
+            expectedVisibleFrames: 307,
+            expectedHiddenFrame: 308,
+          });
+        verify(run.calloutLocaleText === EVENT_COPY[locale].accuracies[run.firstAccuracy],
+          `${locale} radio and same-run callout translators disagree.`, run);
+        evidence[locale] = { first, beforeBoundary, atBoundary, ...run };
+      } finally {
+        await scenario.close();
+      }
+    }
+    verify(evidence.ko.beforeBoundary.on === evidence.en.beforeBoundary.on
+      && evidence.ko.atBoundary.on === evidence.en.atBoundary.on,
+    'Korean and English radio dwell boundaries differ.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.hud-static-copy',
+    name: 'Static HUD labels, ARIA, and Latin-only nodes use the active locale safely',
+    assertion:
+      'Both locales render exact static labels and boost copy, preserve raw numeric telemetry, '
+      + 'mark Latin-only nodes lang=en, and switch the boost caption language with its content.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockSuccess],
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await callHarness(scenario.page, 'setDriven', [true]);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const available = await hudStaticSnapshot(scenario.page);
+        await callHarness(scenario.page, 'setInput', [{ throttle: 1, boost: true }]);
+        let locked = null;
+        for (let frames = 0; frames < 300 && locked === null; frames += 12) {
+          await callHarness(scenario.page, 'step', [12, 1 / 60], options.timeoutMs);
+          const telemetry = await callHarness(scenario.page, 'telemetry');
+          if (telemetry.boostLocked === true) locked = await hudStaticSnapshot(scenario.page);
+        }
+        await callHarness(scenario.page, 'setInput', [null]);
+        verify(locked !== null, `${locale} production boost reserve did not enter its locked state.`);
+        assertHudStatic(locale, available, locked);
+        evidence[locale] = { available, locked };
+      } finally {
+        await scenario.close();
+      }
+    }
+    verify(JSON.stringify(evidence.ko.available.raw) === JSON.stringify(evidence.en.available.raw),
+      'Localization changed raw HUD numeric/unit content.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.hostile-text',
+    name: 'Hostile pointer-lock reasons remain inert text through Game and Hud',
+    assertion:
+      'A pre-document requestPointerLock rejection traverses Input -> Game descriptor -> Hud, '
+      + 'renders the markup-shaped payload literally, creates no executable/media node or request, and reports no error.',
+  }, async () => {
+    const scenario = await openLocaleScenario(session, 'ko', {
+      initScripts: [installHostilePointerLock],
+    });
+    try {
+      await ready(scenario.page, options.timeoutMs);
+      await callHarness(scenario.page, 'setDriven', [true]);
+      await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+      await scenario.page.waitForFunction(() => window.__LV?.telemetry().pointerLockRefused === true);
+      await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+      const dom = await scenario.page.evaluate((payload) => ({
+        calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
+        calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
+        logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
+        forbidden: Array.from(document.querySelectorAll('.lv-hud script, .lv-hud img, .lv-hud iframe, .lv-root script, .lv-root img, .lv-root iframe'),
+          (node) => node.outerHTML),
+        injected: window.__LV_INJECTED,
+        positiveControl: new DOMParser().parseFromString(payload, 'text/html').querySelector('img') !== null,
+      }), HOSTILE_REASON);
+      const telemetry = await callHarness(scenario.page, 'telemetry');
+      const errors = await callHarness(scenario.page, 'errors');
+      const payloadRequests = scenario.requests.filter(({ url }) => new URL(url).pathname.endsWith('/x'));
+      const evidence = { dom, telemetry, errors, payloadRequests, requests: scenario.requests };
+      verify(dom.calloutTitle === EVENT_COPY.ko.pointer[0]
+        && dom.calloutSub === EVENT_COPY.ko.pointer[1]
+        && dom.logs.includes(`마우스 고정 거부 · ${HOSTILE_REASON}`),
+      'Hostile reason did not render literally through the localized production path.', evidence);
+      verify(telemetry.log.some(({ text, message }) => text === `mouse capture refused · ${HOSTILE_REASON}`
+        && JSON.stringify(message) === JSON.stringify({ type: 'log.pointer-lock-refused', reason: HOSTILE_REASON })),
+      'Hostile reason did not retain the independent English legacy log and exact descriptor.', evidence);
+      verify(dom.positiveControl && dom.forbidden.length === 0 && dom.injected === undefined,
+        'Hostile text became active markup inside the HUD/root.', evidence);
+      verify(payloadRequests.length === 0, 'Hostile text triggered an x resource request.', evidence);
+      verify(errors.length === 0, 'Hostile text added a runtime/harness error.', evidence);
+      return evidence;
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  await report.check({
+    id: 'I18N.legacy-fallback',
+    name: 'Descriptor-less public telemetry retains exact legacy fallback rendering',
+    assertion:
+      'In driven, flying, simulation-paused Korean and English runs, a live telemetry mutation '
+      + 'renders unique descriptor-less callout/log bytes and the natural CAIRN 01 gate fallback unchanged.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        initScripts: [installPointerLockSuccess],
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await callHarness(scenario.page, 'setDriven', [true]);
+        await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
+        await callHarness(scenario.page, 'setPaused', [true]);
+        const before = await callHarness(scenario.page, 'telemetry');
+        await scenario.page.evaluate((fixture) => {
+          const telemetry = window.__LV?.telemetry();
+          if (!telemetry) throw new Error('Telemetry unavailable for legacy fallback fixture.');
+          telemetry.callout = {
+            id: 987654321,
+            title: fixture.title,
+            titleMessage: undefined,
+            sub: fixture.sub,
+            subMessage: undefined,
+            tone: 'neutral',
+            ttl: 30,
+            ttlMax: 30,
+          };
+          telemetry.log.push({
+            id: 987654321,
+            text: fixture.log,
+            message: undefined,
+            tone: 'neutral',
+            age: 0,
+          });
+        }, LEGACY_FALLBACK);
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const after = await callHarness(scenario.page, 'telemetry');
+        const dom = await pageTextSnapshot(scenario.page);
+        const evidenceEntry = { before, after, dom };
+        verify(before.phase === 'flying' && after.phase === 'flying' && after.elapsed === before.elapsed,
+          `${locale} fallback scenario was not driven/flying/simulation-paused.`, evidenceEntry);
+        verify(dom.calloutTitle === LEGACY_FALLBACK.title && dom.calloutSub === LEGACY_FALLBACK.sub
+          && dom.logs.includes(LEGACY_FALLBACK.log),
+        `${locale} descriptor-less callout/log did not use exact legacy fallback bytes.`, evidenceEntry);
+        verify(dom.gateName === 'CAIRN 01' && dom.gateLang === 'en'
+          && after.gate.name === 'CAIRN 01' && after.gate.nameMessage === undefined,
+        `${locale} natural early gate did not use the legacy name fallback.`, evidenceEntry);
+        evidence[locale] = evidenceEntry;
+      } finally {
+        await scenario.close();
+      }
+    }
+    return evidence;
+  });
 }
 
 async function openLocaleScenario(session, locale, extra = {}) {
@@ -986,6 +1388,389 @@ async function openLocaleScenario(session, locale, extra = {}) {
   if (Object.keys(localStorageSeed).length > 0) options.localStorageSeed = localStorageSeed;
   else delete options.localStorageSeed;
   return openBootScenario(session, options);
+}
+
+async function hudEventSnapshot(page) {
+  const telemetry = await callHarness(page, 'telemetry');
+  const dom = await page.evaluate(() => ({
+    calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
+    calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
+    calloutOn: document.querySelector('.lv-callout')?.getAttribute('data-on') ?? null,
+    logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
+    calloutKeys: window.__LV?.telemetry().callout
+      ? Object.keys(window.__LV.telemetry().callout)
+      : [],
+    logKeys: window.__LV?.telemetry().log.map((line) => Object.keys(line)) ?? [],
+  }));
+  return { telemetry, dom };
+}
+
+async function pageTextSnapshot(page) {
+  return page.evaluate(() => ({
+    calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
+    calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
+    logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
+    gateName: document.querySelector('.lv-gatename')?.textContent ?? '',
+    gateLang: document.querySelector('.lv-gatename')?.getAttribute('lang') ?? null,
+  }));
+}
+
+function assertCalloutEvent(locale, snapshot, expected) {
+  const callout = snapshot.telemetry.callout;
+  const evidence = { locale, snapshot, expected };
+  verify(callout !== null, `${locale} event did not produce a callout.`, evidence);
+  verify(callout.title === expected.legacyTitle && callout.sub === expected.legacySub,
+    `${locale} event changed an independent legacy English callout fixture.`, evidence);
+  verify(JSON.stringify(callout.titleMessage) === JSON.stringify(expected.titleMessage)
+    && JSON.stringify(callout.subMessage) === JSON.stringify(expected.subMessage),
+  `${locale} event attached the wrong descriptor.`, evidence);
+  verify(snapshot.dom.calloutTitle === expected.dom[0]
+    && snapshot.dom.calloutSub === expected.dom[1] && snapshot.dom.calloutOn === '1',
+  `${locale} event rendered the wrong localized callout DOM.`, evidence);
+  verify(JSON.stringify(snapshot.dom.calloutKeys)
+    === JSON.stringify(['id', 'title', 'titleMessage', 'sub', 'subMessage', 'tone', 'ttl', 'ttlMax']),
+  `${locale} callout does not use the stable explicit optional-field shape.`, evidence);
+}
+
+function assertPointerEvent(locale, snapshot, reason) {
+  assertCalloutEvent(locale, snapshot, {
+    legacyTitle: 'MOUSE CAPTURE UNAVAILABLE',
+    legacySub: 'W A S D / ARROWS STILL FLY',
+    titleMessage: { type: 'callout-title.pointer-lock-unavailable' },
+    subMessage: { type: 'callout-sub.keyboard-flight-available' },
+    dom: EVENT_COPY[locale].pointer,
+  });
+  const line = snapshot.telemetry.log.find(({ message }) => message?.type === 'log.pointer-lock-refused');
+  const index = snapshot.telemetry.log.indexOf(line);
+  const expectedLegacy = `mouse capture refused · ${reason}`;
+  const expectedDom = locale === 'ko'
+    ? `마우스 고정 거부 · ${reason}`
+    : expectedLegacy;
+  verify(line?.text === expectedLegacy
+    && JSON.stringify(line?.message) === JSON.stringify({ type: 'log.pointer-lock-refused', reason })
+    && snapshot.dom.logs[index] === expectedDom,
+  `${locale} pointer-refusal log descriptor, legacy field, or DOM differs.`, { snapshot, reason });
+  verify(JSON.stringify(snapshot.dom.logKeys[index])
+    === JSON.stringify(['id', 'text', 'message', 'tone', 'age']),
+  `${locale} pointer log does not use the stable explicit optional-field shape.`, snapshot);
+}
+
+function assertImpactEvent(locale, snapshot, before) {
+  const callout = snapshot.telemetry.callout;
+  const line = [...snapshot.telemetry.log].reverse()
+    .find(({ message }) => message?.type === 'log.hull-contact');
+  const index = snapshot.telemetry.log.indexOf(line);
+  const percent = line?.message?.percent;
+  const evidence = { locale, snapshot, before, line, percent };
+  verify(Number.isInteger(percent) && snapshot.telemetry.hull < before.hull,
+    `${locale} staged collision did not expose a rounded contact percent and real damage.`, evidence);
+  assertCalloutEvent(locale, snapshot, {
+    legacyTitle: 'HULL IMPACT',
+    legacySub: undefined,
+    titleMessage: { type: 'callout-title.hull-impact' },
+    subMessage: undefined,
+    dom: [EVENT_COPY[locale].hullTitle, ''],
+  });
+  const legacy = `hull contact · ${percent}%`;
+  const localized = locale === 'ko' ? `선체 접촉 · ${percent}%` : legacy;
+  verify(line.text === legacy && snapshot.dom.logs[index] === localized,
+    `${locale} hull-contact legacy bytes or localized DOM differ.`, evidence);
+}
+
+function assertBoostEvent(locale, snapshot) {
+  assertCalloutEvent(locale, snapshot, {
+    legacyTitle: 'DRIVE DRY',
+    legacySub: 'RESERVE RECHARGING',
+    titleMessage: { type: 'callout-title.boost-depleted' },
+    subMessage: { type: 'callout-sub.boost-recharging' },
+    dom: EVENT_COPY[locale].boost,
+  });
+  const line = [...snapshot.telemetry.log].reverse()
+    .find(({ message }) => message?.type === 'log.boost-depleted');
+  const index = snapshot.telemetry.log.indexOf(line);
+  verify(line?.text === 'overdrive reserve depleted'
+    && JSON.stringify(line?.message) === JSON.stringify({ type: 'log.boost-depleted' })
+    && snapshot.dom.logs[index] === (locale === 'ko'
+      ? '오버드라이브 예비 동력 고갈'
+      : 'overdrive reserve depleted'),
+  `${locale} boost-depletion log descriptor, legacy field, or DOM differs.`, snapshot);
+}
+
+async function collectGateEventFlow(page, options) {
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+  const callouts = [];
+  const logs = [];
+  const seenCallouts = new Set();
+  const seenLogs = new Set();
+  const maxFrames = Math.ceil((options.maxSimSeconds ?? 300) * 60);
+  let frames = 0;
+  try {
+    while (frames < maxFrames) {
+      const phase = await callHarness(page, 'phase');
+      if (phase === 'finished') break;
+      verify(phase !== 'failed', 'Autopilot failed during gate descriptor collection.', { phase, frames });
+      await callHarness(page, 'step', [60, 1 / 60], options.timeoutMs);
+      frames += 60;
+      const snapshot = await hudEventSnapshot(page);
+      const callout = snapshot.telemetry.callout;
+      if (callout?.titleMessage?.type === 'callout-title.gate-cleared'
+        && !seenCallouts.has(callout.id)) {
+        seenCallouts.add(callout.id);
+        callouts.push({ callout, dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub] });
+      }
+      for (let index = 0; index < snapshot.telemetry.log.length; index++) {
+        const line = snapshot.telemetry.log[index];
+        if (!line.message || seenLogs.has(line.id)) continue;
+        if (line.message.type === 'log.gate-cleared' || line.message.type === 'log.gate-missed') {
+          seenLogs.add(line.id);
+          logs.push({ line, dom: snapshot.dom.logs[index] });
+        }
+      }
+    }
+  } finally {
+    await callHarness(page, 'setAutopilot', [false]);
+  }
+  const phase = await callHarness(page, 'phase');
+  verify(phase === 'finished', 'Gate descriptor collection did not complete the production course.', {
+    phase,
+    frames,
+  });
+
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'seekCourse', [0.599]);
+  await callHarness(page, 'setInput', [{ throttle: 1 }]);
+  let deadCentre = null;
+  try {
+    for (let attemptFrames = 0; attemptFrames < 120 && deadCentre === null; attemptFrames += 1) {
+      await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+      const snapshot = await hudEventSnapshot(page);
+      if (snapshot.telemetry.callout?.titleMessage?.type === 'callout-title.gate-cleared'
+        && snapshot.telemetry.callout.titleMessage.accuracy === 'dead-centre') {
+        const history = await callHarness(page, 'gateHistory');
+        deadCentre = {
+          callout: snapshot.telemetry.callout,
+          dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub],
+          pass: history.at(-1),
+          seek: 0.599,
+        };
+      }
+    }
+  } finally {
+    await callHarness(page, 'setInput', [null]);
+  }
+  verify(deadCentre !== null && deadCentre.pass?.index === 5
+    && deadCentre.pass.radialDistance < 1,
+  'The deterministic gate-six centreline flight did not exercise a sub-metre dead-centre pass.', {
+    deadCentre,
+  });
+  callouts.push(deadCentre);
+
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'setInput', [{ throttle: 1, strafeX: 1 }]);
+  let missed = null;
+  try {
+    for (let attemptFrames = 0; attemptFrames < 3600 && missed === null; attemptFrames += 30) {
+      await callHarness(page, 'step', [30, 1 / 60], options.timeoutMs);
+      const snapshot = await hudEventSnapshot(page);
+      if (snapshot.telemetry.callout?.titleMessage?.type === 'callout-title.gate-missed') {
+        missed = snapshot;
+      }
+    }
+  } finally {
+    await callHarness(page, 'setInput', [null]);
+  }
+  verify(missed !== null, 'A laterally offset production flight did not exercise the gate-miss boundary.');
+  return { frames, callouts, logs, deadCentre, missed };
+}
+
+function assertGateEventFlow(locale, flow) {
+  const evidence = { locale, flow };
+  const accuracies = new Set();
+  const remaining = new Set();
+  for (const { callout, dom } of flow.callouts) {
+    const accuracy = callout.titleMessage?.accuracy;
+    const count = callout.subMessage?.remaining;
+    accuracies.add(accuracy);
+    if (count === 0 || count === 1 || count === 2) remaining.add(count);
+    const expectedLegacyTitle = EVENT_COPY.en.accuracies[accuracy];
+    const expectedLegacySub = count > 0
+      ? `${count} CAIRN${count === 1 ? '' : 'S'} REMAINING`
+      : 'TERMINUS AHEAD';
+    verify(callout.title === expectedLegacyTitle && callout.sub === expectedLegacySub,
+      `${locale} gate pass changed an independent legacy English fixture.`, { callout, dom });
+    verify(dom[0] === EVENT_COPY[locale].accuracies[accuracy],
+      `${locale} gate accuracy DOM does not match its exact localized fixture.`, { callout, dom });
+    if (count === 0 || count === 1 || count === 2) {
+      verify(dom[1] === EVENT_COPY[locale].progress[count],
+        `${locale} remaining ${count} DOM does not match its exact localized fixture.`, { callout, dom });
+    }
+  }
+  verify(JSON.stringify([...accuracies].sort())
+    === JSON.stringify(['clean', 'cleared', 'dead-centre']),
+  `${locale} production paths did not exercise all three gate accuracy descriptors.`, evidence);
+  verify(JSON.stringify([...remaining].sort()) === JSON.stringify([0, 1, 2]),
+    `${locale} production paths did not exercise remaining 0/1/2.`, evidence);
+  const clearLogs = flow.logs.filter(({ line }) => line.message?.type === 'log.gate-cleared');
+  verify(clearLogs.length === 9, `${locale} did not record all nine gate-clear logs.`, evidence);
+  for (const { line, dom } of clearLogs) {
+    const { gate, seconds } = line.message;
+    const padded = String(gate).padStart(2, '0');
+    verify(line.text === `cairn ${padded} · ${seconds.toFixed(2)}s`,
+      `${locale} gate log changed padding or seconds.toFixed(2) legacy bytes.`, { line, dom });
+    verify(dom === (locale === 'ko'
+      ? `CAIRN ${padded} · ${seconds.toFixed(2)}초`
+      : line.text), `${locale} gate-clear log DOM differs.`, { line, dom });
+  }
+  assertCalloutEvent(locale, flow.missed, {
+    legacyTitle: 'MISSED',
+    legacySub: 'REALIGN AND RE-ENTER',
+    titleMessage: { type: 'callout-title.gate-missed' },
+    subMessage: { type: 'callout-sub.gate-realign' },
+    dom: EVENT_COPY[locale].missed,
+  });
+  const missLine = flow.missed.telemetry.log.find(({ message }) => message?.type === 'log.gate-missed');
+  const missIndex = flow.missed.telemetry.log.indexOf(missLine);
+  const gate = missLine?.message?.gate;
+  const padded = String(gate).padStart(2, '0');
+  verify(Number.isInteger(gate) && missLine.text === `cairn ${padded} missed`
+    && flow.missed.dom.logs[missIndex] === (locale === 'ko'
+      ? `CAIRN ${padded} 놓침`
+      : missLine.text), `${locale} gate-miss log descriptor or exact formatting differs.`, evidence);
+}
+
+async function gateNameSnapshot(page) {
+  return page.evaluate(() => {
+    const gate = window.__LV?.telemetry().gate;
+    const node = document.querySelector('.lv-gatename');
+    return {
+      index: gate?.index,
+      name: gate?.name,
+      nameMessage: gate?.nameMessage,
+      domText: node?.textContent ?? '',
+      domLang: node?.getAttribute('lang') ?? null,
+    };
+  });
+}
+
+async function radioSnapshot(page) {
+  return page.evaluate(() => ({
+    on: document.querySelector('.lv-radio')?.getAttribute('data-on') ?? null,
+    speaker: document.querySelector('.lv-radio-who')?.textContent ?? '',
+    speakerLang: document.querySelector('.lv-radio-who')?.getAttribute('lang') ?? null,
+    text: document.querySelector('.lv-radio-text')?.textContent ?? '',
+  }));
+}
+
+async function collectRadioFlow(page, options) {
+  const lines = [];
+  const seen = new Set();
+  let calloutLocaleText = null;
+  let firstAccuracy = null;
+  const capture = async () => {
+    const radio = await radioSnapshot(page);
+    const key = `${radio.speaker}\n${radio.text}`;
+    if (radio.on === '1' && radio.text && !seen.has(key)) {
+      seen.add(key);
+      lines.push({ speaker: radio.speaker, text: radio.text });
+    }
+    const event = await hudEventSnapshot(page);
+    if (firstAccuracy === null && event.telemetry.callout?.titleMessage?.type === 'callout-title.gate-cleared') {
+      firstAccuracy = event.telemetry.callout.titleMessage.accuracy;
+      calloutLocaleText = event.dom.calloutTitle;
+    }
+  };
+  await capture();
+  await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+  const maxFrames = Math.ceil((options.maxSimSeconds ?? 300) * 60);
+  let frames = 0;
+  try {
+    while (frames < maxFrames && await callHarness(page, 'phase') !== 'finished') {
+      await callHarness(page, 'step', [60, 1 / 60], options.timeoutMs);
+      frames += 60;
+      await capture();
+    }
+  } finally {
+    await callHarness(page, 'setAutopilot', [false]);
+  }
+  verify(await callHarness(page, 'phase') === 'finished',
+    'Radio collection did not finish the production run.', { frames, lines });
+  return { frames, lines, firstAccuracy, calloutLocaleText };
+}
+
+async function hudStaticSnapshot(page) {
+  return page.evaluate(() => {
+    const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+    const boost = document.querySelector('.lv-bar--boost');
+    const caption = boost?.querySelector('.lv-bar-cap');
+    const latinSelectors = [
+      '.lv-sector', '.lv-fps-k', '.lv-fps-v', '.lv-thr-pct', '.lv-readout--speed',
+      '.lv-speed-u', '.lv-gload', '.lv-roll--gate', '.lv-gatecount-s', '.lv-gatecount-t',
+      '.lv-time-v', '.lv-rail-dest', '.lv-radio-who', '.lv-gatetag-n', '.lv-gatetag-u',
+    ];
+    return {
+      inputMode: text('.lv-inputmode'),
+      labels: [
+        text('.lv-thr-k'),
+        text('.lv-bar--boost .lv-bar-k'),
+        text('.lv-bar--hull .lv-bar-k'),
+        ...Array.from(document.querySelectorAll('.lv-time-k'), (node) => node.textContent ?? ''),
+        text('.lv-right-k'),
+        text('.lv-rail-keys > span:first-child'),
+      ],
+      boost: {
+        title: caption?.getAttribute('title') ?? '',
+        caption: caption?.textContent ?? '',
+        captionLang: caption?.getAttribute('lang') ?? null,
+        aria: boost?.getAttribute('aria-label') ?? '',
+        usableSeconds: boost?.getAttribute('data-usable-seconds') ?? null,
+        rearmPercent: boost?.getAttribute('data-rearm-percent') ?? null,
+        availability: boost?.getAttribute('data-availability') ?? null,
+      },
+      latin: latinSelectors.map((selector) => ({
+        selector,
+        values: Array.from(document.querySelectorAll(selector), (node) => ({
+          text: node.textContent ?? '',
+          lang: node.getAttribute('lang'),
+        })),
+      })),
+      raw: {
+        throttle: text('.lv-thr-pct'),
+        speed: text('.lv-readout--speed'),
+        speedUnit: text('.lv-speed-u'),
+        gLoad: text('.lv-gload'),
+        gateTotal: text('.lv-gatecount-t'),
+        times: Array.from(document.querySelectorAll('.lv-time-v'), (node) => node.textContent ?? ''),
+        gateTag: [text('.lv-gatetag-n'), text('.lv-gatetag-u')],
+      },
+    };
+  });
+}
+
+function assertHudStatic(locale, available, locked) {
+  const expected = HUD_COPY[locale];
+  const evidence = { locale, expected, available, locked };
+  verify(available.inputMode === expected.inputMode
+    && JSON.stringify(available.labels) === JSON.stringify(expected.labels),
+  `${locale} static HUD labels differ from independent fixtures.`, evidence);
+  verify(available.boost.title === expected.capacityTitle
+    && available.boost.caption === '3.2S'
+    && available.boost.captionLang === 'en'
+    && available.boost.aria === expected.usableAria
+    && available.boost.usableSeconds === String(92 / 29)
+    && available.boost.rearmPercent === '45'
+    && available.boost.availability === 'available',
+  `${locale} usable boost caption/title/ARIA differs.`, evidence);
+  verify(locked.boost.title === expected.capacityTitle
+    && locked.boost.caption === expected.lockedCaption
+    && locked.boost.captionLang === (locale === 'en' ? 'en' : null)
+    && locked.boost.aria === expected.lockedAria
+    && locked.boost.availability === 'unavailable',
+  `${locale} locked boost caption/ARIA or dynamic lang differs.`, evidence);
+  for (const entry of available.latin) {
+    verify(entry.values.length > 0 && entry.values.every(({ lang }) => lang === 'en'),
+      `${locale} Latin-only HUD nodes are missing lang=en.`, { entry, evidence });
+  }
 }
 
 async function clickAction(page, view, action) {
@@ -1782,6 +2567,24 @@ function installBootProbe() {
   new MutationObserver((records) => {
     for (const record of records) for (const node of record.addedNodes) inspect(node);
   }).observe(document, { childList: true, subtree: true });
+}
+
+function installPointerLockSuccess() {
+  Element.prototype.requestPointerLock = function requestPointerLock() {
+    return Promise.resolve();
+  };
+}
+
+function installPointerLockRefusal() {
+  Element.prototype.requestPointerLock = function requestPointerLock() {
+    return Promise.reject(new Error('ordinary refusal'));
+  };
+}
+
+function installHostilePointerLock() {
+  Element.prototype.requestPointerLock = function requestPointerLock() {
+    return Promise.reject(new Error('<img src=x onerror=window.__LV_INJECTED=1>'));
+  };
 }
 
 function installListenerCensus() {

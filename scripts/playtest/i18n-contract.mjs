@@ -138,11 +138,12 @@ await report.check(
     id: 'I18N.compile-time-arguments',
     name: 'Dynamic arguments and safe DOM sinks are guarded at source level',
     assertion:
-      'The TypeScript fixture contains the required @ts-expect-error calls and Screens avoids HTML sinks.',
+      'The TypeScript fixture contains the required @ts-expect-error calls and Screens/Hud avoid HTML sinks.',
   },
   async () => {
     const source = await readFile(new URL('../../src/i18n/typeFixtures.ts', import.meta.url), 'utf8');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
+    const hudSource = await readFile(new URL('../../src/ui/Hud.ts', import.meta.url), 'utf8');
     const directives = source.match(/@ts-expect-error/g) ?? [];
     verify(directives.length >= 3, 'At least three @ts-expect-error fixtures are required', {
       count: directives.length,
@@ -158,9 +159,12 @@ await report.check(
       ['innerHTML', /\.innerHTML\b/],
       ['insertAdjacentHTML', /\.insertAdjacentHTML\s*\(/],
       ['document.write', /\bdocument\.write\s*\(/],
-    ].filter(([, pattern]) => pattern.test(screensSource)).map(([name]) => name);
+    ].flatMap(([name, pattern]) => [
+      ...(pattern.test(screensSource) ? [`Screens.ts:${name}`] : []),
+      ...(pattern.test(hudSource) ? [`Hud.ts:${name}`] : []),
+    ]);
     verify(unsafeDomSinks.length === 0,
-      'Screens.ts uses a forbidden HTML-parsing DOM sink.', { unsafeDomSinks });
+      'Screens.ts or Hud.ts uses a forbidden HTML-parsing DOM sink.', { unsafeDomSinks });
     return { expectErrorDirectives: directives.length, unsafeDomSinks };
   },
 );
@@ -417,7 +421,23 @@ await report.check(
       const actual = translator.domain(descriptor);
       verify(actual === expected, 'English descriptor rendering changed', { descriptor, expected, actual });
     }
-    return { fixtureCount: fixtures.length };
+    const ko = requireExport('ko.ts', 'ko');
+    const en = requireExport('en.ts', 'en');
+    const boostFixtures = {
+      koUsable: ko.hud.boostUsable(92 / 29),
+      enUsable: en.hud.boostUsable(92 / 29),
+      koRecharging: ko.hud.boostRecharging(45),
+      enRecharging: en.hud.boostRecharging(45),
+    };
+    verify(boostFixtures.koUsable === '부스터 3.2초 사용 가능',
+      'Korean boost usable copy differs from the exact legacy fixture.', boostFixtures);
+    verify(boostFixtures.enUsable === 'Boost reserve, 3.2 seconds usable',
+      'English boost usable copy differs from the exact legacy fixture.', boostFixtures);
+    verify(boostFixtures.koRecharging === '부스터 잠김 · 45%까지 충전 중',
+      'Korean boost recharging copy differs from the exact fixture.', boostFixtures);
+    verify(boostFixtures.enRecharging === 'Boost reserve locked; recharging to 45 percent',
+      'English boost recharging copy differs from the exact legacy fixture.', boostFixtures);
+    return { fixtureCount: fixtures.length, boostFixtures };
   },
 );
 
