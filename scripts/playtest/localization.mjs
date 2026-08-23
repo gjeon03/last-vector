@@ -328,6 +328,7 @@ const RADIO_COPY = {
   ],
 };
 const HOSTILE_REASON = '<img src=x onerror=window.__LV_INJECTED=1>';
+const STAGED_FULL_SEVERITY_HULL_DAMAGE = 0.22;
 const LEGACY_FALLBACK = {
   title: 'LEGACY TITLE · DESCRIPTOR ABSENT',
   sub: 'LEGACY SUB · KEEP ENGLISH',
@@ -1093,7 +1094,27 @@ async function runLocalization({ report, session, options }) {
         verify(staged !== null, 'Could not stage the production hull-impact path.', { locale, staged });
         await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
         const impact = await hudEventSnapshot(scenario.page);
-        assertImpactEvent(locale, impact, beforeImpact);
+        const impactPhysical = assertImpactEvent(locale, impact, beforeImpact, staged);
+        const impactPercentMutation = structuredClone(impact);
+        const mutatedImpactLine = impactPercentMutation.telemetry.log
+          .find(({ message }) => message?.type === 'log.hull-contact');
+        verify(mutatedImpactLine !== undefined,
+          'Could not construct the hull-percent contract self-test.', { locale, impact });
+        mutatedImpactLine.message.percent = impactPhysical.expectedPercent + 1;
+        mutatedImpactLine.text = `hull contact · ${mutatedImpactLine.message.percent}%`;
+        const mutatedImpactIndex = impactPercentMutation.telemetry.log.indexOf(mutatedImpactLine);
+        impactPercentMutation.dom.logs[mutatedImpactIndex] = locale === 'ko'
+          ? `선체 접촉 · ${mutatedImpactLine.message.percent}%`
+          : mutatedImpactLine.text;
+        const impactMutationRejection = captureAssertionFailure(
+          () => assertImpactEvent(locale, impactPercentMutation, beforeImpact, staged),
+        );
+        verify(impactMutationRejection?.message.includes('physical hull-delta evidence') === true,
+          `${locale} independent hull-percent contract did not reject a wrong descriptor parameter.`, {
+            expectedPercent: impactPhysical.expectedPercent,
+            mutatedPercent: mutatedImpactLine.message.percent,
+            impactMutationRejection,
+          });
 
         await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
         await callHarness(scenario.page, 'setInput', [{ throttle: 1, boost: true }]);
@@ -1108,8 +1129,17 @@ async function runLocalization({ report, session, options }) {
         assertBoostEvent(locale, boost);
 
         const gateEvents = await collectGateEventFlow(scenario.page, options);
-        assertGateEventFlow(locale, gateEvents);
-        evidence[locale] = { engage, cameras, impact, boost, gateEvents };
+        const gateContract = assertGateEventFlow(locale, gateEvents);
+        evidence[locale] = {
+          engage,
+          cameras,
+          impact,
+          impactPhysical,
+          impactMutationRejection,
+          boost,
+          gateEvents,
+          gateContract,
+        };
       } finally {
         await scenario.close();
       }
@@ -1401,8 +1431,42 @@ async function hudEventSnapshot(page) {
       ? Object.keys(window.__LV.telemetry().callout)
       : [],
     logKeys: window.__LV?.telemetry().log.map((line) => Object.keys(line)) ?? [],
+    splitFeed: Array.from(document.querySelectorAll('.lv-splitfeed-row'), (row) => {
+      const field = (selector) => {
+        const node = row.querySelector(selector);
+        return {
+          text: node?.textContent ?? '',
+          lang: node?.getAttribute('lang') ?? null,
+        };
+      };
+      return {
+        index: field('.lv-splitfeed-i'),
+        time: field('.lv-splitfeed-t'),
+        duration: field('.lv-splitfeed-d'),
+      };
+    }),
   }));
   return { telemetry, dom };
+}
+
+function captureAssertionFailure(operation) {
+  try {
+    operation();
+  } catch (error) {
+    return {
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return null;
+}
+
+function independentRunTime(seconds) {
+  const totalCentiseconds = Math.floor(seconds * 100);
+  const minutes = Math.floor(totalCentiseconds / 6000);
+  const wholeSeconds = Math.floor(totalCentiseconds / 100) % 60;
+  const centiseconds = totalCentiseconds % 100;
+  return `${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`;
 }
 
 async function pageTextSnapshot(page) {
@@ -1455,15 +1519,34 @@ function assertPointerEvent(locale, snapshot, reason) {
   `${locale} pointer log does not use the stable explicit optional-field shape.`, snapshot);
 }
 
-function assertImpactEvent(locale, snapshot, before) {
+function assertImpactEvent(locale, snapshot, before, staged) {
   const callout = snapshot.telemetry.callout;
   const line = [...snapshot.telemetry.log].reverse()
     .find(({ message }) => message?.type === 'log.hull-contact');
   const index = snapshot.telemetry.log.indexOf(line);
-  const percent = line?.message?.percent;
-  const evidence = { locale, snapshot, before, line, percent };
-  verify(Number.isInteger(percent) && snapshot.telemetry.hull < before.hull,
-    `${locale} staged collision did not expose a rounded contact percent and real damage.`, evidence);
+  const hullDamage = before.hull - snapshot.telemetry.hull;
+  const expectedSeverity = hullDamage / STAGED_FULL_SEVERITY_HULL_DAMAGE;
+  const expectedPercent = Math.round(expectedSeverity * 100);
+  const priorHullContacts = before.log
+    .filter(({ message }) => message?.type === 'log.hull-contact').length;
+  const currentHullContacts = snapshot.telemetry.log
+    .filter(({ message }) => message?.type === 'log.hull-contact').length;
+  const evidence = {
+    locale,
+    snapshot,
+    before,
+    staged,
+    line,
+    hullDamage,
+    expectedSeverity,
+    expectedPercent,
+    priorHullContacts,
+    currentHullContacts,
+  };
+  verify(priorHullContacts === 0 && currentHullContacts === 1
+    && hullDamage > 0 && hullDamage <= STAGED_FULL_SEVERITY_HULL_DAMAGE
+    && expectedSeverity > 0 && expectedSeverity <= 1 && staged.closingSpeed > 0,
+  `${locale} staged collision did not produce the independent single-impact hull delta.`, evidence);
   assertCalloutEvent(locale, snapshot, {
     legacyTitle: 'HULL IMPACT',
     legacySub: undefined,
@@ -1471,10 +1554,14 @@ function assertImpactEvent(locale, snapshot, before) {
     subMessage: undefined,
     dom: [EVENT_COPY[locale].hullTitle, ''],
   });
-  const legacy = `hull contact · ${percent}%`;
-  const localized = locale === 'ko' ? `선체 접촉 · ${percent}%` : legacy;
-  verify(line.text === legacy && snapshot.dom.logs[index] === localized,
+  verify(JSON.stringify(line?.message)
+    === JSON.stringify({ type: 'log.hull-contact', percent: expectedPercent }),
+  `${locale} hull-contact descriptor percent differs from physical hull-delta evidence.`, evidence);
+  const legacy = `hull contact · ${expectedPercent}%`;
+  const localized = locale === 'ko' ? `선체 접촉 · ${expectedPercent}%` : legacy;
+  verify(line?.text === legacy && snapshot.dom.logs[index] === localized,
     `${locale} hull-contact legacy bytes or localized DOM differ.`, evidence);
+  return { hullDamage, expectedSeverity, expectedPercent };
 }
 
 function assertBoostEvent(locale, snapshot) {
@@ -1517,7 +1604,16 @@ async function collectGateEventFlow(page, options) {
       if (callout?.titleMessage?.type === 'callout-title.gate-cleared'
         && !seenCallouts.has(callout.id)) {
         seenCallouts.add(callout.id);
-        callouts.push({ callout, dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub] });
+        const historyAtCallout = await callHarness(page, 'gateHistory');
+        callouts.push({
+          callout,
+          dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub],
+          courseTotal: snapshot.telemetry.gate.total,
+          observedNextIndex: snapshot.telemetry.gate.index,
+          pass: historyAtCallout.at(-1),
+          source: 'course-run',
+          splitFeed: snapshot.dom.splitFeed,
+        });
       }
       for (let index = 0; index < snapshot.telemetry.log.length; index++) {
         const line = snapshot.telemetry.log[index];
@@ -1536,6 +1632,8 @@ async function collectGateEventFlow(page, options) {
     phase,
     frames,
   });
+  const history = await callHarness(page, 'gateHistory');
+  const finalSplits = (await callHarness(page, 'telemetry')).splits;
 
   await callHarness(page, 'startRun', [{ skipIntro: true }]);
   await callHarness(page, 'seekCourse', [0.599]);
@@ -1551,8 +1649,12 @@ async function collectGateEventFlow(page, options) {
         deadCentre = {
           callout: snapshot.telemetry.callout,
           dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub],
+          courseTotal: snapshot.telemetry.gate.total,
+          observedNextIndex: snapshot.telemetry.gate.index,
           pass: history.at(-1),
           seek: 0.599,
+          source: 'gate-six-centreline',
+          splitFeed: snapshot.dom.splitFeed,
         };
       }
     }
@@ -1567,6 +1669,13 @@ async function collectGateEventFlow(page, options) {
   callouts.push(deadCentre);
 
   await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+  const missTargetTelemetry = await callHarness(page, 'telemetry');
+  const missTarget = {
+    index: missTargetTelemetry.gate.index,
+    total: missTargetTelemetry.gate.total,
+    name: missTargetTelemetry.gate.name,
+  };
   await callHarness(page, 'setInput', [{ throttle: 1, strafeX: 1 }]);
   let missed = null;
   try {
@@ -1581,29 +1690,90 @@ async function collectGateEventFlow(page, options) {
     await callHarness(page, 'setInput', [null]);
   }
   verify(missed !== null, 'A laterally offset production flight did not exercise the gate-miss boundary.');
-  return { frames, callouts, logs, deadCentre, missed };
+  return { frames, callouts, logs, history, finalSplits, deadCentre, missTarget, missed };
 }
 
 function assertGateEventFlow(locale, flow) {
   const evidence = { locale, flow };
   const accuracies = new Set();
   const remaining = new Set();
-  for (const { callout, dom } of flow.callouts) {
+  const splitRowsVerified = [];
+  for (const {
+    callout,
+    dom,
+    courseTotal,
+    observedNextIndex,
+    pass,
+    source,
+    splitFeed,
+  } of flow.callouts) {
     const accuracy = callout.titleMessage?.accuracy;
-    const count = callout.subMessage?.remaining;
+    verify(pass?.cleared === true && observedNextIndex === pass.index + 1,
+      `${locale} gate callout does not correlate to the independently observed physical pass.`, {
+        callout,
+        courseTotal,
+        observedNextIndex,
+        pass,
+        source,
+      });
+    const expectedRemaining = courseTotal - (pass.index + 1);
     accuracies.add(accuracy);
-    if (count === 0 || count === 1 || count === 2) remaining.add(count);
+    if (expectedRemaining === 0 || expectedRemaining === 1 || expectedRemaining === 2) {
+      remaining.add(expectedRemaining);
+    }
     const expectedLegacyTitle = EVENT_COPY.en.accuracies[accuracy];
-    const expectedLegacySub = count > 0
-      ? `${count} CAIRN${count === 1 ? '' : 'S'} REMAINING`
+    const expectedLegacySub = expectedRemaining > 0
+      ? `${expectedRemaining} CAIRN${expectedRemaining === 1 ? '' : 'S'} REMAINING`
       : 'TERMINUS AHEAD';
+    const expectedLocalizedSub = locale === 'ko'
+      ? expectedRemaining > 0
+        ? `CAIRN ${expectedRemaining}기 남음`
+        : 'TERMINUS 전방'
+      : expectedLegacySub;
+    verify(JSON.stringify(callout.subMessage) === JSON.stringify({
+      type: 'callout-sub.gate-progress',
+      remaining: expectedRemaining,
+    }), `${locale} remaining descriptor differs from course-total/pass-index evidence.`, {
+      callout,
+      courseTotal,
+      observedNextIndex,
+      pass,
+      expectedRemaining,
+    });
     verify(callout.title === expectedLegacyTitle && callout.sub === expectedLegacySub,
       `${locale} gate pass changed an independent legacy English fixture.`, { callout, dom });
-    verify(dom[0] === EVENT_COPY[locale].accuracies[accuracy],
+    verify(dom[0] === EVENT_COPY[locale].accuracies[accuracy] && dom[1] === expectedLocalizedSub,
       `${locale} gate accuracy DOM does not match its exact localized fixture.`, { callout, dom });
-    if (count === 0 || count === 1 || count === 2) {
-      verify(dom[1] === EVENT_COPY[locale].progress[count],
-        `${locale} remaining ${count} DOM does not match its exact localized fixture.`, { callout, dom });
+    if (expectedRemaining === 0 || expectedRemaining === 1 || expectedRemaining === 2) {
+      verify(dom[1] === EVENT_COPY[locale].progress[expectedRemaining],
+        `${locale} remaining ${expectedRemaining} DOM does not match its exact localized fixture.`, {
+          callout,
+          dom,
+          expectedRemaining,
+        });
+    }
+
+    if (source === 'course-run') {
+      const row = splitFeed.at(-1);
+      const previousPass = flow.history.find(({ index }) => index === pass.index - 1);
+      const expectedSplit = {
+        index: String(pass.index + 1).padStart(2, '0'),
+        time: independentRunTime(pass.time),
+        duration: (pass.time - (previousPass?.time ?? 0)).toFixed(2),
+      };
+      verify(row !== undefined
+        && row.index.text === expectedSplit.index
+        && row.time.text === expectedSplit.time
+        && row.duration.text === expectedSplit.duration,
+      `${locale} split-feed content does not match independent gate-history evidence.`, {
+        row,
+        expectedSplit,
+        pass,
+        previousPass,
+      });
+      verify(row.index.lang === 'en' && row.time.lang === 'en' && row.duration.lang === 'en',
+        `${locale} split-feed numeric/time nodes are missing lang=en.`, { row, expectedSplit });
+      splitRowsVerified.push({ pass, previousPass, row, expectedSplit });
     }
   }
   verify(JSON.stringify([...accuracies].sort())
@@ -1612,15 +1782,32 @@ function assertGateEventFlow(locale, flow) {
   verify(JSON.stringify([...remaining].sort()) === JSON.stringify([0, 1, 2]),
     `${locale} production paths did not exercise remaining 0/1/2.`, evidence);
   const clearLogs = flow.logs.filter(({ line }) => line.message?.type === 'log.gate-cleared');
-  verify(clearLogs.length === 9, `${locale} did not record all nine gate-clear logs.`, evidence);
-  for (const { line, dom } of clearLogs) {
-    const { gate, seconds } = line.message;
-    const padded = String(gate).padStart(2, '0');
-    verify(line.text === `cairn ${padded} · ${seconds.toFixed(2)}s`,
-      `${locale} gate log changed padding or seconds.toFixed(2) legacy bytes.`, { line, dom });
+  verify(clearLogs.length === 9 && flow.history.length === 9 && flow.finalSplits.length === 9,
+    `${locale} did not retain nine independently correlatable gate-clear events.`, evidence);
+  for (let index = 0; index < clearLogs.length; index++) {
+    const { line, dom } = clearLogs[index];
+    const pass = flow.history[index];
+    const expectedGate = pass.index + 1;
+    const expectedSeconds = pass.time;
+    const padded = String(expectedGate).padStart(2, '0');
+    verify(flow.finalSplits[index] === expectedSeconds,
+      `${locale} split telemetry diverged from gate-history time.`, { index, pass, finalSplits: flow.finalSplits });
+    verify(JSON.stringify(line.message) === JSON.stringify({
+      type: 'log.gate-cleared',
+      gate: expectedGate,
+      seconds: expectedSeconds,
+    }), `${locale} gate-clear log parameters differ from gate-history evidence.`, {
+      index,
+      line,
+      pass,
+      expectedGate,
+      expectedSeconds,
+    });
+    verify(line.text === `cairn ${padded} · ${expectedSeconds.toFixed(2)}s`,
+      `${locale} gate log changed padding or seconds.toFixed(2) legacy bytes.`, { line, dom, pass });
     verify(dom === (locale === 'ko'
-      ? `CAIRN ${padded} · ${seconds.toFixed(2)}초`
-      : line.text), `${locale} gate-clear log DOM differs.`, { line, dom });
+      ? `CAIRN ${padded} · ${expectedSeconds.toFixed(2)}초`
+      : line.text), `${locale} gate-clear log DOM differs.`, { line, dom, pass });
   }
   assertCalloutEvent(locale, flow.missed, {
     legacyTitle: 'MISSED',
@@ -1631,12 +1818,21 @@ function assertGateEventFlow(locale, flow) {
   });
   const missLine = flow.missed.telemetry.log.find(({ message }) => message?.type === 'log.gate-missed');
   const missIndex = flow.missed.telemetry.log.indexOf(missLine);
-  const gate = missLine?.message?.gate;
-  const padded = String(gate).padStart(2, '0');
-  verify(Number.isInteger(gate) && missLine.text === `cairn ${padded} missed`
+  const expectedMissGate = flow.missTarget.index + 1;
+  const padded = String(expectedMissGate).padStart(2, '0');
+  verify(flow.missed.telemetry.gate.index === flow.missTarget.index
+    && flow.missed.telemetry.gate.total === flow.missTarget.total,
+  `${locale} miss did not remain on the independently staged target gate.`, evidence);
+  verify(JSON.stringify(missLine?.message)
+    === JSON.stringify({ type: 'log.gate-missed', gate: expectedMissGate }),
+  `${locale} gate-miss log parameter differs from the independently staged gate.`, evidence);
+  verify(missLine?.text === `cairn ${padded} missed`
     && flow.missed.dom.logs[missIndex] === (locale === 'ko'
       ? `CAIRN ${padded} 놓침`
       : missLine.text), `${locale} gate-miss log descriptor or exact formatting differs.`, evidence);
+  verify(splitRowsVerified.length > 0,
+    `${locale} no real gate pass exposed an independently checked split-feed row.`, evidence);
+  return { splitRowsVerified };
 }
 
 async function gateNameSnapshot(page) {
