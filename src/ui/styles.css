@@ -1133,6 +1133,45 @@
   pointer-events: none;
 }
 
+/* Korean keeps words intact where possible, but a long unspaced token still has a safe escape.
+   Display labels use instrument-like tracking in English; the same values make Hangul read as
+   disconnected glyphs and consume scarce button width. */
+html[lang='ko'] .lv-root {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+html[lang='ko'] :is(
+  .lv-kicker,
+  .lv-panel-title,
+  .lv-title-eyebrow,
+  .lv-title-foot,
+  .lv-btn-t,
+  .lv-btn-s,
+  .lv-brief-sub,
+  .lv-count-k,
+  .lv-pause-title,
+  .lv-set-grouptitle,
+  .lv-seg-b,
+  .lv-switch-t,
+  .lv-note,
+  .lv-res-k,
+  .lv-res-statk,
+  .lv-res-row.is-head
+) {
+  letter-spacing: 0.06em;
+  text-indent: 0;
+}
+
+html[lang='ko'] .lv-btn:is(:hover, :focus) .lv-btn-t {
+  letter-spacing: 0.1em;
+}
+
+html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
 .lv-screen {
   position: absolute;
   inset: 0;
@@ -1641,6 +1680,53 @@
      controls first so the first-run lesson does not begin below five stats and three paragraphs. */
   .lv-primer {
     order: -1;
+  }
+}
+
+/* A wide-but-short viewport otherwise leaves the primer as the third desktop column and clips
+   the final C row below the initial inner-scroll viewport. Put the lesson first, then fold its
+   seven bindings into two compact row pairs. ENGAGE/BACK stay outside this scroller. */
+@media (max-height: 480px) {
+  .lv-brief {
+    max-height: 94vh;
+    padding-block: 14px;
+  }
+
+  .lv-brief-title {
+    font-size: var(--fs-title);
+  }
+
+  .lv-brief-cols {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 20px;
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .lv-primer {
+    order: -1;
+    grid-column: 1 / -1;
+    gap: 0.35em;
+  }
+
+  .lv-primer-list {
+    grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+    gap: 0.2em 0.55em;
+    font-size: var(--fs-micro);
+  }
+
+  .lv-primer-list kbd {
+    min-width: 2.25em;
+    padding: 0.12em 0.35em;
+  }
+
+  .lv-brief .lv-actions {
+    margin-top: 8px;
+    padding-top: 6px;
+  }
+
+  .lv-brief .lv-actions .lv-btn {
+    padding-block: 6px;
   }
 }
 
@@ -2257,9 +2343,16 @@ kbd {
   margin: auto;
   width: min(94vw, 1320px);
   max-height: 92vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   padding: clamp(20px, 3vmin, 46px) clamp(20px, 3vmin, 50px);
+}
+
+.lv-res-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Block-level entrance only, and short. Individual split rows deliberately do NOT fade —
@@ -2307,6 +2400,9 @@ kbd {
   grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   gap: clamp(20px, 4vmin, 64px);
   margin-top: clamp(22px, 3.4vmin, 48px);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-aspect-ratio: 5 / 4) {
@@ -2551,6 +2647,17 @@ kbd {
   grid-template-columns: 6.9em 5.4em minmax(0, 1fr) 6.2em 5.2em;
 }
 
+/* The approved Korean comparison header is intentionally not abbreviated. Reclaim width from
+   the first two numeric columns, widen the comparison track, and lower header tracking. */
+html[lang='ko'] .lv-res-splits[data-delta='1'] .lv-res-row {
+  grid-template-columns: 4.5em 3.8em minmax(0, 1fr) 5.6em 7.4em;
+  gap: 0.55em;
+}
+
+html[lang='ko'] .lv-res-row.is-head {
+  letter-spacing: 0.03em;
+}
+
 .lv-res-dlt[data-tone='good'] { color: var(--c-good); }
 .lv-res-dlt[data-tone='bad'] { color: var(--c-ink-dim); }
 .lv-res-dlt[data-tone='flat'] { color: var(--c-key); }
@@ -2558,6 +2665,7 @@ kbd {
 /* Pulled up: the two columns end at different heights, so the divider lands below the taller
    one and the default margin stacked on top of that gap left the buttons stranded. */
 .lv-actions--res {
+  flex: none;
   border-top: 1px solid var(--c-hairline);
   gap: clamp(14px, 2.4vmin, 40px);
   margin-top: clamp(12px, 1.7vmin, 26px);

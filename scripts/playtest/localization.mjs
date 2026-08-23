@@ -10,7 +10,155 @@ import {
 } from './runtime.mjs';
 
 const LOCALE_STORAGE_KEY = 'last-vector.locale.v1';
-const REQUIRED_METHODS = ['ready', 'startRun', 'phase', 'damageHull', 'setDriven', 'step', 'locale', 'errors'];
+const REQUIRED_METHODS = [
+  'ready',
+  'startRun',
+  'phase',
+  'telemetry',
+  'result',
+  'damageHull',
+  'setAutopilot',
+  'setDriven',
+  'step',
+  'locale',
+  'errors',
+];
+const VIEWPORTS = [
+  { width: 1920, height: 1080 },
+  { width: 1280, height: 720 },
+  { width: 375, height: 667 },
+  { width: 640, height: 360 },
+];
+const COMPACT_VIEWPORTS = VIEWPORTS.slice(2);
+const BEST_STORAGE_KEY = 'last-vector.best.v1';
+const BEST_STORAGE_VALUE = JSON.stringify({
+  'cairn-drift-1337': {
+    time: 1,
+    splits: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+  },
+});
+const STATIC_COPY = {
+  ko: {
+    title: {
+      aria: '주 메뉴',
+      eyebrow: '구역',
+      tagline: 'CAIRN 항로를 꿰뚫고, 드리프트가 닫히기 전에 TERMINUS에 도달하라.',
+      actions: { begin: '비행 시작', settings: '설정', controls: '조작법' },
+      localeAria: '언어 선택',
+      localeLabels: ['한국어', '영어'],
+      footer: ['선체 KESTREL-C7', '주성 ACHRA', '항법 고정 정상'],
+    },
+    settings: {
+      aria: '설정', kicker: '환경 설정', title: '설정', back: '뒤로',
+      sections: ['비행', '화면', '영상', '오디오'],
+      rows: [
+        ['비행 보조', '항전 장치가 입력을 얼마나 감쇠할지 정합니다.'],
+        ['기본 시점', '비행 중 C를 눌러 시점을 전환합니다.'],
+        ['마우스 감도', ''], ['피치 반전', ''],
+        ['시야각', '넓을수록 빠르게 읽고, 좁을수록 멀리 봅니다.'],
+        ['카메라 흔들림', ''], ['품질', ''],
+        ['렌더 배율', '내부 해상도입니다. 품질보다 먼저 낮추세요.'],
+        ['프레임 표시', ''], ['모션 블러', ''], ['필름 그레인', ''],
+        ['색수차', ''], ['전체 음량', ''], ['음악', ''],
+      ],
+      enumLabels: [
+        ['아케이드', '표준', '원본'], ['추적', '조종석'], ['낮음', '중간', '높음', '최고'],
+      ],
+      switchLabels: ['끔', '끔', '켬', '켬', '켬'],
+    },
+    controls: {
+      aria: '조작법', kicker: '조종사 참고', title: '조작법', back: '뒤로', or: '또는',
+      actions: [
+        '조향 — 자동 복귀 가상 스틱', '스로틀 올림 / 내림', '좌 / 우 롤', '부스터',
+        '제동 및 드리프트', '좌 / 우 평행 이동', '상 / 하 평행 이동',
+        '마우스 없이 피치 / 요', '추적 / 1인칭 조종석 전환', '일시정지', '비행 재시작',
+      ],
+      note: '출격하면 마우스가 고정됩니다. ESC를 누르면 마우스가 풀리고 비행이 일시정지됩니다.',
+    },
+    briefing: {
+      aria: '비행 브리핑', kicker: '비행 브리핑', transit: '목적지 VESPER TERMINUS',
+      statLabels: ['표식', '항로', '주성', '선체', '드리프트'],
+      lines: [
+        'ACHRA가 꺼져 가고 있다. 매시간 선반 얼음과 회전하는 철편이 마지막 생존 항로로 쏟아진다.',
+        '응답하는 CAIRN은 아홉 기. 오래전에 사라진 손들이 남긴 표식이 곧 항로다.',
+        '순서대로 통과하라. 좁은 구간에서는 암석이 바짝 파고들며, 제동만이 선회 공간을 만든다.',
+      ],
+      primer: '핵심 조작',
+      primerActions: ['조향', '스로틀 올림 / 내림', '좌 / 우 롤', '부스터', '제동 및 드리프트', '마우스 없이 조향', '1인칭 조종석 전환'],
+      actions: { engage: '출격', return: '뒤로' },
+    },
+    countdown: { aria: '출격 초읽기', launch: '출격 준비', go: '출발', live: '벡터 활성' },
+    pause: {
+      aria: '일시정지', kicker: '비행 정지', title: '일시정지',
+      detail: '드리프트는 계속된다. 항로는 기다려 주지 않는다.',
+      actions: { resume: '계속', restart: '재시작', settings: '설정', controls: '조작법', abort: '비행 중단' },
+    },
+    results: {
+      aria: '비행 종료', kicker: '도착 확인', rank: '등급', total: '총 시간', newBest: '신기록',
+      stats: ['표식', '최고 속도', '선체'], headers: ['표식', '구간', '', '경과'],
+      actions: { again: '다시 비행', return: '타이틀로' },
+    },
+    failure: { aria: '선체 파손', title: '선체 파손', time: '시간', retry: '재도전' },
+  },
+  en: {
+    title: {
+      aria: 'Main menu', eyebrow: 'SECTOR',
+      tagline: 'Thread the cairns. Make the terminus before the drift closes.',
+      actions: { begin: 'BEGIN RUN', settings: 'SETTINGS', controls: 'CONTROLS' },
+      localeAria: 'Language', localeLabels: ['Korean', 'English'],
+      footer: ['HULL KESTREL-C7', 'PRIMARY ACHRA', 'NAV LOCK NOMINAL'],
+    },
+    settings: {
+      aria: 'Settings', kicker: 'CONFIGURATION', title: 'SETTINGS', back: 'BACK',
+      sections: ['FLIGHT', 'DISPLAY', 'IMAGE', 'AUDIO'],
+      rows: [
+        ['Flight assist', 'How much the avionics damp your inputs.'],
+        ['Default camera', 'Press C during flight to switch views.'],
+        ['Mouse sensitivity', ''], ['Invert pitch', ''],
+        ['Field of view', 'Wider reads faster, narrower reads further.'],
+        ['Camera shake', ''], ['Quality', ''],
+        ['Render scale', 'Internal resolution. Drop it before you drop quality.'],
+        ['Frame counter', ''], ['Motion blur', ''], ['Film grain', ''],
+        ['Chromatic aberration', ''], ['Master', ''], ['Score', ''],
+      ],
+      enumLabels: [['ARCADE', 'STANDARD', 'RAW'], ['CHASE', 'COCKPIT'], ['LOW', 'MED', 'HIGH', 'ULTRA']],
+      switchLabels: ['OFF', 'OFF', 'ON', 'ON', 'ON'],
+    },
+    controls: {
+      aria: 'Controls', kicker: 'PILOT REFERENCE', title: 'CONTROLS', back: 'BACK', or: 'or',
+      actions: [
+        'Steer — self-centering virtual stick', 'Throttle up / down', 'Roll left / right', 'Boost',
+        'Brake and drift', 'Strafe left / right', 'Strafe up / down',
+        'Pitch / yaw without mouse', 'Toggle chase / first-person cockpit', 'Pause', 'Restart run',
+      ],
+      note: 'Pointer lock captures the mouse on launch. ESC releases it and holds the flight.',
+    },
+    briefing: {
+      aria: 'Run briefing', kicker: 'RUN BRIEFING', transit: 'TRANSIT TO VESPER TERMINUS',
+      statLabels: ['MARKERS', 'CORRIDOR', 'PRIMARY', 'HULL', 'DRIFT'],
+      lines: [
+        'ACHRA is going out. Every hour it sheds another kilometre of shelf ice and tumbling iron across the only corridor anything hull-sized can still survive.',
+        'The cairns answer a hail — nine of them, set by hands that stopped setting things a long time ago. They are the line.',
+        'Fly them in order. The line between two markers is not empty — on the tight legs the rock comes in close, and only the brake buys you room.',
+      ],
+      primer: 'CORE CONTROLS',
+      primerActions: ['Steer', 'Throttle up / down', 'Roll left / right', 'Boost', 'Brake and drift', 'Steer without mouse', 'Toggle first-person cockpit'],
+      actions: { engage: 'ENGAGE', return: 'BACK' },
+    },
+    countdown: { aria: 'Launch countdown', launch: 'LAUNCH SEQUENCE', go: 'GO', live: 'VECTOR LIVE' },
+    pause: {
+      aria: 'Paused', kicker: 'FLIGHT HELD', title: 'PAUSED',
+      detail: 'Drift continues. The corridor does not wait.',
+      actions: { resume: 'RESUME', restart: 'RESTART', settings: 'SETTINGS', controls: 'CONTROLS', abort: 'ABORT RUN' },
+    },
+    results: {
+      aria: 'Run complete', kicker: 'ARRIVAL CONFIRMED', rank: 'RATING', total: 'TOTAL', newBest: 'NEW BEST',
+      stats: ['MARKERS', 'TOP SPEED', 'HULL'], headers: ['MARKER', 'SEGMENT', '', 'ELAPSED'],
+      actions: { again: 'RUN AGAIN', return: 'RETURN' },
+    },
+    failure: { aria: 'Hull breach', title: 'HULL BREACH', time: 'TIME', retry: 'RETRY' },
+  },
+};
 const EXPECTED_METADATA = {
   ko: {
     title: 'LAST VECTOR — THE CAIRN DRIFT',
@@ -391,6 +539,798 @@ async function runLocalization({ report, session, options }) {
       await scenario.close();
     }
   });
+
+  await report.check({
+    id: 'I18N.static-copy',
+    name: 'Every static screen renders the selected locale exactly',
+    assertion:
+      'Independent empty-storage Korean and persisted-English boots use literal fixtures while '
+      + 'real controls reach title, settings, controls, briefing, countdown, pause, results, and failure.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        evidence[locale] = await assertStaticCopyFlow(scenario.page, locale, options);
+        evidence[locale].requests = scenario.requests;
+      } finally {
+        await scenario.close();
+      }
+    }
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.semantic-stability',
+    name: 'Localization preserves semantic action, control, and setting identifiers',
+    assertion:
+      'Per-view action/control ids and raw setting values are unique and byte-identical between '
+      + 'Korean and English, including dynamically built terminal screens.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        evidence[locale] = await collectSemanticFlow(scenario.page, options);
+      } finally {
+        await scenario.close();
+      }
+    }
+    verify(JSON.stringify(evidence.ko) === JSON.stringify(evidence.en),
+      'The Korean and English semantic maps differ.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.preserved-latin',
+    name: 'Proper nouns, bindings, units, and ranks stay Latin',
+    assertion:
+      'Rendered Korean and English retain the exact proper nouns, key set, M/S unit, and rank code.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        evidence[locale] = await collectPreservedLatin(scenario.page, options);
+      } finally {
+        await scenario.close();
+      }
+    }
+    const required = ['LAST VECTOR', 'THE CAIRN DRIFT', 'ACHRA', 'KESTREL-C7', 'VESPER TERMINUS', 'TERMINUS'];
+    for (const locale of ['ko', 'en']) {
+      verify(required.every((token) => evidence[locale].properNouns.includes(token)),
+        `${locale} omitted a preserved proper noun.`, evidence);
+      verify(evidence[locale].keys.join('|') === evidence.ko.keys.join('|'),
+        `${locale} changed the rendered key set.`, evidence);
+      verify(evidence[locale].speedUnits.every((unit) => unit === 'M/S'),
+        `${locale} changed the results speed unit.`, evidence);
+      verify(/^[SABCD]$/.test(evidence[locale].rank), `${locale} rendered a translated rank.`, evidence);
+    }
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.embedded-lang',
+    name: 'Embedded Latin tokens carry explicit English language semantics',
+    assertion:
+      'Korean ACHRA, CAIRN, C, ESC, and tagline CAIRN/TERMINUS tokens are exact lang=en spans.',
+  }, async () => {
+    const scenario = await openLocaleScenario(session, 'ko');
+    try {
+      await ready(scenario.page, options.timeoutMs);
+      const evidence = await collectEmbeddedLang(scenario.page);
+      for (const [surface, expected] of Object.entries({
+        tagline: ['CAIRN', 'TERMINUS'],
+        briefingLine1: ['ACHRA'],
+        briefingLine2: ['CAIRN'],
+        cameraHint: ['C'],
+        pointerNote: ['ESC'],
+      })) {
+        verify(JSON.stringify(evidence[surface]) === JSON.stringify(expected),
+          `${surface} does not expose the required lang=en tokens.`, evidence);
+      }
+      return evidence;
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  await report.check({
+    id: 'I18N.text-only',
+    name: 'Localized screen copy is text-only and injection-safe',
+    assertion:
+      'The screens tree contains no executable/media nodes and catalog-copy children are only '
+      + 'text nodes or explicit lang=en spans; the injection marker remains unset.',
+  }, async () => {
+    const scenario = await openLocaleScenario(session, 'ko', {
+      initScripts: [() => { window.__LV_INJECTED = undefined; }],
+    });
+    try {
+      await ready(scenario.page, options.timeoutMs);
+      await clickAction(scenario.page, 'title', 'settings');
+      await clickAction(scenario.page, 'settings', 'return');
+      await clickAction(scenario.page, 'title', 'controls');
+      await clickAction(scenario.page, 'controls', 'return');
+      await clickAction(scenario.page, 'title', 'begin');
+      const evidence = await scenario.page.evaluate(() => {
+        const screens = document.querySelector('.lv-screens');
+        const copySelectors = [
+          '.lv-tagline', '.lv-title-foot > span', '.lv-brief-sub', '.lv-prose-l',
+          '.lv-set-label', '.lv-set-hint', '.lv-key-d', '.lv-note', '.lv-btn-t', '.lv-btn-s',
+        ];
+        const invalidCopyChildren = [];
+        for (const selector of copySelectors) {
+          for (const node of screens?.querySelectorAll(selector) ?? []) {
+            for (const child of node.childNodes) {
+              if (child.nodeType === Node.TEXT_NODE) continue;
+              if (child instanceof HTMLSpanElement && child.lang === 'en'
+                && Array.from(child.childNodes).every((nested) => nested.nodeType === Node.TEXT_NODE)) continue;
+              invalidCopyChildren.push({ selector, html: node.outerHTML });
+            }
+          }
+        }
+        return {
+          forbidden: screens?.querySelectorAll('script, img, iframe').length ?? -1,
+          invalidCopyChildren,
+          injected: window.__LV_INJECTED,
+        };
+      });
+      verify(evidence.forbidden === 0, 'Screens contain a forbidden executable/media node.', evidence);
+      verify(evidence.invalidCopyChildren.length === 0,
+        'Catalog-derived copy contains a child other than a lang=en token span.', evidence);
+      verify(evidence.injected === undefined, 'The injected marker was executed.', evidence);
+      return evidence;
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  await report.check({
+    id: 'I18N.responsive-actions',
+    name: 'Primary actions remain visible without document overflow',
+    assertion:
+      'At 1920x1080, 1280x720, 375x667, and 640x360 in both locales, every opened screen keeps '
+      + 'its primary action fully in the viewport and the document at viewport bounds.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        evidence[locale] = await collectResponsiveFlow(scenario.page, options);
+      } finally {
+        await scenario.close();
+      }
+    }
+    const failures = Object.values(evidence).flat().filter((measurement) => !measurement.pass);
+    verify(failures.length === 0, 'A primary action or document exceeds its viewport.', { failures, evidence });
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.primer-camera-row',
+    name: 'The briefing camera row is initially visible on compact screens',
+    assertion:
+      'At 375x667 and 640x360 in both locales, the full camera-toggle row is inside the viewport '
+      + 'and the visible clip of its nearest .lv-brief-cols scroller without scrolling.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await clickAction(scenario.page, 'title', 'begin');
+        evidence[locale] = [];
+        for (const viewport of COMPACT_VIEWPORTS) {
+          await scenario.page.setViewportSize(viewport);
+          const measurement = await measurePrimerCamera(scenario.page, viewport);
+          evidence[locale].push(measurement);
+        }
+      } finally {
+        await scenario.close();
+      }
+    }
+    const failures = Object.values(evidence).flat().filter((measurement) => !measurement.pass);
+    verify(failures.length === 0, 'The camera-toggle row starts outside the visible briefing clip.', {
+      failures,
+      evidence,
+    });
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.no-overflow',
+    name: 'Fixed-width translated leaves do not overflow',
+    assertion:
+      'Result comparison headers/cells and other fixed-width labels satisfy scrollWidth <= clientWidth + 1 '
+      + 'in Korean and English at 640x360.',
+  }, async () => {
+    const evidence = {};
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale, {
+        localStorageSeed: { [BEST_STORAGE_KEY]: BEST_STORAGE_VALUE },
+      });
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        await scenario.page.setViewportSize({ width: 640, height: 360 });
+        await finishAutopilot(scenario.page, options);
+        evidence[locale] = await measureOverflow(scenario.page);
+        const comparisonHeader = evidence[locale].find(({ kind }) => kind === 'comparison-header');
+        if (locale === 'ko') {
+          verify(comparisonHeader?.text === '최고기록 대비',
+            'Korean results did not expose the approved comparison header for overflow measurement.', {
+              comparisonHeader,
+              measurements: evidence[locale],
+            });
+        }
+      } finally {
+        await scenario.close();
+      }
+    }
+    const failures = Object.entries(evidence).flatMap(([locale, measurements]) => measurements
+      .filter((measurement) => !measurement.pass)
+      .map((measurement) => ({ locale, ...measurement })));
+    verify(failures.length === 0, 'A fixed-width localized leaf overflows its box.', { failures, evidence });
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.locale-focus-parity',
+    name: 'Focus order is locale-independent across replacement and screen entry',
+    assertion:
+      'Arrow adjustment, Enter activation, and direct radio activation preserve semantic focus; '
+      + 'first focus plus W/S navigation order match between locales for every navigable screen.',
+  }, async () => {
+    const replacement = await collectLocaleReplacementFocus(session, options);
+    const evidence = { replacement, locales: {} };
+    for (const locale of ['ko', 'en']) {
+      const scenario = await openLocaleScenario(session, locale);
+      try {
+        await ready(scenario.page, options.timeoutMs);
+        evidence.locales[locale] = await collectFocusFlow(scenario.page, options);
+      } finally {
+        await scenario.close();
+      }
+    }
+    verify(replacement.every((entry) => entry.pass),
+      'A locale activation path failed to preserve semantic focus.', evidence);
+    verify(JSON.stringify(evidence.locales.ko) === JSON.stringify(evidence.locales.en),
+      'Korean and English screen focus order differs.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'I18N.title-lock-visibility',
+    name: 'Locale controls are title-only throughout the run lifecycle',
+    assertion:
+      'Exactly one title locale is selected and no active briefing, countdown, flying, results, '
+      + 'or failure surface exposes a locale control.',
+  }, async () => {
+    const scenario = await openLocaleScenario(session, 'ko');
+    try {
+      await ready(scenario.page, options.timeoutMs);
+      const evidence = { title: await localeVisibility(scenario.page), locked: [] };
+      verify(evidence.title.selected === 1 && evidence.title.activeControls === 2,
+        'The title does not expose exactly one selected locale.', evidence);
+      await clickAction(scenario.page, 'title', 'begin');
+      evidence.locked.push(await localeVisibility(scenario.page, 'briefing'));
+      await clickAction(scenario.page, 'briefing', 'engage');
+      await scenario.page.locator('[data-view="countdown"][data-open="1"]').waitFor({ state: 'visible' });
+      evidence.locked.push(await localeVisibility(scenario.page, 'countdown'));
+      await scenario.page.waitForFunction(() => window.__LV?.phase() === 'flying');
+      evidence.locked.push(await localeVisibility(scenario.page, 'flying'));
+      await finishAutopilot(scenario.page, options);
+      evidence.locked.push(await localeVisibility(scenario.page, 'results'));
+      await clickAction(scenario.page, 'results', 'again');
+      await forceFailure(scenario.page, options);
+      evidence.locked.push(await localeVisibility(scenario.page, 'failure'));
+      verify(evidence.locked.every((entry) => entry.activeControls === 0),
+        'A locale control is active after the title boundary.', evidence);
+      return evidence;
+    } finally {
+      await scenario.close();
+    }
+  });
+}
+
+async function openLocaleScenario(session, locale, extra = {}) {
+  const localStorageSeed = { ...(extra.localStorageSeed ?? {}) };
+  if (locale === 'en') localStorageSeed[LOCALE_STORAGE_KEY] = 'en';
+  const options = { ...extra };
+  if (Object.keys(localStorageSeed).length > 0) options.localStorageSeed = localStorageSeed;
+  else delete options.localStorageSeed;
+  return openBootScenario(session, options);
+}
+
+async function clickAction(page, view, action) {
+  await page.locator(`[data-view="${view}"][data-open="1"] [data-action="${action}"]`).click();
+}
+
+async function assertStaticCopyFlow(page, locale, options) {
+  const expected = STATIC_COPY[locale];
+  const evidence = {};
+  evidence.title = await staticCopySnapshot(page, 'title');
+  assertExactCopy(locale, 'title', evidence.title, expected.title);
+
+  await page.locator('[data-view="title"][data-open="1"] [data-action="settings"]').click();
+  evidence.settings = await staticCopySnapshot(page, 'settings');
+  assertExactCopy(locale, 'settings', evidence.settings, expected.settings);
+  await page.locator('[data-view="settings"][data-open="1"] [data-action="return"]').click();
+
+  await page.locator('[data-view="title"][data-open="1"] [data-action="controls"]').click();
+  evidence.controls = await staticCopySnapshot(page, 'controls');
+  assertExactCopy(locale, 'controls', evidence.controls, expected.controls);
+  await page.locator('[data-view="controls"][data-open="1"] [data-action="return"]').click();
+
+  await page.locator('[data-view="title"][data-open="1"] [data-action="begin"]').click();
+  evidence.briefing = await staticCopySnapshot(page, 'briefing');
+  assertExactCopy(locale, 'briefing', evidence.briefing, expected.briefing);
+
+  await page.locator('[data-view="briefing"][data-open="1"] [data-action="engage"]').click();
+  await page.locator('[data-view="countdown"][data-open="1"]').waitFor({ state: 'visible' });
+  evidence.countdown = await staticCopySnapshot(page, 'countdown');
+  verify(evidence.countdown.aria === expected.countdown.aria
+    && evidence.countdown.label === expected.countdown.launch,
+  `${locale} countdown launch copy differs from the literal fixture.`, {
+    actual: evidence.countdown,
+    expected: expected.countdown,
+  });
+  await page.waitForFunction(() => document.querySelector('[data-view="countdown"]')
+    ?.getAttribute('data-countdown-value') === 'go');
+  evidence.countdownGo = await staticCopySnapshot(page, 'countdown');
+  verify(evidence.countdownGo.number === expected.countdown.go
+    && evidence.countdownGo.label === expected.countdown.live,
+  `${locale} countdown GO copy differs from the literal fixture.`, {
+    actual: evidence.countdownGo,
+    expected: expected.countdown,
+  });
+
+  await page.waitForFunction(() => window.__LV?.phase() === 'flying');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-view="pause"][data-open="1"]').waitFor({ state: 'visible' });
+  evidence.pause = await staticCopySnapshot(page, 'pause');
+  assertExactCopy(locale, 'pause', evidence.pause, expected.pause);
+  await page.locator('[data-view="pause"][data-open="1"] [data-action="resume"]').click();
+
+  await finishAutopilot(page, options);
+  evidence.results = await staticCopySnapshot(page, 'results');
+  assertExactCopy(locale, 'results', evidence.results, expected.results);
+
+  await page.locator('[data-view="results"][data-open="1"] [data-action="again"]').click();
+  await forceFailure(page, options);
+  evidence.failure = await staticCopySnapshot(page, 'failure');
+  assertExactCopy(locale, 'failure', evidence.failure, expected.failure);
+  return evidence;
+}
+
+function assertExactCopy(locale, view, actual, expected) {
+  verify(JSON.stringify(actual) === JSON.stringify(expected),
+    `${locale} ${view} copy differs from the independent literal fixture.`, { actual, expected });
+}
+
+async function staticCopySnapshot(page, viewName) {
+  return page.evaluate((requestedView) => {
+    const view = requestedView === 'failure'
+      ? document.querySelector('[data-view="results"][data-open="1"]')
+      : document.querySelector(`[data-view="${requestedView}"][data-open="1"]`);
+    if (!(view instanceof HTMLElement)) throw new Error(`Open ${requestedView} view is missing.`);
+    const text = (selector) => view.querySelector(selector)?.textContent ?? '';
+    const texts = (selector) => Array.from(view.querySelectorAll(selector), (node) => node.textContent ?? '');
+    const actions = () => Object.fromEntries(Array.from(view.querySelectorAll('[data-action]'), (node) => [
+      node.getAttribute('data-action'),
+      node.querySelector('.lv-btn-t')?.textContent ?? '',
+    ]));
+    const aria = view.getAttribute('aria-label') ?? '';
+
+    if (requestedView === 'title') {
+      return {
+        aria,
+        eyebrow: text('.lv-title-eyebrow > span:first-child'),
+        tagline: text('.lv-tagline'),
+        actions: actions(),
+        localeAria: view.querySelector('[data-nav="segmented"]')?.getAttribute('aria-label') ?? '',
+        localeLabels: texts('[data-locale]'),
+        footer: texts('.lv-title-foot > span'),
+      };
+    }
+    if (requestedView === 'settings') {
+      return {
+        aria,
+        kicker: text('.lv-kicker'),
+        title: text('.lv-panel-title'),
+        back: text('[data-action="return"] .lv-btn-t'),
+        sections: texts('.lv-set-grouptitle'),
+        rows: Array.from(view.querySelectorAll('.lv-set-row'), (row) => [
+          row.querySelector('.lv-set-label')?.textContent ?? '',
+          row.querySelector('.lv-set-hint')?.textContent ?? '',
+        ]),
+        enumLabels: Array.from(view.querySelectorAll('[data-setting][data-nav="segmented"]'), (group) =>
+          Array.from(group.querySelectorAll('[data-seg]'), (node) => node.textContent ?? '')),
+        switchLabels: texts('.lv-switch-t'),
+      };
+    }
+    if (requestedView === 'controls') {
+      return {
+        aria,
+        kicker: text('.lv-kicker'),
+        title: text('.lv-panel-title'),
+        back: text('[data-action="return"] .lv-btn-t'),
+        or: text('.lv-key-or'),
+        actions: texts('[data-control] .lv-key-d'),
+        note: text('.lv-note'),
+      };
+    }
+    if (requestedView === 'briefing') {
+      return {
+        aria,
+        kicker: text('.lv-brief-head .lv-kicker'),
+        transit: text('.lv-brief-sub'),
+        statLabels: texts('.lv-stat dt'),
+        lines: texts('.lv-prose-l'),
+        primer: text('.lv-primer > .lv-kicker'),
+        primerActions: texts('.lv-primer-list [data-control] > span:last-child'),
+        actions: actions(),
+      };
+    }
+    if (requestedView === 'countdown') {
+      return { aria, number: text('.lv-count-n'), label: text('.lv-count-k') };
+    }
+    if (requestedView === 'pause') {
+      return {
+        aria,
+        kicker: text('.lv-kicker'),
+        title: text('.lv-pause-title'),
+        detail: text('.lv-pause-sub'),
+        actions: actions(),
+      };
+    }
+    if (requestedView === 'results') {
+      return {
+        aria,
+        kicker: text('.lv-res-headline .lv-kicker'),
+        rank: text('.lv-res-rank .lv-res-k'),
+        total: text('.lv-res-timeblock > .lv-res-k'),
+        newBest: text('.lv-newbest span'),
+        stats: texts('.lv-res-statk'),
+        headers: texts('.lv-res-row.is-head > span'),
+        actions: actions(),
+      };
+    }
+    return {
+      aria,
+      title: text('.lv-res-title'),
+      time: text('.lv-res-timeblock > .lv-res-k'),
+      retry: text('[data-action="retry"] .lv-btn-t'),
+    };
+  }, viewName);
+}
+
+async function collectSemanticFlow(page, options) {
+  const evidence = {};
+  evidence.title = await semanticSnapshot(page, 'title');
+  await clickAction(page, 'title', 'settings');
+  evidence.settings = await semanticSnapshot(page, 'settings');
+  await clickAction(page, 'settings', 'return');
+  await clickAction(page, 'title', 'controls');
+  evidence.controls = await semanticSnapshot(page, 'controls');
+  await clickAction(page, 'controls', 'return');
+  await clickAction(page, 'title', 'begin');
+  evidence.briefing = await semanticSnapshot(page, 'briefing');
+  await clickAction(page, 'briefing', 'engage');
+  await page.waitForFunction(() => window.__LV?.phase() === 'flying');
+  await page.keyboard.press('Escape');
+  evidence.pause = await semanticSnapshot(page, 'pause');
+  await clickAction(page, 'pause', 'resume');
+  await finishAutopilot(page, options);
+  evidence.results = await semanticSnapshot(page, 'results');
+  await clickAction(page, 'results', 'again');
+  await forceFailure(page, options);
+  evidence.failure = await semanticSnapshot(page, 'results');
+  return evidence;
+}
+
+async function semanticSnapshot(page, viewName) {
+  const snapshot = await page.evaluate((viewKey) => {
+    const view = document.querySelector(`[data-view="${viewKey}"][data-open="1"]`);
+    if (!view) throw new Error(`Open ${viewKey} view is missing.`);
+    const settings = Array.from(view.querySelectorAll('[data-setting]'), (node) => ({
+      setting: node.getAttribute('data-setting'),
+      value: node.getAttribute('data-value'),
+      options: Array.from(node.querySelectorAll(':scope [data-seg]'), (option) => option.getAttribute('data-seg')),
+    }));
+    return {
+      actions: Array.from(view.querySelectorAll('[data-action]'), (node) => node.getAttribute('data-action')),
+      controls: Array.from(view.querySelectorAll('[data-control]'), (node) => node.getAttribute('data-control')),
+      settings,
+    };
+  }, viewName);
+  for (const key of ['actions', 'controls']) {
+    verify(new Set(snapshot[key]).size === snapshot[key].length,
+      `${viewName} contains duplicate ${key}.`, snapshot);
+  }
+  verify(new Set(snapshot.settings.map(({ setting }) => setting)).size === snapshot.settings.length,
+    `${viewName} contains duplicate settings.`, snapshot);
+  return snapshot;
+}
+
+async function collectPreservedLatin(page, options) {
+  await finishAutopilot(page, options);
+  return page.evaluate(() => {
+    const rendered = document.querySelector('.lv-screens')?.textContent ?? '';
+    const tokens = ['LAST VECTOR', 'THE CAIRN DRIFT', 'ACHRA', 'KESTREL-C7', 'VESPER TERMINUS', 'TERMINUS'];
+    const accessibleTitle = document.querySelector('.lv-wordmark')?.getAttribute('aria-label') ?? '';
+    return {
+      properNouns: tokens.filter((token) => rendered.includes(token) || accessibleTitle === token),
+      keys: Array.from(new Set(Array.from(document.querySelectorAll('.lv-key-keys kbd'),
+        (node) => node.textContent ?? ''))).sort(),
+      speedUnits: Array.from(document.querySelectorAll('.lv-res-statv'), (node) => node.textContent ?? '')
+        .filter((value) => value.includes('M/S')).map(() => 'M/S'),
+      rank: document.querySelector('.lv-res-letter')?.textContent ?? '',
+    };
+  });
+}
+
+async function collectEmbeddedLang(page) {
+  await clickAction(page, 'title', 'settings');
+  const cameraHint = await langTokens(page, '[data-view="settings"] [data-setting="cameraMode"]', '.lv-set-hint');
+  await clickAction(page, 'settings', 'return');
+  await clickAction(page, 'title', 'controls');
+  const pointerNote = await langTokens(page, '[data-view="controls"]', '.lv-note');
+  await clickAction(page, 'controls', 'return');
+  const tagline = await langTokens(page, '[data-view="title"]', '.lv-tagline');
+  await clickAction(page, 'title', 'begin');
+  const briefingLine1 = await langTokens(page, '[data-view="briefing"]', '.lv-prose-l:nth-child(1)');
+  const briefingLine2 = await langTokens(page, '[data-view="briefing"]', '.lv-prose-l:nth-child(2)');
+  return { tagline, briefingLine1, briefingLine2, cameraHint, pointerNote };
+}
+
+async function langTokens(page, rootSelector, leafSelector) {
+  return page.evaluate(({ rootSelector: root, leafSelector: leaf }) => {
+    const owner = document.querySelector(root);
+    const target = owner?.matches(leaf) ? owner : owner?.closest('.lv-set-row')?.querySelector(leaf)
+      ?? owner?.querySelector(leaf);
+    return Array.from(target?.querySelectorAll(':scope > span[lang="en"]') ?? [],
+      (node) => node.textContent ?? '');
+  }, { rootSelector, leafSelector });
+}
+
+async function collectResponsiveFlow(page, options) {
+  const evidence = [];
+  evidence.push(...await measureViewports(page, 'title'));
+  await clickAction(page, 'title', 'settings');
+  evidence.push(...await measureViewports(page, 'settings'));
+  await clickAction(page, 'settings', 'return');
+  await clickAction(page, 'title', 'controls');
+  evidence.push(...await measureViewports(page, 'controls'));
+  await clickAction(page, 'controls', 'return');
+  await clickAction(page, 'title', 'begin');
+  evidence.push(...await measureViewports(page, 'briefing'));
+  await clickAction(page, 'briefing', 'engage');
+  await page.waitForFunction(() => window.__LV?.phase() === 'flying');
+  await page.keyboard.press('Escape');
+  evidence.push(...await measureViewports(page, 'pause'));
+  await clickAction(page, 'pause', 'resume');
+  await finishAutopilot(page, options);
+  evidence.push(...await measureViewports(page, 'results'));
+  await clickAction(page, 'results', 'again');
+  await forceFailure(page, options);
+  evidence.push(...await measureViewports(page, 'failure'));
+  return evidence;
+}
+
+async function measureViewports(page, viewName) {
+  const measurements = [];
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    measurements.push(await page.evaluate(({ viewport: expected, viewName: expectedView }) => {
+      const domView = expectedView === 'failure' ? 'results' : expectedView;
+      const view = document.querySelector(`[data-view="${domView}"][data-open="1"]`);
+      const primary = view?.querySelector('.lv-btn.is-primary');
+      const rect = primary?.getBoundingClientRect();
+      const doc = document.documentElement;
+      const inside = rect !== undefined && rect !== null
+        && rect.left >= -1 && rect.top >= -1
+        && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1;
+      const documentFits = doc.scrollWidth <= innerWidth + 1 && doc.scrollHeight <= innerHeight + 1;
+      return {
+        view: expectedView,
+        viewport: expected,
+        actualView: view?.getAttribute('data-view') ?? null,
+        action: primary?.getAttribute('data-action') ?? null,
+        rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null,
+        document: { scrollWidth: doc.scrollWidth, scrollHeight: doc.scrollHeight, innerWidth, innerHeight },
+        pass: view?.getAttribute('data-view') === domView
+          && inside && documentFits,
+      };
+    }, { viewport, viewName }));
+  }
+  return measurements;
+}
+
+async function measurePrimerCamera(page, viewport) {
+  return page.evaluate((expectedViewport) => {
+    const row = document.querySelector('[data-view="briefing"][data-open="1"] [data-control="camera-toggle"]');
+    const clip = row?.closest('.lv-brief-cols');
+    const boxes = Array.from(row?.children ?? [], (node) => node.getBoundingClientRect());
+    const rowRect = boxes.length > 0 ? {
+      left: Math.min(...boxes.map((box) => box.left)),
+      top: Math.min(...boxes.map((box) => box.top)),
+      right: Math.max(...boxes.map((box) => box.right)),
+      bottom: Math.max(...boxes.map((box) => box.bottom)),
+    } : null;
+    const clipRect = clip?.getBoundingClientRect();
+    const viewportPass = rowRect !== null && rowRect.left >= -1 && rowRect.top >= -1
+      && rowRect.right <= innerWidth + 1 && rowRect.bottom <= innerHeight + 1;
+    const clipPass = rowRect !== null && clipRect !== undefined
+      && rowRect.left >= clipRect.left - 1 && rowRect.top >= clipRect.top - 1
+      && rowRect.right <= clipRect.right + 1 && rowRect.bottom <= clipRect.bottom + 1;
+    return {
+      viewport: expectedViewport,
+      row: rowRect,
+      clip: clipRect ? {
+        left: clipRect.left, top: clipRect.top, right: clipRect.right, bottom: clipRect.bottom,
+        scrollTop: clip.scrollTop,
+      } : null,
+      viewportPass,
+      clipPass,
+      pass: viewportPass && clipPass && clip?.scrollTop === 0,
+    };
+  }, viewport);
+}
+
+async function measureOverflow(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll(
+    '[data-view="results"][data-open="1"] .lv-res-row.is-head > span, '
+    + '[data-view="results"][data-open="1"] .lv-res-delta, '
+    + '[data-view="results"][data-open="1"] .lv-res-k, '
+    + '[data-view="results"][data-open="1"] .lv-res-statk, '
+    + '[data-view="results"][data-open="1"] .lv-btn-t',
+  ), (node) => ({
+    kind: node.matches('.lv-res-row.is-head > span:last-child') ? 'comparison-header' : 'fixed-leaf',
+    className: node.className,
+    text: node.textContent ?? '',
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+    pass: node.scrollWidth <= node.clientWidth + 1,
+  })));
+}
+
+async function collectLocaleReplacementFocus(session, options) {
+  const paths = [
+    { name: 'arrow', locale: 'ko', key: 'ArrowRight', expected: 'en', direct: false },
+    { name: 'enter', locale: 'en', key: 'Enter', expected: 'ko', direct: false },
+    { name: 'direct-radio', locale: 'ko', expected: 'en', direct: true },
+  ];
+  const evidence = [];
+  for (const path of paths) {
+    const scenario = await openLocaleScenario(session, path.locale);
+    try {
+      await ready(scenario.page, options.timeoutMs);
+      await focusLocale(scenario.page);
+      if (path.direct) {
+        await scenario.page.locator(`[data-locale="${path.expected}"]`).evaluate((node) => {
+          node.focus();
+          node.click();
+        });
+      } else {
+        await scenario.page.keyboard.press(path.key);
+      }
+      await waitForSelected(scenario.page, path.expected);
+      const focus = await semanticFocus(scenario.page);
+      evidence.push({
+        path: path.name,
+        expected: path.expected,
+        focus,
+        pass: focus.view === 'title' && focus.nav === 'segmented'
+          && (path.direct ? focus.locale === path.expected : focus.locale === null),
+      });
+    } finally {
+      await scenario.close();
+    }
+  }
+  return evidence;
+}
+
+async function collectFocusFlow(page, options) {
+  const evidence = {};
+  evidence.title = await collectViewFocus(page, 'title');
+  await clickAction(page, 'title', 'settings');
+  evidence.settings = await collectViewFocus(page, 'settings');
+  await clickAction(page, 'settings', 'return');
+  await clickAction(page, 'title', 'controls');
+  evidence.controls = await collectViewFocus(page, 'controls');
+  await clickAction(page, 'controls', 'return');
+  await clickAction(page, 'title', 'begin');
+  evidence.briefing = await collectViewFocus(page, 'briefing');
+  await clickAction(page, 'briefing', 'engage');
+  await page.waitForFunction(() => window.__LV?.phase() === 'flying');
+  await page.keyboard.press('Escape');
+  evidence.pause = await collectViewFocus(page, 'pause');
+  await clickAction(page, 'pause', 'resume');
+  await finishAutopilot(page, options);
+  evidence.results = await collectViewFocus(page, 'results');
+  await clickAction(page, 'results', 'again');
+  await forceFailure(page, options);
+  evidence.failure = await collectViewFocus(page, 'results');
+  return evidence;
+}
+
+async function collectViewFocus(page, expectedView) {
+  const first = await semanticFocus(page);
+  const count = await page.locator(`[data-view="${expectedView}"][data-open="1"] [data-nav]`).count();
+  const order = [first];
+  for (let i = 1; i < count; i++) {
+    await page.keyboard.press('s');
+    order.push(await semanticFocus(page));
+  }
+  if (count > 1) await page.keyboard.press('s');
+  return { first, order };
+}
+
+async function semanticFocus(page) {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    const nav = active?.closest('[data-nav]');
+    return {
+      view: active?.closest('[data-view]')?.getAttribute('data-view') ?? null,
+      action: active?.getAttribute('data-action') ?? null,
+      nav: nav?.getAttribute('data-nav') ?? null,
+      setting: active?.getAttribute('data-setting') ?? null,
+      locale: active?.getAttribute('data-locale') ?? null,
+    };
+  });
+}
+
+async function localeVisibility(page, phase = 'title') {
+  return page.evaluate((expectedPhase) => ({
+    phase: expectedPhase,
+    selected: document.querySelectorAll('[data-view="title"] [data-locale][aria-checked="true"]').length,
+    activeControls: document.querySelectorAll('[data-view][data-open="1"] [data-locale]').length,
+  }), phase);
+}
+
+async function finishAutopilot(page, options) {
+  await callHarness(page, 'setDriven', [true]);
+  await callHarness(page, 'startRun', [{ skipIntro: true }]);
+  await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+  const maxFrames = Math.ceil((options.maxSimSeconds ?? 300) * 60);
+  let frames = 0;
+  try {
+    while (frames < maxFrames) {
+      const phase = await callHarness(page, 'phase');
+      if (phase === 'finished') break;
+      verify(phase !== 'failed', 'Autopilot failed before reaching the results screen.', { phase, frames });
+      const telemetry = await callHarness(page, 'telemetry');
+      const allGatesCleared = Number.isInteger(telemetry?.gate?.total)
+        && telemetry.gate.index >= telemetry.gate.total;
+      const chunk = Math.min(allGatesCleared ? 1 : 240, maxFrames - frames);
+      await callHarness(page, 'step', [chunk], options.timeoutMs);
+      frames += chunk;
+    }
+    const phase = await callHarness(page, 'phase');
+    verify(phase === 'finished', 'Autopilot did not reach the results screen.', { phase, frames, maxFrames });
+    await page.locator('[data-view="results"][data-open="1"]').waitFor({ state: 'visible' });
+    return { frames, result: await callHarness(page, 'result') };
+  } finally {
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setDriven', [false]);
+  }
+}
+
+async function forceFailure(page, options) {
+  await callHarness(page, 'setDriven', [true]);
+  try {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'damageHull', [2]);
+    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+    await page.waitForFunction(() => window.__LV?.phase() === 'failed');
+    await page.locator('[data-view="results"][data-open="1"]').waitFor({ state: 'visible' });
+  } finally {
+    await callHarness(page, 'setDriven', [false]);
+  }
 }
 
 async function ready(page, timeoutMs) {

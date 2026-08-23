@@ -139,6 +139,25 @@ body {
   color: rgba(185, 204, 221, 0.72);
 }
 
+html[lang='ko'] .lv-loader__label,
+html[lang='ko'] .lv-fatal {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+html[lang='ko'] .lv-loader__label {
+  letter-spacing: 0.08em;
+  text-transform: none;
+}
+
+html[lang='ko'] .lv-fatal h1 {
+  letter-spacing: 0.1em;
+}
+
+html[lang='ko'] .lv-fatal p {
+  max-width: 34em;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lv-loader__title {
     animation: none;

@@ -8,8 +8,8 @@
  */
 
 import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
-import { FICTION } from '../core/art.ts';
 import type { Translator } from '../i18n/index.ts';
+import type { ControlMessages, ScreenMessages, SettingMessages } from '../i18n/messages.ts';
 import {
   clamp,
   distanceUnit,
@@ -61,21 +61,34 @@ export interface ScreenFocusToken {
  * It is also kept the shortest of the three: a closing beat that runs longer than the lines
  * setting it up stops landing.
  */
-const BRIEF_LINES: readonly string[] = [
-  'ACHRA is going out. Every hour it sheds another kilometre of shelf ice and tumbling iron across the only corridor anything hull-sized can still survive.',
-  'The cairns answer a hail — nine of them, set by hands that stopped setting things a long time ago. They are the line.',
-  'Fly them in order. The line between two markers is not empty — on the tight legs the rock comes in close, and only the brake buys you room.',
-];
+const BRIEF_LINES = [
+  'briefingLine1',
+  'briefingLine2',
+  'briefingLine3',
+] as const satisfies readonly (keyof ScreenMessages)[];
+
+export type ControlId =
+  | 'mouse-steer'
+  | 'throttle'
+  | 'roll'
+  | 'boost'
+  | 'brake'
+  | 'strafe-horizontal'
+  | 'strafe-vertical'
+  | 'keyboard-steer'
+  | 'camera-toggle'
+  | 'pause'
+  | 'restart';
 
 interface ControlRow {
   /** Stable semantic identifier for UI contracts, independent of the displayed copy. */
-  readonly id: string;
+  readonly id: ControlId;
   /**
    * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
    * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
    */
   readonly groups: readonly (readonly string[])[];
-  readonly action: string;
+  readonly action: keyof ControlMessages;
   /** Also shown in the briefing primer. Flagged per row so reordering cannot silently change it. */
   readonly primer?: boolean;
   /**
@@ -83,7 +96,7 @@ interface ControlRow {
    * The full legend keeps the longer text — that screen has the width and the reader's
    * attention; the primer has neither.
    */
-  readonly short?: string;
+  readonly short?: keyof ControlMessages;
 }
 
 /**
@@ -92,109 +105,180 @@ interface ControlRow {
  * or miss the cockpit that makes the ship readable from the pilot's seat.
  */
 const CONTROLS: readonly ControlRow[] = [
-  { id: 'mouse-steer', groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
-  { id: 'throttle', groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
-  { id: 'roll', groups: [['A', 'D']], action: 'Roll left / right', primer: true },
-  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
-  { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
-  { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'Strafe left / right' },
-  { id: 'strafe-vertical', groups: [['R', 'F']], action: 'Strafe up / down' },
+  { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
+  { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
+  { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
+  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
+  { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
+  { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
+  { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
   {
     id: 'keyboard-steer',
     groups: [['↑', '↓', '←', '→']],
-    action: 'Pitch / yaw without the mouse',
+    action: 'keyboardSteer',
     primer: true,
-    short: 'Steer without mouse',
+    short: 'keyboardSteerShort',
   },
   {
     id: 'camera-toggle',
     groups: [['C']],
-    action: 'Toggle chase / first-person cockpit (launch / flight)',
+    action: 'cameraToggle',
     primer: true,
-    short: 'Toggle first-person cockpit',
+    short: 'cameraToggleShort',
   },
-  { id: 'pause', groups: [['ESC']], action: 'Pause' },
-  { id: 'restart', groups: [['N']], action: 'Restart the run' },
+  { id: 'pause', groups: [['ESC']], action: 'pause' },
+  { id: 'restart', groups: [['N']], action: 'restart' },
 ];
 
 /** Key chips for one binding row, shared by the CONTROLS legend and the briefing primer. */
-function keyChips(row: ControlRow): HTMLElement {
+function keyChips(row: ControlRow, orLabel: string): HTMLElement {
   const wrap = el('span', 'lv-key-keys');
   for (let g = 0; g < row.groups.length; g++) {
-    if (g > 0) wrap.appendChild(el('span', 'lv-key-or', 'or'));
+    if (g > 0) wrap.appendChild(el('span', 'lv-key-or', orLabel));
     const group = row.groups[g]!;
-    for (let k = 0; k < group.length; k++) wrap.appendChild(el('kbd', '', group[k]!));
+    for (let k = 0; k < group.length; k++) {
+      const chip = el('kbd', '', group[k]!);
+      chip.lang = 'en';
+      wrap.appendChild(chip);
+    }
   }
   return wrap;
 }
 
+/**
+ * Writes one complete catalog string while exposing a deliberately small set of Latin tokens
+ * to assistive technology. Text is never parsed as markup: ordinary runs become text nodes and
+ * exact token matches become `lang=en` spans.
+ */
+function writeEnglishTokens(node: HTMLElement, text: string, tokens: readonly string[]): HTMLElement {
+  node.textContent = '';
+  let offset = 0;
+  while (offset < text.length) {
+    let nextToken = '';
+    let nextIndex = text.length;
+    for (const token of tokens) {
+      const index = text.indexOf(token, offset);
+      if (index >= 0 && index < nextIndex) {
+        nextIndex = index;
+        nextToken = token;
+      }
+    }
+    if (!nextToken) {
+      node.appendChild(document.createTextNode(text.slice(offset)));
+      break;
+    }
+    if (nextIndex > offset) node.appendChild(document.createTextNode(text.slice(offset, nextIndex)));
+    const token = el('span', '', nextToken);
+    token.lang = 'en';
+    node.appendChild(token);
+    offset = nextIndex + nextToken.length;
+  }
+  if (text.length === 0) node.textContent = '';
+  return node;
+}
+
+function englishText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
+  const node = el(tag, cls, text);
+  node.lang = 'en';
+  return node;
+}
+
 /* -------------------------------------------------------------- settings map */
 
-type RowSpec =
-  | {
-      kind: 'enum';
-      key: keyof Settings;
-      label: string;
-      hint: string;
-      options: readonly (readonly [string, string])[];
-    }
-  | {
-      kind: 'range';
-      key: keyof Settings;
-      label: string;
-      hint: string;
-      min: number;
-      max: number;
-      step: number;
-      fmt: (v: number) => string;
-    }
-  | { kind: 'bool'; key: keyof Settings; label: string; hint: string };
+type SettingTextKey = keyof SettingMessages;
+type EnumSettingKey = 'assistLevel' | 'cameraMode' | 'quality';
+type RangeSettingKey =
+  | 'mouseSensitivity'
+  | 'fov'
+  | 'cameraShake'
+  | 'renderScale'
+  | 'masterVolume'
+  | 'musicVolume';
+type BoolSettingKey = 'invertY' | 'showFps' | 'motionBlur' | 'filmGrain' | 'chromaticAberration';
+
+type EnumRow = {
+  [K in EnumSettingKey]: {
+    readonly kind: 'enum';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+    readonly options: readonly (readonly [value: Settings[K], label: SettingTextKey])[];
+  }
+}[EnumSettingKey];
+
+type RangeRow = {
+  [K in RangeSettingKey]: {
+    readonly kind: 'range';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+    readonly min: number;
+    readonly max: number;
+    readonly step: number;
+    readonly fmt: (v: number) => string;
+  }
+}[RangeSettingKey];
+
+type BoolRow = {
+  [K in BoolSettingKey]: {
+    readonly kind: 'bool';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+  }
+}[BoolSettingKey];
+
+type RowSpec = EnumRow | RangeRow | BoolRow;
+
+interface SettingGroup {
+  readonly title: SettingTextKey;
+  readonly rows: readonly RowSpec[];
+}
 
 const pct = (v: number): string => `${Math.round(v * 100)}%`;
 const mult = (v: number): string => `${v.toFixed(2)}×`;
 const deg = (v: number): string => `${Math.round(v)}°`;
 
-const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
+const SETTING_GROUPS = [
   {
-    title: 'FLIGHT',
+    title: 'sectionFlight',
     rows: [
       {
         kind: 'enum',
         key: 'assistLevel',
-        label: 'Flight assist',
-        hint: 'How much the avionics damp your inputs.',
+        label: 'flightAssist',
+        hint: 'flightAssistHint',
         options: [
-          ['arcade', 'ARCADE'],
-          ['standard', 'STANDARD'],
-          ['raw', 'RAW'],
+          ['arcade', 'arcade'],
+          ['standard', 'standard'],
+          ['raw', 'raw'],
         ],
       },
       {
         kind: 'enum',
         key: 'cameraMode',
-        label: 'Default camera',
-        hint: 'Press C during flight to switch views.',
+        label: 'defaultCamera',
+        hint: 'defaultCameraHint',
         options: [
-          ['chase', 'CHASE'],
-          ['cockpit', 'COCKPIT'],
+          ['chase', 'chase'],
+          ['cockpit', 'cockpit'],
         ],
       },
       {
         kind: 'range',
         key: 'mouseSensitivity',
-        label: 'Mouse sensitivity',
-        hint: '',
+        label: 'mouseSensitivity',
         min: 0.2,
         max: 3,
         step: 0.05,
         fmt: mult,
       },
-      { kind: 'bool', key: 'invertY', label: 'Invert pitch', hint: '' },
+      { kind: 'bool', key: 'invertY', label: 'invertPitch' },
       {
         kind: 'range',
         key: 'fov',
-        label: 'Field of view',
-        hint: 'Wider reads faster, narrower reads further.',
+        label: 'fieldOfView',
+        hint: 'fieldOfViewHint',
         /* 100, not 110: `Settings.ts` sanitises fov to [60, 100] and `commit -> syncSettings ->
            apply()` rewrites input.value from the sanitised store on every input event, so the
            thumb was actively driven back down and the top 20% of the track was dead. `.lv-slider-in`
@@ -210,8 +294,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       {
         kind: 'range',
         key: 'cameraShake',
-        label: 'Camera shake',
-        hint: '',
+        label: 'cameraShake',
         /* 1, not 2: `Settings.ts` sanitises cameraShake with clamp01. Same defect as fov above —
            half this track was dead travel. */
         min: 0,
@@ -222,25 +305,24 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
     ],
   },
   {
-    title: 'DISPLAY',
+    title: 'sectionDisplay',
     rows: [
       {
         kind: 'enum',
         key: 'quality',
-        label: 'Quality',
-        hint: '',
+        label: 'quality',
         options: [
-          ['low', 'LOW'],
-          ['medium', 'MED'],
-          ['high', 'HIGH'],
-          ['ultra', 'ULTRA'],
+          ['low', 'low'],
+          ['medium', 'medium'],
+          ['high', 'high'],
+          ['ultra', 'ultra'],
         ],
       },
       {
         kind: 'range',
         key: 'renderScale',
-        label: 'Render scale',
-        hint: 'Internal resolution. Drop it before you drop quality.',
+        label: 'renderScale',
+        hint: 'renderScaleHint',
         // 0.6, not 0.5: the sanitiser clamps to the adaptive controller's own floor of 0.58, so
         // everything below that was travel the player could move and the game could not honour.
         min: 0.6,
@@ -266,25 +348,24 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         step: 0.02,
         fmt: pct,
       },
-      { kind: 'bool', key: 'showFps', label: 'Frame counter', hint: '' },
+      { kind: 'bool', key: 'showFps', label: 'frameCounter' },
     ],
   },
   {
-    title: 'IMAGE',
+    title: 'sectionImage',
     rows: [
-      { kind: 'bool', key: 'motionBlur', label: 'Motion blur', hint: '' },
-      { kind: 'bool', key: 'filmGrain', label: 'Film grain', hint: '' },
-      { kind: 'bool', key: 'chromaticAberration', label: 'Chromatic aberration', hint: '' },
+      { kind: 'bool', key: 'motionBlur', label: 'motionBlur' },
+      { kind: 'bool', key: 'filmGrain', label: 'filmGrain' },
+      { kind: 'bool', key: 'chromaticAberration', label: 'chromaticAberration' },
     ],
   },
   {
-    title: 'AUDIO',
+    title: 'sectionAudio',
     rows: [
       {
         kind: 'range',
         key: 'masterVolume',
-        label: 'Master',
-        hint: '',
+        label: 'masterVolume',
         min: 0,
         max: 1,
         step: 0.01,
@@ -293,8 +374,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       {
         kind: 'range',
         key: 'musicVolume',
-        label: 'Score',
-        hint: '',
+        label: 'music',
         min: 0,
         max: 1,
         step: 0.01,
@@ -302,7 +382,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       },
     ],
   },
-];
+] as const satisfies readonly SettingGroup[];
 
 /* -------------------------------------------------------------------- screens */
 
@@ -612,6 +692,7 @@ export class Screens {
     if (hint) {
       const line = el('span', 'lv-btn-line');
       const chip = el('kbd', 'lv-btn-hint', hint);
+      chip.lang = 'en';
       /* The chip is decoration for the eye; the shortcut is announced via aria-keyshortcuts,
          which is what it is for. Without this the accessible name comes out as "RESTARTN". */
       chip.setAttribute('aria-hidden', 'true');
@@ -638,19 +719,21 @@ export class Screens {
   /* ------------------------------------------------------------------- title */
 
   private buildTitle(): HTMLElement {
-    const view = this.makeView('title', 'Main menu');
+    const m = this.translator.messages;
+    const view = this.makeView('title', m.a11y.mainMenu);
     const inner = el('div', 'lv-title');
 
     const eyebrow = el('div', 'lv-title-eyebrow');
     eyebrow.append(
-      el('span', '', 'SECTOR'),
+      el('span', '', m.screens.sector),
       el('i', 'lv-dot'),
-      el('span', 'lv-title-sector', FICTION.sectorName),
+      englishText('span', 'lv-title-sector', m.meta.sectorName),
     );
 
     const mark = el('h1', 'lv-wordmark');
-    mark.setAttribute('aria-label', FICTION.gameTitle);
-    const words = FICTION.gameTitle.split(' ');
+    mark.lang = 'en';
+    mark.setAttribute('aria-label', m.meta.gameTitle);
+    const words = m.meta.gameTitle.split(' ');
     for (let w = 0; w < words.length; w++) {
       const word = el('span', 'lv-word');
       const chars = words[w]!;
@@ -666,14 +749,23 @@ export class Screens {
     const rule = el('div', 'lv-rule');
     rule.appendChild(el('i', 'lv-rule-glint'));
 
-    const tag = el('p', 'lv-tagline', FICTION.tagline);
+    const tag = writeEnglishTokens(el('p', 'lv-tagline'), m.meta.tagline, ['CAIRN', 'TERMINUS']);
 
     const menu = el('nav', 'lv-menu');
-    menu.setAttribute('aria-label', 'Main menu');
+    menu.setAttribute('aria-label', m.a11y.mainMenu);
+    const begin = this.button(
+      m.screens.beginRun,
+      'is-primary',
+      'begin',
+      () => this.host.start(),
+      m.meta.destinationName,
+    );
+    const destination = begin.querySelector<HTMLElement>('.lv-btn-s');
+    if (destination) destination.lang = 'en';
     menu.append(
-      this.button('BEGIN RUN', 'is-primary', 'begin', () => this.host.start(), FICTION.destinationName),
-      this.button('SETTINGS', '', 'settings', () => this.show('settings')),
-      this.button('CONTROLS', '', 'controls', () => this.show('controls')),
+      begin,
+      this.button(m.screens.settings, '', 'settings', () => this.show('settings')),
+      this.button(m.screens.controls, '', 'controls', () => this.show('controls')),
     );
 
     const locale = el('div', 'lv-seg');
@@ -703,12 +795,16 @@ export class Screens {
     menu.appendChild(locale);
 
     const foot = el('div', 'lv-title-foot');
+    const hull = el('span');
+    hull.append(document.createTextNode(`${m.screens.hullPrefix} `), englishText('span', '', m.meta.shipName));
+    const primary = el('span');
+    primary.append(document.createTextNode(`${m.screens.primaryPrefix} `), englishText('span', '', m.meta.starName));
     foot.append(
-      el('span', '', `HULL ${FICTION.shipName}`),
+      hull,
       el('i', 'lv-dot'),
-      el('span', '', `PRIMARY ${FICTION.starName}`),
+      primary,
       el('i', 'lv-dot'),
-      el('span', '', 'NAV LOCK NOMINAL'),
+      el('span', '', m.screens.navigationNominal),
     );
 
     inner.append(eyebrow, mark, rule, tag, menu, foot);
@@ -719,22 +815,29 @@ export class Screens {
   /* ---------------------------------------------------------------- briefing */
 
   private buildBriefing(): HTMLElement {
-    const view = this.makeView('briefing', 'Run briefing');
+    const m = this.translator.messages;
+    const view = this.makeView('briefing', m.a11y.runBriefing);
     const panel = Screens.frame(el('div', 'lv-brief'));
 
     const head = el('header', 'lv-brief-head');
+    const transit = writeEnglishTokens(
+      el('div', 'lv-brief-sub'),
+      `${m.screens.transitTo} ${m.meta.destinationName}`,
+      [m.meta.destinationName],
+    );
     head.append(
-      el('div', 'lv-kicker', 'RUN BRIEFING'),
-      el('h2', 'lv-brief-title', FICTION.sectorName),
-      el('div', 'lv-brief-sub', `TRANSIT TO ${FICTION.destinationName}`),
+      el('div', 'lv-kicker', m.screens.runBriefing),
+      englishText('h2', 'lv-brief-title', m.meta.sectorName),
+      transit,
     );
 
     const cols = el('div', 'lv-brief-cols');
 
     const stats = el('dl', 'lv-stats');
-    const addStat = (k: string, v: string): HTMLElement => {
+    const addStat = (k: string, v: string, valueLang?: 'en'): HTMLElement => {
       const row = el('div', 'lv-stat');
       const value = el('dd', '', v);
+      if (valueLang) value.lang = valueLang;
       row.append(el('dt', '', k), value);
       stats.appendChild(row);
       return value;
@@ -747,28 +850,33 @@ export class Screens {
      * another one, which is the arrangement that goes stale silently. `--` until the first
      * telemetry frame, because a placeholder is honest and a stale literal is not.
      */
-    this.nStatMarkers = addStat('MARKERS', '--');
-    this.nStatCorridor = addStat('CORRIDOR', '--');
-    addStat('PRIMARY', FICTION.starName);
-    addStat('HULL', FICTION.shipName);
-    addStat('DRIFT', 'CLOSING');
+    this.nStatMarkers = addStat(m.screens.markers, '--');
+    this.nStatCorridor = addStat(m.screens.corridor, '--', 'en');
+    addStat(m.screens.primary, m.meta.starName, 'en');
+    addStat(m.screens.hull, m.meta.shipName, 'en');
+    addStat(m.screens.drift, m.screens.closing);
 
     const prose = el('div', 'lv-prose');
     for (let i = 0; i < BRIEF_LINES.length; i++) {
-      const p = el('p', 'lv-prose-l', BRIEF_LINES[i]!);
+      const key = BRIEF_LINES[i]!;
+      const tokens = key === 'briefingLine1' ? [m.meta.starName] : key === 'briefingLine2' ? ['CAIRN'] : [];
+      const p = writeEnglishTokens(el('p', 'lv-prose-l'), m.screens[key], tokens);
       p.style.setProperty('--n', String(i));
       prose.appendChild(p);
     }
 
     const primer = el('div', 'lv-primer');
-    primer.appendChild(el('div', 'lv-kicker', 'PRIMER'));
+    primer.appendChild(el('div', 'lv-kicker', m.screens.coreControls));
     const keys = el('ul', 'lv-primer-list');
     for (let i = 0; i < CONTROLS.length; i++) {
       const row = CONTROLS[i]!;
       if (!row.primer) continue;
       const li = el('li');
       li.dataset['control'] = row.id;
-      li.append(keyChips(row), el('span', '', row.short ?? row.action));
+      li.append(
+        keyChips(row, m.controls.or),
+        el('span', '', m.controls[row.short ?? row.action]),
+      );
       keys.appendChild(li);
     }
     primer.appendChild(keys);
@@ -777,8 +885,8 @@ export class Screens {
 
     const actions = el('div', 'lv-actions');
     actions.append(
-      this.button('ENGAGE', 'is-primary', 'engage', () => this.host.engage()),
-      this.button('BACK', 'is-ghost', 'return', () => this.opts.onBack()),
+      this.button(m.screens.engage, 'is-primary', 'engage', () => this.host.engage()),
+      this.button(m.screens.back, 'is-ghost', 'return', () => this.opts.onBack()),
     );
 
     panel.append(head, cols, actions);
@@ -813,7 +921,8 @@ export class Screens {
     ring: SVGCircleElement;
     label: HTMLElement;
   } {
-    const view = this.makeView('countdown', 'Launch countdown', 'is-passthrough');
+    const m = this.translator.messages;
+    const view = this.makeView('countdown', m.a11y.launchCountdown, 'is-passthrough');
     view.setAttribute('role', 'status');
     view.removeAttribute('aria-modal');
     const wrap = el('div', 'lv-count');
@@ -835,7 +944,7 @@ export class Screens {
     svg.append(track, ring);
 
     const num = el('div', 'lv-count-n', '');
-    const label = el('div', 'lv-count-k', 'LAUNCH SEQUENCE');
+    const label = el('div', 'lv-count-k', m.screens.launchSequence);
     wrap.append(svg, num, label);
     view.appendChild(wrap);
     return { view, num, ring, label };
@@ -854,9 +963,11 @@ export class Screens {
     view.dataset['open'] = '1';
     const go = value <= 0;
     view.dataset['countdownValue'] = go ? 'go' : String(value);
-    this.nCountNum.textContent = go ? 'GO' : String(value);
+    this.nCountNum.textContent = go ? this.translator.messages.screens.go : String(value);
     this.nCountNum.dataset['go'] = go ? '1' : '0';
-    this.nCountLabel.textContent = go ? 'VECTOR LIVE' : 'LAUNCH SEQUENCE';
+    this.nCountLabel.textContent = go
+      ? this.translator.messages.screens.vectorLive
+      : this.translator.messages.screens.launchSequence;
     retrigger(this.nCountNum, 'is-tick');
     retrigger(this.nCountRing as unknown as HTMLElement, 'is-sweep');
   }
@@ -864,23 +975,24 @@ export class Screens {
   /* ------------------------------------------------------------------- pause */
 
   private buildPause(): HTMLElement {
-    const view = this.makeView('pause', 'Paused');
+    const m = this.translator.messages;
+    const view = this.makeView('pause', m.a11y.paused);
     const panel = Screens.frame(el('div', 'lv-pause'));
     panel.append(
-      el('div', 'lv-kicker', 'FLIGHT HELD'),
-      el('h2', 'lv-pause-title', 'PAUSED'),
-      el('p', 'lv-pause-sub', 'Drift continues. The corridor does not wait.'),
+      el('div', 'lv-kicker', m.screens.flightHeld),
+      el('h2', 'lv-pause-title', m.screens.paused),
+      el('p', 'lv-pause-sub', m.screens.pauseDetail),
     );
     const menu = el('nav', 'lv-menu lv-menu--tight');
     menu.append(
-      this.button('RESUME', 'is-primary', 'resume', () => this.host.resume()),
+      this.button(m.screens.resume, 'is-primary', 'resume', () => this.host.resume()),
       /* Second, where the genre puts it: in a time trial "go again" is the common verb, and
          N was previously the only way to do it and was documented nowhere. The sub-label
          teaches the shortcut at the point of use. */
-      this.button('RESTART', '', 'restart', () => this.host.restart(), undefined, 'N'),
-      this.button('SETTINGS', '', 'settings', () => this.show('settings')),
-      this.button('CONTROLS', '', 'controls', () => this.show('controls')),
-      this.button('ABORT RUN', 'is-danger', 'abort', () => this.host.quitToTitle()),
+      this.button(m.screens.restart, '', 'restart', () => this.host.restart(), undefined, 'N'),
+      this.button(m.screens.settings, '', 'settings', () => this.show('settings')),
+      this.button(m.screens.controls, '', 'controls', () => this.show('controls')),
+      this.button(m.screens.abortRun, 'is-danger', 'abort', () => this.host.quitToTitle()),
     );
     panel.appendChild(menu);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -890,20 +1002,24 @@ export class Screens {
   /* ---------------------------------------------------------------- settings */
 
   private buildSettings(): { view: HTMLElement; body: HTMLElement } {
-    const view = this.makeView('settings', 'Settings');
+    const m = this.translator.messages;
+    const view = this.makeView('settings', m.a11y.settings);
     const panel = Screens.frame(el('div', 'lv-settings'));
-    panel.append(el('div', 'lv-kicker', 'CONFIGURATION'), el('h2', 'lv-panel-title', 'SETTINGS'));
+    panel.append(
+      el('div', 'lv-kicker', m.screens.configuration),
+      el('h2', 'lv-panel-title', m.screens.settings),
+    );
 
     const body = el('div', 'lv-set-body');
     for (const group of SETTING_GROUPS) {
       const sec = el('section', 'lv-set-group');
-      sec.append(el('h3', 'lv-set-grouptitle', group.title));
+      sec.append(el('h3', 'lv-set-grouptitle', m.settings[group.title]));
       for (const row of group.rows) sec.appendChild(this.buildSettingRow(row));
       body.appendChild(sec);
     }
 
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', 'return', () => this.opts.onBack()));
+    actions.append(this.button(m.screens.back, 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(body, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -911,10 +1027,19 @@ export class Screens {
   }
 
   private buildSettingRow(row: RowSpec): HTMLElement {
+    const m = this.translator.messages;
+    const label = m.settings[row.label];
     const node = el('div', `lv-set-row lv-set-row--${row.kind}`);
     const labels = el('div', 'lv-set-labels');
-    labels.appendChild(el('span', 'lv-set-label', row.label));
-    if (row.hint) labels.appendChild(el('span', 'lv-set-hint', row.hint));
+    labels.appendChild(el('span', 'lv-set-label', label));
+    if (row.hint !== undefined) {
+      const hint = writeEnglishTokens(
+        el('span', 'lv-set-hint'),
+        m.settings[row.hint],
+        row.hint === 'defaultCameraHint' ? ['C'] : [],
+      );
+      labels.appendChild(hint);
+    }
     node.appendChild(labels);
 
     if (row.kind === 'enum') {
@@ -924,16 +1049,16 @@ export class Screens {
       group.dataset['value'] = String(this.host.getSettings()[row.key]);
       group.tabIndex = 0;
       group.setAttribute('role', 'radiogroup');
-      group.setAttribute('aria-label', row.label);
-      for (const [value, text] of row.options) {
-        const b = el('button', 'lv-seg-b', text);
+      group.setAttribute('aria-label', label);
+      for (const [value, textKey] of row.options) {
+        const b = el('button', 'lv-seg-b', m.settings[textKey]);
         b.type = 'button';
         b.tabIndex = -1;
         b.dataset['seg'] = value;
         b.setAttribute('role', 'radio');
         b.setAttribute('aria-checked', 'false');
         b.addEventListener('click', () => {
-          this.commit(row.key, value as Settings[keyof Settings]);
+          this.commit(row.key, value as Settings[typeof row.key]);
           this.opts.onSound('click');
         });
         group.appendChild(b);
@@ -961,11 +1086,11 @@ export class Screens {
       sw.dataset['value'] = String(this.host.getSettings()[row.key]);
       sw.setAttribute('role', 'switch');
       sw.setAttribute('aria-checked', 'false');
-      sw.setAttribute('aria-label', row.label);
-      sw.append(el('i', 'lv-switch-knob'), el('span', 'lv-switch-t', 'OFF'));
+      sw.setAttribute('aria-label', label);
+      sw.append(el('i', 'lv-switch-knob'), el('span', 'lv-switch-t', m.settings.off));
       sw.addEventListener('click', () => {
         const next = sw.getAttribute('aria-checked') !== 'true';
-        this.commit(row.key, next as Settings[keyof Settings]);
+        this.commit(row.key, next);
         this.opts.onSound('click');
       });
       node.appendChild(sw);
@@ -976,7 +1101,7 @@ export class Screens {
           const on = v === true;
           sw.setAttribute('aria-checked', on ? 'true' : 'false');
           const t = sw.querySelector('.lv-switch-t');
-          if (t) t.textContent = on ? 'ON' : 'OFF';
+          if (t) t.textContent = on ? m.settings.on : m.settings.off;
         },
       });
       return node;
@@ -991,7 +1116,7 @@ export class Screens {
     input.dataset['nav'] = 'range';
     input.dataset['setting'] = row.key;
     input.dataset['value'] = String(this.host.getSettings()[row.key]);
-    input.setAttribute('aria-label', row.label);
+    input.setAttribute('aria-label', label);
     const read = el('span', 'lv-slider-v', '');
     const track = el('div', 'lv-slider-track');
     const fill = el('i', 'lv-slider-fill');
@@ -1001,7 +1126,7 @@ export class Screens {
       const v = Number(input.value);
       fill.style.transform = `scaleX(${((v - row.min) / (row.max - row.min)).toFixed(4)})`;
       read.textContent = row.fmt(v);
-      this.commit(row.key, v as Settings[keyof Settings]);
+      this.commit(row.key, v);
     });
     node.appendChild(wrap);
     this.settingNodes.push({
@@ -1038,9 +1163,13 @@ export class Screens {
   /* ---------------------------------------------------------------- controls */
 
   private buildControls(): HTMLElement {
-    const view = this.makeView('controls', 'Controls');
+    const m = this.translator.messages;
+    const view = this.makeView('controls', m.a11y.controls);
     const panel = Screens.frame(el('div', 'lv-controls'));
-    panel.append(el('div', 'lv-kicker', 'PILOT REFERENCE'), el('h2', 'lv-panel-title', 'CONTROLS'));
+    panel.append(
+      el('div', 'lv-kicker', m.controls.heading),
+      el('h2', 'lv-panel-title', m.screens.controls),
+    );
 
     const list = el('ul', 'lv-keys');
     for (let i = 0; i < CONTROLS.length; i++) {
@@ -1048,17 +1177,13 @@ export class Screens {
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
       li.style.setProperty('--n', String(i));
-      li.append(keyChips(row), el('span', 'lv-key-d', row.action));
+      li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
     }
 
-    const note = el(
-      'p',
-      'lv-note',
-      'Pointer lock captures the mouse on launch. ESC releases it and holds the flight.',
-    );
+    const note = writeEnglishTokens(el('p', 'lv-note'), m.controls.pointerLockNote, ['ESC']);
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', 'return', () => this.opts.onBack()));
+    actions.append(this.button(m.screens.back, 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(list, note, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -1068,7 +1193,7 @@ export class Screens {
   /* ----------------------------------------------------------------- results */
 
   private buildResults(): { view: HTMLElement; body: HTMLElement } {
-    const view = this.makeView('results', 'Run complete');
+    const view = this.makeView('results', this.translator.messages.a11y.runComplete);
     const panel = el('div', 'lv-results');
     const body = el('div', 'lv-res-body');
     panel.appendChild(body);
@@ -1077,21 +1202,26 @@ export class Screens {
   }
 
   showResult(r: RunResult): void {
+    const m = this.translator.messages;
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
-    this.views.get('results')?.setAttribute('aria-label', 'Run complete');
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
     const headline = el('div', 'lv-res-headline');
     headline.append(
-      el('div', 'lv-kicker', r.gatesCleared >= r.gatesTotal ? 'ARRIVAL CONFIRMED' : 'RUN ENDED'),
-      el('h2', 'lv-res-title', r.destinationName),
+      el(
+        'div',
+        'lv-kicker',
+        r.gatesCleared >= r.gatesTotal ? m.results.arrivalConfirmed : m.results.runComplete,
+      ),
+      englishText('h2', 'lv-res-title', m.meta.destinationName),
     );
     const rank = el('div', 'lv-res-rank');
-    rank.append(el('div', 'lv-res-k', 'RATING'), el('div', 'lv-res-letter', r.rank));
+    rank.append(el('div', 'lv-res-k', m.results.rank), englishText('div', 'lv-res-letter', r.rank));
     rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
     head.append(headline, rank);
     body.appendChild(head);
@@ -1102,29 +1232,41 @@ export class Screens {
 
     const left = el('div', 'lv-res-left');
     const timeBlock = el('div', 'lv-res-timeblock');
-    timeBlock.append(el('div', 'lv-res-k', 'TOTAL'), el('div', 'lv-res-time', formatTime(r.totalTime)));
+    timeBlock.append(
+      el('div', 'lv-res-k', m.results.totalTime),
+      el('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
     if (r.isNewBest) {
       const badge = el('div', 'lv-newbest');
-      badge.append(el('i', 'lv-newbest-tick'), el('span', '', 'NEW BEST'));
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
       timeBlock.appendChild(badge);
     } else if (r.bestTime != null) {
       const d = r.totalTime - r.bestTime;
-      const delta = el('div', 'lv-res-delta', `${formatDelta(d)} vs BEST ${formatTime(r.bestTime)}`);
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(d), formatTime(r.bestTime)),
+      );
       delta.dataset['tone'] = d <= 0 ? 'good' : 'bad';
       timeBlock.appendChild(delta);
     }
     left.appendChild(timeBlock);
 
     const stats = el('dl', 'lv-res-stats');
-    const addStat = (k: string, v: string, tone?: string): void => {
+    const addStat = (k: string, v: string, tone?: string, englishTokens: readonly string[] = []): void => {
       const cell = el('div', 'lv-res-stat');
-      cell.append(el('dt', 'lv-res-statk', k), el('dd', 'lv-res-statv', v));
+      const value = writeEnglishTokens(el('dd', 'lv-res-statv'), v, englishTokens);
+      cell.append(el('dt', 'lv-res-statk', k), value);
       if (tone) cell.dataset['tone'] = tone;
       stats.appendChild(cell);
     };
-    addStat('MARKERS', `${r.gatesCleared} / ${r.gatesTotal}`);
-    addStat('TOP SPEED', `${Math.round(r.topSpeed)} M/S`);
-    addStat('HULL', r.cleanRun ? 'UNTOUCHED' : 'SCARRED', r.cleanRun ? 'good' : 'warn');
+    addStat(m.results.markers, `${r.gatesCleared} / ${r.gatesTotal}`);
+    addStat(m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`, undefined, [m.results.speedUnit]);
+    addStat(
+      m.results.hull,
+      r.cleanRun ? m.results.clean : m.results.damaged,
+      r.cleanRun ? 'good' : 'warn',
+    );
     left.appendChild(stats);
 
     /*
@@ -1166,12 +1308,12 @@ export class Screens {
     table.dataset['delta'] = hasBest ? '1' : '0';
     const header = el('div', 'lv-res-row is-head');
     header.append(
-      el('span', '', 'MARKER'),
-      el('span', '', 'SEGMENT'),
+      el('span', '', m.results.marker),
+      el('span', '', m.results.segment),
       el('span', ''),
-      el('span', '', 'ELAPSED'),
+      el('span', '', m.results.elapsed),
     );
-    if (hasBest) header.append(el('span', '', 'Δ BEST'));
+    if (hasBest) header.append(el('span', '', m.results.versusBest));
     table.appendChild(header);
 
     /* The run-in is a leg like any other for scaling purposes — leaving it out of `slowest`
@@ -1222,6 +1364,7 @@ export class Screens {
       }
       row.dataset['fast'] = seg <= fastest + 1e-6 ? '1' : '0';
       if (terminus) row.dataset['term'] = '1';
+      if (terminus) row.querySelector<HTMLElement>('.lv-res-idx')!.lang = 'en';
       table.appendChild(row);
     };
 
@@ -1236,7 +1379,7 @@ export class Screens {
        reconcile with the headline instead of falling short of it. */
     addRow(
       r.splits.length,
-      'TERMINUS',
+      m.results.terminus,
       runIn,
       r.totalTime,
       hasRunInBest ? runIn - bestRunIn : null,
@@ -1251,8 +1394,8 @@ export class Screens {
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
     actions.append(
-      this.button('RUN AGAIN', 'is-primary', 'again', () => this.host.restart()),
-      this.button('RETURN', 'is-ghost', 'return', () => this.host.quitToTitle()),
+      this.button(m.results.runAgain, 'is-primary', 'again', () => this.host.restart()),
+      this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
     );
     body.appendChild(actions);
 
@@ -1268,26 +1411,27 @@ export class Screens {
    * binding, so the visible shortcut and the action path cannot disagree.
    */
   showFailure(elapsed: number): void {
+    const m = this.translator.messages;
     const body = this.nResultBody;
     body.textContent = '';
     body.dataset['state'] = 'failure';
-    this.views.get('results')?.setAttribute('aria-label', 'Hull breach');
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.hullBreach);
 
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    head.appendChild(el('h2', 'lv-res-title', 'HULL BREACH'));
+    head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
 
     const timeBlock = el('div', 'lv-res-timeblock');
     timeBlock.style.setProperty('--n', '1');
     timeBlock.append(
-      el('div', 'lv-res-k', 'TIME'),
+      el('div', 'lv-res-k', m.results.time),
       el('div', 'lv-res-time', formatTime(elapsed)),
     );
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
     actions.appendChild(
-      this.button('RETRY', 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
+      this.button(m.results.retry, 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
     );
 
     body.append(head, timeBlock, actions);

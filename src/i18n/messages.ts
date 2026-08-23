@@ -198,6 +198,7 @@ export interface ResultMessages {
   speedUnit: string;
   terminus: string;
   splitDelta: (delta: string) => string;
+  bestComparison: (delta: string, best: string) => string;
 }
 
 export interface CockpitMessages {

@@ -29,6 +29,7 @@ const DYNAMIC_ARITIES = new Map([
   ['hud.boostUsable', 1],
   ['hud.boostRecharging', 1],
   ['results.splitDelta', 1],
+  ['results.bestComparison', 2],
   ['events.hullContact', 1],
   ['events.gateProgress', 1],
   ['events.gateClearedLog', 2],
@@ -135,6 +136,9 @@ await report.check(
     verify(/boostUsable\(\s*\)/.test(source), 'Missing boostUsable omitted-argument fixture');
     verify(/boostUsable\(\s*['"]/.test(source), 'Missing boostUsable string-argument fixture');
     verify(/gateClearedLog\(\s*\)/.test(source), 'Missing gateClearedLog omitted-arguments fixture');
+    verify(/bestComparison\(\s*\)/.test(source), 'Missing bestComparison omitted-arguments fixture');
+    verify(/bestComparison\(\s*['"][^'"]+['"]\s*\)/.test(source),
+      'Missing bestComparison one-argument fixture');
     verify(/export\s+const\s+typeFixtures/.test(source), 'The fixture array must be exported');
     return { expectErrorDirectives: directives.length };
   },

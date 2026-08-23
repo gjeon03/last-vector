@@ -196,6 +196,7 @@ export const en = {
     speedUnit: 'M/S',
     terminus: 'TERMINUS',
     splitDelta: (delta: string) => `${delta} vs BEST`,
+    bestComparison: (delta: string, best: string) => `${delta} vs BEST ${best}`,
   },
   cockpit: {
     attitude: 'ATTITUDE',

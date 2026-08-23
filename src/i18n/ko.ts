@@ -194,6 +194,7 @@ export const ko = {
     speedUnit: 'M/S',
     terminus: 'TERMINUS',
     splitDelta: (delta: string) => `${delta} · 최고기록 대비`,
+    bestComparison: (delta: string, best: string) => `최고 ${best} 대비 ${delta}`,
   },
   cockpit: {
     attitude: '자세',
