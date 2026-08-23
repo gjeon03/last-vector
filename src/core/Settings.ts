@@ -199,6 +199,11 @@ export class SettingsStore {
     return qualityProfile(this.current.quality);
   }
 
+  /** Read-only lifecycle evidence; Overlay replacement must never duplicate this subscription. */
+  get subscriberCount(): number {
+    return this.listeners.size;
+  }
+
   set<K extends keyof Settings>(key: K, value: Settings[K]): void {
     if (this.current[key] === value) return;
     const next = { ...this.current, [key]: value };

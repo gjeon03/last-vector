@@ -9,8 +9,14 @@ import './styles.css';
 
 import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
 import { FONT, UI } from '../core/art.ts';
+import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
-import { Screens, type ScreenView, type UiSound } from './Screens.ts';
+import {
+  Screens,
+  type ScreenFocusToken,
+  type ScreenView,
+  type UiSound,
+} from './Screens.ts';
 
 /** Views that are reachable from more than one place and therefore need a return target. */
 const SUB_VIEWS: readonly ScreenView[] = ['settings', 'controls'];
@@ -31,7 +37,7 @@ export class Overlay {
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
 
-  constructor(rootEl: HTMLElement, host: HudHost) {
+  constructor(rootEl: HTMLElement, host: HudHost, translator: Translator) {
     this.host = host;
 
     this.root = el('div', 'lv-root');
@@ -50,7 +56,7 @@ export class Overlay {
       onSettingChanged: () => this.syncSettings(),
       onSound: (kind) => this.emitSound(kind),
       onBack: () => this.back(),
-    });
+    }, translator);
     this.screens.mount(this.root);
 
     rootEl.appendChild(this.root);
@@ -123,6 +129,7 @@ export class Overlay {
         host.quitToTitle();
       },
       pause: () => host.pause(),
+      requestLocale: (locale) => host.requestLocale(locale),
       setSetting: (key, value) => host.setSetting(key, value),
       getSettings: () => host.getSettings(),
     };
@@ -161,6 +168,14 @@ export class Overlay {
     this.hud.update(t, dt);
     /* Course facts the briefing states. Guarded inside; they change once per run at most. */
     this.screens.setCourseFacts(t.courseLength, t.gate.total);
+  }
+
+  captureFocusToken(): ScreenFocusToken | null {
+    return this.screens.captureFocusToken();
+  }
+
+  restoreFocusToken(token: ScreenFocusToken | null): void {
+    this.screens.restoreFocusToken(token);
   }
 
   setPhase(phase: Phase): void {

@@ -29,6 +29,7 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
+import { createTranslator, LocaleStore, type Translator } from '../i18n/index.ts';
 import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hashSeed } from '../core/rng.ts';
@@ -37,6 +38,7 @@ import type {
   CameraMode,
   Callout,
   LogLine,
+  Locale,
   Phase,
   RunResult,
   Settings,
@@ -46,6 +48,7 @@ import type {
 import type {
   GatePassRecord,
   HarnessInput,
+  HarnessLocaleState,
   HarnessPose,
   HarnessShipVisualDebugState,
   HazardReport,
@@ -132,6 +135,7 @@ interface Vantage {
 
 export interface GameOptions {
   root: HTMLElement;
+  localeStore?: LocaleStore;
   seed?: number;
 }
 
@@ -139,8 +143,13 @@ export class Game {
   readonly renderer: THREE.WebGLRenderer;
   readonly settings: SettingsStore;
   readonly audio: AudioBus;
-  readonly overlay: Overlay;
 
+  private readonly root: HTMLElement;
+  private readonly localeStore: LocaleStore;
+  private overlay: Overlay;
+  private selectedLocale: Locale;
+  private activeRunLocale: Locale | null = null;
+  private activeTranslator: Translator;
   private readonly canvas: HTMLCanvasElement;
   private readonly farScene = new THREE.Scene();
   private readonly mainScene = new THREE.Scene();
@@ -295,12 +304,18 @@ export class Game {
   private readonly firstFrame: Promise<void>;
 
   constructor(options: GameOptions) {
+    this.root = options.root;
+    this.localeStore = options.localeStore ?? new LocaleStore();
+    this.selectedLocale = this.localeStore.get();
+    this.activeTranslator = createTranslator(this.selectedLocale);
+    document.documentElement.lang = this.selectedLocale;
+
     const seed = options.seed ?? hashSeed('cairn-drift-01');
     this.seed = seed;
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'lv-canvas';
-    options.root.appendChild(this.canvas);
+    this.root.appendChild(this.canvas);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -510,21 +525,7 @@ export class Game {
        Moving the Overlay construction above this block would reintroduce that swallow silently,
        on the keyboard path only. */
 
-    this.overlay = new Overlay(options.root, {
-      // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
-      // its control primer were fully built and mapped but nothing ever routed to them, so the
-      // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
-      // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
-      audio: this.uiAudio,
-      start: () => this.toBriefing(),
-      engage: () => this.beginRun(),
-      restart: () => this.restart(),
-      pause: () => this.pause(),
-      resume: () => this.resume(),
-      quitToTitle: () => this.toTitle(),
-      setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
-      getSettings: () => this.settings.value,
-    });
+    this.overlay = this.createOverlay(this.activeTranslator);
 
     this.telemetry = this.createTelemetry();
     this.grade = {
@@ -572,6 +573,64 @@ export class Game {
     this.setPhase('title');
     this.cinematic = true;
     this.autopilot = true;
+  }
+
+  private createOverlay(translator: Translator): Overlay {
+    return new Overlay(this.root, {
+      // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
+      // its control primer were fully built and mapped but nothing ever routed to them, so the
+      // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
+      // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
+      audio: this.uiAudio,
+      start: () => this.toBriefing(),
+      engage: () => this.beginRun(),
+      restart: () => this.restart(),
+      pause: () => this.pause(),
+      resume: () => this.resume(),
+      quitToTitle: () => this.toTitle(),
+      requestLocale: (locale) => this.applyLocale(locale),
+      setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
+      getSettings: () => this.settings.value,
+    }, translator);
+  }
+
+  private replaceOverlay(translator: Translator): void {
+    const phase = this.phase;
+    const countdown = this.countdown;
+    const pointerLocked = this.input.pointerLocked;
+    const telemetry = this.telemetry;
+    const focus = this.overlay.captureFocusToken();
+
+    this.overlay.dispose();
+    this.overlay = this.createOverlay(translator);
+    // Hydrate directly: Game.setPhase has a same-phase guard and would leave every new view closed.
+    this.overlay.setPhase(phase);
+    this.overlay.setCountdown(countdown);
+    this.overlay.setPointerLocked(pointerLocked);
+    this.overlay.update(telemetry, 0);
+    this.overlay.restoreFocusToken(focus);
+  }
+
+  private applyLocale(locale: Locale): void {
+    if (this.phase !== 'title') return;
+    this.localeStore.set(locale);
+    const changed = locale !== this.selectedLocale;
+    this.selectedLocale = locale;
+    this.activeTranslator = createTranslator(locale);
+    document.documentElement.lang = locale;
+    if (changed) this.replaceOverlay(this.activeTranslator);
+  }
+
+  private lockLocaleForRun(): void {
+    if (this.activeRunLocale !== null) return;
+    this.activeRunLocale = this.selectedLocale;
+    this.activeTranslator = createTranslator(this.activeRunLocale);
+    document.documentElement.lang = this.activeRunLocale;
+  }
+
+  private unlockLocaleAtTitle(): void {
+    this.activeRunLocale = null;
+    this.applyLocale(this.localeStore.reload());
   }
 
   // ---------------------------------------------------------------------------------
@@ -677,6 +736,7 @@ export class Game {
    *   three seconds of every run watching numerals.
    */
   beginRun(skipIntro = false): void {
+    this.lockLocaleForRun();
     // Clearing this matters the moment any restart affordance is reachable from the pause
     // menu: without it the new run starts already frozen on the countdown.
     this.cancelCountdownClear();
@@ -720,6 +780,7 @@ export class Game {
   }
 
   toBriefing(): void {
+    this.lockLocaleForRun();
     this.clearPause();
     this.autopilot = true;
     this.cinematic = true;
@@ -797,6 +858,7 @@ export class Game {
     this.activeVantage = this.vantages[0];
     this.input.releaseLock();
     this.setPhase('title');
+    this.unlockLocaleAtTitle();
   }
 
   // ---------------------------------------------------------------------------------
@@ -2117,6 +2179,15 @@ export class Game {
 
   getTelemetry(): Telemetry {
     return this.telemetry;
+  }
+
+  getLocaleState(): HarnessLocaleState {
+    return {
+      selected: this.selectedLocale,
+      active: this.activeRunLocale,
+      locked: this.activeRunLocale !== null,
+      settingsSubscribers: this.settings.subscriberCount,
+    };
   }
 
   getResult(): RunResult | null {

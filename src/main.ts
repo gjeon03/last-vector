@@ -1,14 +1,25 @@
 import './boot.css';
 import { Game } from './game/Game.ts';
-import { FICTION, UI } from './core/art.ts';
+import { UI } from './core/art.ts';
 import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
+import { createTranslator, LocaleStore, type Translator } from './i18n/index.ts';
 
 /**
  * Entry point. Three jobs: prove the browser can run the thing, hold a loading screen while
  * the procedural sky bakes, and expose the automation surface the playtest harness drives.
  */
+
+const localeStore = new LocaleStore();
+const bootLocale = localeStore.reload();
+document.documentElement.lang = bootLocale;
+const bootTranslator = createTranslator(bootLocale);
+document.title = bootTranslator.messages.meta.documentTitle;
+document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute(
+  'content',
+  bootTranslator.messages.meta.documentDescription,
+);
 
 const root = document.getElementById('app');
 if (!root) throw new Error('#app missing');
@@ -34,14 +45,14 @@ function supportsWebGL2(): boolean {
  * The nebula bake and the asteroid generation block the main thread for a moment, so the
  * loading card is written and painted *before* the Game constructor runs.
  */
-function showLoader(): { setProgress: (v: number, label: string) => void; done: () => void } {
+function showLoader(translator: Translator): { setProgress: (v: number, label: string) => void; done: () => void } {
   const el = document.createElement('div');
   el.className = 'lv-loader';
   el.innerHTML = `
     <div class="lv-loader__inner">
-      <div class="lv-loader__title">${FICTION.gameTitle}</div>
+      <div class="lv-loader__title">${translator.messages.meta.gameTitle}</div>
       <div class="lv-loader__bar"><i></i></div>
-      <div class="lv-loader__label">initialising</div>
+      <div class="lv-loader__label">${translator.messages.loader.initialising}</div>
     </div>
   `;
   root!.appendChild(el);
@@ -65,15 +76,15 @@ const nextPaint = (): Promise<void> =>
 async function boot(): Promise<void> {
   if (!supportsWebGL2()) {
     fail(
-      'WEBGL2 REQUIRED',
-      'This browser could not create a WebGL2 context. Try a recent Chrome, Edge, Firefox or Safari with hardware acceleration enabled.',
+      bootTranslator.messages.loader.webglRequiredTitle,
+      bootTranslator.messages.loader.webglRequiredDetail,
     );
     return;
   }
 
-  const loader = showLoader();
+  const loader = showLoader(bootTranslator);
   await nextPaint();
-  loader.setProgress(0.15, 'charting the drift');
+  loader.setProgress(0.15, bootTranslator.messages.loader.chartingDrift);
   await nextPaint();
 
   // A seed can be pinned from the URL so a failing headless run is reproducible. The world
@@ -84,9 +95,14 @@ async function boot(): Promise<void> {
 
   let game: Game;
   try {
-    game = new Game(seed === undefined ? { root: root! } : { root: root!, seed });
+    game = new Game(seed === undefined
+      ? { root: root!, localeStore }
+      : { root: root!, localeStore, seed });
   } catch (error) {
-    fail('FAILED TO LAUNCH', String(error instanceof Error ? error.message : error));
+    fail(
+      bootTranslator.messages.loader.launchFailedTitle,
+      String(error instanceof Error ? error.message : error),
+    );
     return;
   }
 
@@ -96,12 +112,12 @@ async function boot(): Promise<void> {
   game.onContextLost = () => {
     graphicsFailed = true;
     fail(
-      'GRAPHICS CONTEXT LOST',
-      'The browser dropped the WebGL context — usually a driver reset, a GPU switch, or another tab exhausting video memory. Reload the page to continue.',
+      bootTranslator.messages.loader.graphicsContextLostTitle,
+      bootTranslator.messages.loader.graphicsContextLostDetail,
     );
   };
 
-  loader.setProgress(0.8, 'lighting the cairns');
+  loader.setProgress(0.8, bootTranslator.messages.loader.lightingCairns);
   await nextPaint();
 
   /* Build the audio graph HERE, behind the loader, not on the player's first gesture.
@@ -115,7 +131,7 @@ async function boot(): Promise<void> {
      `unlock()` stays the resume-only path: it finds `building` already resolved and does nothing
      but resume a suspended context, which it already handles. Creating a context outside a
      gesture is allowed — it starts suspended; only resuming needs the gesture. */
-  loader.setProgress(0.88, 'spinning up the drive');
+  loader.setProgress(0.88, bootTranslator.messages.loader.spinningDrive);
   await nextPaint();
   /* `prewarm()`, NOT `unlock()`, and raced against a timeout.
      The first draft of this awaited `unlock()`, which resumes as well as builds. On an
@@ -137,7 +153,7 @@ async function boot(): Promise<void> {
   game.start();
   await game.ready();
   if (graphicsFailed) return;
-  loader.setProgress(1, 'ready');
+  loader.setProgress(1, bootTranslator.messages.loader.ready);
   loader.done();
 
   installHarness(game);
@@ -155,7 +171,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.3.0',
+    version: '1.4.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -207,6 +223,7 @@ function installHarness(game: Game): void {
     },
     settings: () => game.settings.value,
     setSettings: (patch: Partial<Settings>) => game.settings.patch(patch),
+    locale: () => game.getLocaleState(),
     cameraMode: () => game.getCameraMode(),
     cockpitDebug: () => game.getCockpitDebug(),
     setPaused: (paused) => game.setPaused(paused),

@@ -5,7 +5,7 @@
  * This is a stable contract: the playtest tooling under `scripts/playtest/` depends on it.
  */
 
-import type { CameraMode, Phase, RunResult, Settings, Telemetry } from './contracts.ts';
+import type { CameraMode, Locale, Phase, RunResult, Settings, Telemetry } from './contracts.ts';
 
 export interface HarnessInput {
   /**
@@ -175,6 +175,13 @@ export interface GatePassRecord {
   boostEnergyAfter: number;
 }
 
+export interface HarnessLocaleState {
+  selected: Locale;
+  active: Locale | null;
+  locked: boolean;
+  settingsSubscribers: number;
+}
+
 export interface HarnessApi {
   readonly version: string;
   /**
@@ -304,6 +311,8 @@ export interface HarnessApi {
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;
   setSettings(patch: Partial<Settings>): void;
+  /** Selected title locale and the nullable locale snapshot locked to the current run. */
+  locale(): HarnessLocaleState;
   /** The flight camera mode currently applied by the game, not merely the stored preference. */
   cameraMode(): CameraMode;
   /** Physical cockpit pose, controls, instrument cadence, and cockpit-only render cost. */

@@ -7,8 +7,9 @@
  * keyboard path and the pointer path are the same path.
  */
 
-import type { HudHost, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
+import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
 import { FICTION } from '../core/art.ts';
+import type { Translator } from '../i18n/index.ts';
 import {
   clamp,
   distanceUnit,
@@ -42,6 +43,13 @@ export type ScreenAction =
   | 'abort'
   | 'again'
   | 'retry';
+
+export interface ScreenFocusToken {
+  view: ScreenView;
+  action?: ScreenAction;
+  nav?: string;
+  locale?: Locale;
+}
 
 /**
  * Original pre-run fiction. Short: the visuals carry the mood.
@@ -310,6 +318,7 @@ export class Screens {
 
   private readonly host: HudHost;
   private readonly opts: ScreensOptions;
+  private readonly translator: Translator;
   private readonly views = new Map<ScreenView, HTMLElement>();
   private view: ScreenView = 'none';
 
@@ -334,9 +343,10 @@ export class Screens {
   private navIndex = 0;
   private lastCountdown: number | null = null;
 
-  constructor(host: HudHost, opts: ScreensOptions) {
+  constructor(host: HudHost, opts: ScreensOptions, translator: Translator) {
     this.host = host;
     this.opts = opts;
+    this.translator = translator;
     this.el = el('div', 'lv-screens');
 
     this.el.appendChild(this.buildTitle());
@@ -376,6 +386,40 @@ export class Screens {
 
   current(): ScreenView {
     return this.view;
+  }
+
+  captureFocusToken(): ScreenFocusToken | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !this.el.contains(active)) return null;
+    const view = active.closest<HTMLElement>('[data-view]');
+    if (!view || view.dataset['open'] !== '1') return null;
+    return {
+      view: view.dataset['view'] as ScreenView,
+      action: active.dataset['action'] as ScreenAction | undefined,
+      nav: active.dataset['nav'],
+      locale: active.dataset['locale'] as Locale | undefined,
+    };
+  }
+
+  restoreFocusToken(token: ScreenFocusToken | null): void {
+    if (!token || token.view !== this.view) return;
+    const view = this.views.get(token.view);
+    if (!view) return;
+    const candidates = view.querySelectorAll<HTMLElement>('[data-nav]');
+    let match: HTMLElement | null = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i]!;
+      if (token.action !== undefined && candidate.dataset['action'] !== token.action) continue;
+      if (token.nav !== undefined && candidate.dataset['nav'] !== token.nav) continue;
+      if (token.locale !== undefined && candidate.dataset['locale'] !== token.locale) continue;
+      match = candidate;
+      break;
+    }
+    if (!match) return;
+    const index = this.navItems.indexOf(match);
+    if (index >= 0) this.navIndex = index;
+    match.focus({ preventScroll: true });
+    match.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
   show(view: ScreenView): void {
@@ -628,6 +672,32 @@ export class Screens {
       this.button('SETTINGS', '', 'settings', () => this.show('settings')),
       this.button('CONTROLS', '', 'controls', () => this.show('controls')),
     );
+
+    const locale = el('div', 'lv-seg');
+    locale.dataset['nav'] = 'segmented';
+    locale.dataset['value'] = this.translator.locale;
+    locale.tabIndex = 0;
+    locale.setAttribute('role', 'radiogroup');
+    locale.setAttribute('aria-label', this.translator.messages.a11y.languageSelection);
+    const localeOptions: readonly (readonly [Locale, string])[] = [
+      ['ko', this.translator.messages.screens.korean],
+      ['en', this.translator.messages.screens.english],
+    ];
+    for (const [value, text] of localeOptions) {
+      const button = el('button', 'lv-seg-b', text);
+      button.type = 'button';
+      button.tabIndex = -1;
+      button.dataset['seg'] = value;
+      button.dataset['locale'] = value;
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', value === this.translator.locale ? 'true' : 'false');
+      button.addEventListener('click', () => {
+        this.opts.onSound('click');
+        this.host.requestLocale(value);
+      });
+      locale.appendChild(button);
+    }
+    menu.appendChild(locale);
 
     const foot = el('div', 'lv-title-foot');
     foot.append(

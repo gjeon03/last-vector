@@ -228,6 +228,8 @@ export interface HudHost {
   pause(): void;
   resume(): void;
   quitToTitle(): void;
+  /** Requests a persisted locale change; the game accepts it only while the title is active. */
+  requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
   getSettings(): Settings;
 }
