@@ -316,13 +316,26 @@
 - Modify: `src/ui/Overlay.ts`
 - Modify: `src/ui/Screens.ts`
 - Modify: `src/core/contracts.ts`
+- Modify: `src/core/Settings.ts`
 - Modify: `src/core/harness.ts`
 - Modify: `src/main.ts`
 - Test: `scripts/playtest/localization.mjs`
 
 - [ ] **Step 1: Add isolated boot scenarios**
 
-  Add `openBootScenario(session, { localStorageSeed })` to `runtime.mjs`. It creates a fresh browser context with the same viewport, device scale factor, service-worker policy, and loopback origin, seeds localStorage through Playwright `storageState` before navigation, installs a scenario-local request log, opens one page, and returns `{ page, requests, close }`.
+  Export the existing network-boundary and page-observer installers, then add:
+
+  ~~~js
+  openBootScenario(session, {
+    localStorageSeed = {},
+    seed,
+    initScripts = [],
+  })
+  ~~~
+
+  It creates a fresh browser context with the same viewport, `options.deviceScaleFactor`, service-worker policy, and loopback origin; seeds localStorage through Playwright `storageState` before navigation; installs the normal localhost network boundary and console/pageerror observers into shared `session.observations`; records requests in a scenario-local array; applies supplied init scripts before page creation; opens one page with the deterministic seed; and returns `{ page, requests, close }`.
+
+  Use `new URL(session.target.url).origin` without a trailing slash for the storage-state origin.
 
   Each clean-boot assertion owns and closes its scenario. Do not reuse the main suite context, request accumulator, HTTP cache, or an `addInitScript` that repeats on every reload.
 
@@ -347,6 +360,11 @@
   - Restart/retry preserve the locked locale.
   - Returning to title unlocks and reloads storage.
   - Repeated locale changes do not multiply click, keyboard, resize, settings, or pointer-lock listeners.
+  - The harness version is exactly `1.4.0` and `locale` is a required method.
+  - Every locale snapshot satisfies `locked === (active !== null)`.
+  - Returning to title restores a visible `[data-view="title"][data-open="1"] [data-action="begin"]`.
+
+  In a dedicated scenario, install an EventTarget add/remove census and a ResizeObserver construct/disconnect census before the document loads. Compare active listener populations by target/type/capture before and after repeated locale switches. Expose a read-only `SettingsStore.subscriberCount` and include it in harness locale evidence; it must remain exactly one.
 
 - [ ] **Step 3: Run the new suite and confirm red**
 
@@ -380,15 +398,19 @@
 
   `replaceOverlay` must:
 
-  1. Dispose the old Overlay.
-  2. Create the new Overlay without touching Input/audio/settings/WebGL.
-  3. Restore phase, countdown, pointer-lock state, and current telemetry.
+  1. Snapshot phase, countdown, `input.pointerLocked`, telemetry, and the active navigation focus token.
+  2. Dispose the old Overlay.
+  3. Create the new Overlay without touching Input/audio/settings/WebGL.
+  4. Call the new Overlay's `setPhase(phase)` directly, never `Game.setPhase(phase)`, because Game's same-phase guard would skip hydration.
+  5. Restore countdown, pointer-lock state, telemetry, then the matching focus token.
 
   Preserve listener installation order and do not recreate the settings subscription.
 
+  Add narrow Overlay/Screens focus-token capture and restore methods using semantic attributes (`data-view` plus `data-action`/`data-nav`/`data-locale`). A locale change must not reset keyboard focus to BEGIN RUN.
+
   At this stage retain `activeTranslator` for the persistent cockpit. Task 7 introduces the cockpit locale API and then adds it to this same transaction; do not call a nonexistent cockpit method in this commit.
 
-  Extend `HudHost` with `requestLocale(locale: Locale)` and route the selector through the existing Overlay proxy. The request path must persist and apply only while `phase === 'title'`.
+  Extend `HudHost` with `requestLocale(locale: Locale)` and explicitly forward it from `Overlay.proxyHost()` to the real host; Screens only receives that proxy. The request path must persist and apply only while `phase === 'title'`.
 
 - [ ] **Step 5: Apply the stored locale before any player-facing boot UI**
 
@@ -407,9 +429,12 @@
 
   - Group: `data-nav="segmented"`, `tabIndex=0`, `role="radiogroup"`, localized `aria-label`.
   - Options: `data-seg="ko|en"`, `data-locale="ko|en"`, `role="radio"`, `aria-checked`.
+  - Creation sets exactly one `aria-checked="true"` from `selectedLocale` and mirrors it in the group's `data-value`; this selector is not part of Settings synchronization.
   - Existing W/S/arrow focus collection, A/D adjustment, and Enter activation must work without a new keyboard path.
 
   Reject locale requests outside title without mutating storage.
+
+  `I18N.title-selector` performs a keyboard-only `ko → en → ko` round trip, asserts focus remains on the segmented locale control after each Overlay reconstruction, and verifies exactly one checked option matches `locale().selected`.
 
 - [ ] **Step 8: Expose a narrow harness state**
 
@@ -418,16 +443,22 @@
   ~~~ts
   interface HarnessLocaleState {
     selected: Locale;
-    active: Locale;
+    active: Locale | null;
     locked: boolean;
+    settingsSubscribers: number;
   }
   ~~~
 
-  Expose `locale()` and bump harness version from `1.3.0` to `1.4.0`.
+  Expose `locale()`, include `locale` in localization's required methods, and bump harness version from `1.3.0` to `1.4.0`. The browser suite asserts the exact version string, not merely that a string exists.
 
 - [ ] **Step 9: Register the report-producing suite**
 
-  Add `localization` and `localization-hidpi` to `all.mjs` after performance-sensitive suites, preserving the existing settle interval. Pin their exact check ID sets in `manifest.mjs`.
+  Add the browser-free `i18n-contract` plus `localization` and `localization-hidpi` to `all.mjs` after performance-sensitive suites, preserving the existing settle interval.
+
+  Pin exact sets in `manifest.mjs`:
+
+  - `i18n-contract`: its seven `I18N.*` checks.
+  - Each localization variant: the six automatic managed-suite checks (`M1.static-host`, `SETUP.playwright`, `SETUP.page-load`, `API.contract`, `M5.runtime-errors`, `M6.localhost-only`) plus the seven Task 3 `I18N.*` checks.
 
 - [ ] **Step 10: Verify and commit**
 
@@ -438,6 +469,7 @@
   npm run typecheck
   npm run build
   node scripts/playtest/localization.mjs --timeout-ms 60000
+  node scripts/playtest/localization.mjs --device-scale-factor 2 --timeout-ms 60000
   npm run playtest -- --timeout-ms 60000
   git diff --check
   ~~~
@@ -445,9 +477,17 @@
   Commit:
 
   ~~~bash
-  git add src/game/Game.ts src/ui/Overlay.ts src/ui/Screens.ts src/core/contracts.ts src/core/harness.ts src/main.ts scripts/playtest/runtime.mjs scripts/playtest/localization.mjs scripts/playtest/manifest.mjs scripts/playtest/all.mjs
+  git add src/game/Game.ts src/ui/Overlay.ts src/ui/Screens.ts src/core/contracts.ts src/core/Settings.ts src/core/harness.ts src/main.ts scripts/playtest/runtime.mjs scripts/playtest/localization.mjs scripts/playtest/manifest.mjs scripts/playtest/all.mjs
   git commit -m "feat: add title-only locale switching"
   ~~~
+
+  After the tree is clean at that commit, run the actual aggregate once:
+
+  ~~~bash
+  npm run playtest:all -- --timeout-ms 60000
+  ~~~
+
+  If aggregate verification exposes a defect, fix and commit it, then rerun focused coverage and the clean-tree aggregate before reporting.
 
 ---
 
