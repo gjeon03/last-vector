@@ -129,7 +129,7 @@ html[lang='ko'] body {
   color: rgba(185, 204, 221, 0.55);
 }
 
-html[lang='ko'] .lv-loader__label {
+html[lang='ko'] .lv-loader__label:not(:lang(en)) {
   font-family: 'NanumSquare Neo Hangul', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
 }
 
@@ -180,13 +180,18 @@ html[lang='ko'] .lv-fatal {
   overflow-wrap: anywhere;
 }
 
-html[lang='ko'] .lv-loader__label {
+html[lang='ko'] .lv-loader__label:not(:lang(en)) {
   letter-spacing: 0.08em;
   text-transform: none;
 }
 
-html[lang='ko'] .lv-fatal h1 {
+html[lang='ko'] .lv-fatal h1:not(:lang(en)) {
   letter-spacing: 0.1em;
+}
+
+html[lang='ko'] .lv-fatal h1:lang(en) {
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 html[lang='ko'] .lv-fatal p {

@@ -1,5 +1,5 @@
 import type { CourseId } from './Courses.ts';
-import { isCourseId } from './Courses.ts';
+import { DEFAULT_COURSE_ID, isCourseAvailable, isCourseId } from './Courses.ts';
 import type { ProgressV1 } from './Progress.ts';
 import { isCourseUnlocked } from './Progress.ts';
 
@@ -23,16 +23,16 @@ export function resolveCourseSelection(
   if (rawCourseParam !== null) {
     if (!isCourseId(rawCourseParam)) {
       return {
-        courseId: 'cairn-drift',
+        courseId: DEFAULT_COURSE_ID,
         source: 'invalid-url',
         diagnostic: `unknown course parameter: ${rawCourseParam}`,
       };
     }
-    if (!isCourseUnlocked(progress, rawCourseParam)) {
+    if (!isCourseAvailable(rawCourseParam) || !isCourseUnlocked(progress, rawCourseParam)) {
       return {
-        courseId: 'cairn-drift',
+        courseId: DEFAULT_COURSE_ID,
         source: 'locked-url',
-        diagnostic: `locked course parameter: ${rawCourseParam}`,
+        diagnostic: `${isCourseAvailable(rawCourseParam) ? 'locked' : 'disabled'} course parameter: ${rawCourseParam}`,
       };
     }
     return { courseId: rawCourseParam, source: 'url', diagnostic: null };
@@ -41,7 +41,7 @@ export function resolveCourseSelection(
   if (isCourseUnlocked(progress, progress.selectedCourse)) {
     return { courseId: progress.selectedCourse, source: 'persisted', diagnostic: null };
   }
-  return { courseId: 'cairn-drift', source: 'default', diagnostic: null };
+  return { courseId: DEFAULT_COURSE_ID, source: 'default', diagnostic: null };
 }
 
 export interface BuildCourseUrlOptions {
@@ -56,7 +56,8 @@ export function buildCourseUrl(
 ): string {
   const base = typeof window === 'undefined' ? 'http://localhost/' : window.location.href;
   const url = current instanceof URL ? new URL(current.href) : new URL(current, base);
-  url.searchParams.set('course', courseId);
+  // Never mint a shareable/navigation URL for an authored route that is release-disabled.
+  url.searchParams.set('course', isCourseAvailable(courseId) ? courseId : DEFAULT_COURSE_ID);
   if (options.preserveSeed !== true) url.searchParams.delete('seed');
   return url.href;
 }

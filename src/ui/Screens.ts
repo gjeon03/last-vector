@@ -8,7 +8,11 @@
  */
 
 import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
-import { PRECISION_MAX_OFFSET, type CourseId } from '../core/Courses.ts';
+import {
+  CAMPAIGN_MODE_ENABLED,
+  PRECISION_MAX_OFFSET,
+  type CourseId,
+} from '../core/Courses.ts';
 import type { Translator } from '../i18n/index.ts';
 import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
@@ -662,15 +666,15 @@ export class Screens {
         label,
         ['CAIRN DRIFT', 'NEEDLE GRAVE'],
       );
+      name.lang = this.translator.locale;
       if (id === focusId) {
-        name.appendChild(el('span', 'lv-objective-next', m.campaign.nextObjective));
+        name.appendChild(englishText('span', 'lv-objective-next', m.campaign.nextObjective));
       }
-      const valueNode = el(
+      const valueNode = englishText(
         'span',
         'lv-objective-value',
         value || (complete ? m.campaign.complete : m.campaign.incomplete),
       );
-      if (value) valueNode.lang = 'en';
       row.append(state, name, valueNode);
       list.appendChild(row);
     }
@@ -699,6 +703,7 @@ export class Screens {
     let match: HTMLElement | null = null;
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
+      if (candidate.closest('[hidden]')) continue;
       const candidateNav = candidate.closest<HTMLElement>('[data-nav]');
       if (token.action !== undefined && candidate.dataset['action'] !== token.action) continue;
       if (token.nav !== undefined && candidateNav?.dataset['nav'] !== token.nav) continue;
@@ -740,8 +745,9 @@ export class Screens {
 
   private collectNav(root: HTMLElement): void {
     /* The route strip is visually above BEGIN, but the established title keyboard contract starts
-       on BEGIN and uses S/W to reach SETTINGS and return. Keep that logical order, then append the
-       route cards so they remain reachable by W/S/Tab without moving their visual placement. */
+       on BEGIN and uses S/W to reach SETTINGS and return. When campaign mode is enabled, append
+       its visible route cards without moving their visual placement. Hidden feature-gated regions
+       are always filtered below so their descendants cannot become invisible focus stops. */
     const found = root.dataset['view'] === 'title'
       ? [
           ...root.querySelectorAll<HTMLElement>('.lv-menu [data-nav]'),
@@ -751,7 +757,7 @@ export class Screens {
     this.navItems.length = 0;
     for (let i = 0; i < found.length; i++) {
       const node = found[i]!;
-      if (node.dataset['disabled'] !== '1') this.navItems.push(node);
+      if (node.dataset['disabled'] !== '1' && !node.closest('[hidden]')) this.navItems.push(node);
     }
     this.navIndex = 0;
   }
@@ -977,10 +983,10 @@ export class Screens {
          which is what it is for. Without this the accessible name comes out as "RESTARTN". */
       chip.setAttribute('aria-hidden', 'true');
       b.setAttribute('aria-keyshortcuts', hint.toLowerCase());
-      line.append(el('span', 'lv-btn-t', text), chip);
+      line.append(englishText('span', 'lv-btn-t', text), chip);
       wrap.appendChild(line);
     } else {
-      wrap.appendChild(el('span', 'lv-btn-t', text));
+      wrap.appendChild(englishText('span', 'lv-btn-t', text));
     }
     if (sub) wrap.appendChild(el('span', 'lv-btn-s', sub));
     b.append(marker, wrap);
@@ -999,7 +1005,7 @@ export class Screens {
   private buildRouteStrip(): HTMLElement {
     const m = this.translator.messages;
     const section = el('section', 'lv-route-select');
-    section.appendChild(el('div', 'lv-kicker lv-route-kicker', m.campaign.routeSelection));
+    section.appendChild(englishText('div', 'lv-kicker lv-route-kicker', m.campaign.routeSelection));
     const group = el('div', 'lv-route-strip');
     group.setAttribute('role', 'radiogroup');
     group.setAttribute('aria-label', m.campaign.routeSelection);
@@ -1020,8 +1026,8 @@ export class Screens {
       const top = el('span', 'lv-route-top');
       top.append(
         englishText('span', 'lv-route-index', String(index + 1).padStart(2, '0')),
-        el('span', 'lv-route-state', id === 'cairn-drift' ? m.campaign.available : m.campaign.locked),
-        el('span', 'lv-route-selected', id === 'cairn-drift' ? m.campaign.selected : ''),
+        englishText('span', 'lv-route-state', id === 'cairn-drift' ? m.campaign.available : m.campaign.locked),
+        englishText('span', 'lv-route-selected', id === 'cairn-drift' ? m.campaign.selected : ''),
       );
       const selected = top.querySelector<HTMLElement>('.lv-route-selected')!;
       selected.hidden = id !== 'cairn-drift';
@@ -1030,7 +1036,7 @@ export class Screens {
       const destination = englishText('span', 'lv-route-destination', copy.destination);
       const rankWrap = el('span', 'lv-route-rank');
       rankWrap.append(
-        el('span', 'lv-route-rank-key', m.results.rank),
+        englishText('span', 'lv-route-rank-key', m.results.rank),
         englishText('span', 'lv-route-rank-value', m.campaign.noRank),
       );
       const rank = rankWrap.querySelector<HTMLElement>('.lv-route-rank-value')!;
@@ -1075,9 +1081,10 @@ export class Screens {
     const inner = el('div', 'lv-title');
 
     const eyebrow = el('div', 'lv-title-eyebrow');
+    eyebrow.lang = 'en';
     this.nTitleSector = englishText('span', 'lv-title-sector', m.meta.sectorName);
     eyebrow.append(
-      el('span', '', m.screens.sector),
+      englishText('span', '', m.screens.sector),
       el('i', 'lv-dot'),
       this.nTitleSector,
     );
@@ -1105,10 +1112,11 @@ export class Screens {
     this.nTitleTagline = tag;
 
     const routes = this.buildRouteStrip();
+    routes.hidden = !CAMPAIGN_MODE_ENABLED;
 
     const campaignError = el('p', 'lv-campaign-error');
     campaignError.id = 'lv-campaign-error-title';
-    campaignError.dataset['campaignError'] = '1';
+    if (CAMPAIGN_MODE_ENABLED) campaignError.dataset['campaignError'] = '1';
     campaignError.setAttribute('role', 'status');
     campaignError.setAttribute('aria-live', 'polite');
     campaignError.hidden = true;
@@ -1143,6 +1151,7 @@ export class Screens {
     ];
     for (const [value, text] of localeOptions) {
       const button = el('button', 'lv-seg-b', text);
+      button.lang = value;
       button.type = 'button';
       button.tabIndex = -1;
       button.dataset['seg'] = value;
@@ -1158,16 +1167,17 @@ export class Screens {
     menu.appendChild(locale);
 
     const foot = el('div', 'lv-title-foot');
-    const hull = el('span');
+    foot.lang = 'en';
+    const hull = englishText('span', '', '');
     hull.append(document.createTextNode(`${m.screens.hullPrefix} `), englishText('span', '', m.meta.shipName));
-    const primary = el('span');
+    const primary = englishText('span', '', '');
     primary.append(document.createTextNode(`${m.screens.primaryPrefix} `), englishText('span', '', m.meta.starName));
     foot.append(
       hull,
       el('i', 'lv-dot'),
       primary,
       el('i', 'lv-dot'),
-      el('span', '', m.screens.navigationNominal),
+      englishText('span', '', m.screens.navigationNominal),
     );
 
     inner.append(eyebrow, mark, rule, tag, routes, campaignError, menu, foot);
@@ -1189,10 +1199,11 @@ export class Screens {
       `${m.screens.transitTo} ${routeCopy.destination}`,
       [routeCopy.destination],
     );
+    transit.lang = 'en';
     this.nBriefTransit = transit;
     this.nBriefTitle = englishText('h2', 'lv-brief-title', routeCopy.sectorName);
     head.append(
-      el('div', 'lv-kicker', m.screens.runBriefing),
+      englishText('div', 'lv-kicker', m.screens.runBriefing),
       this.nBriefTitle,
       transit,
     );
@@ -1204,7 +1215,7 @@ export class Screens {
       const row = el('div', 'lv-stat');
       const value = el('dd', '', v);
       if (valueLang) value.lang = valueLang;
-      row.append(el('dt', '', k), value);
+      row.append(englishText('dt', '', k), value);
       stats.appendChild(row);
       return value;
     };
@@ -1220,10 +1231,11 @@ export class Screens {
     this.nStatCorridor = addStat(m.screens.corridor, '--', 'en');
     addStat(m.screens.primary, m.meta.starName, 'en');
     addStat(m.screens.hull, m.meta.shipName, 'en');
-    addStat(m.screens.drift, m.screens.closing);
+    addStat(m.screens.drift, m.screens.closing, 'en');
 
     const objectives = el('section', 'lv-objectives');
-    objectives.appendChild(el('div', 'lv-kicker', m.campaign.routeObjectives));
+    objectives.hidden = !CAMPAIGN_MODE_ENABLED;
+    objectives.appendChild(englishText('div', 'lv-kicker', m.campaign.routeObjectives));
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'briefing';
     objectives.appendChild(objectiveList);
@@ -1245,7 +1257,7 @@ export class Screens {
     }
 
     const primer = el('div', 'lv-primer');
-    primer.appendChild(el('div', 'lv-kicker', m.screens.coreControls));
+    primer.appendChild(englishText('div', 'lv-kicker', m.screens.coreControls));
     const keys = el('ul', 'lv-primer-list');
     for (let i = 0; i < CONTROLS.length; i++) {
       const row = CONTROLS[i]!;
@@ -1323,7 +1335,8 @@ export class Screens {
     svg.append(track, ring);
 
     const num = el('div', 'lv-count-n', '');
-    const label = el('div', 'lv-count-k', m.screens.launchSequence);
+    num.lang = 'en';
+    const label = englishText('div', 'lv-count-k', m.screens.launchSequence);
     wrap.append(svg, num, label);
     view.appendChild(wrap);
     return { view, num, ring, label };
@@ -1358,8 +1371,8 @@ export class Screens {
     const view = this.makeView('pause', m.a11y.paused);
     const panel = Screens.frame(el('div', 'lv-pause'));
     panel.append(
-      el('div', 'lv-kicker', m.screens.flightHeld),
-      el('h2', 'lv-pause-title', m.screens.paused),
+      englishText('div', 'lv-kicker', m.screens.flightHeld),
+      englishText('h2', 'lv-pause-title', m.screens.paused),
       el('p', 'lv-pause-sub', m.screens.pauseDetail),
     );
     const menu = el('nav', 'lv-menu lv-menu--tight');
@@ -1385,14 +1398,14 @@ export class Screens {
     const view = this.makeView('settings', m.a11y.settings);
     const panel = Screens.frame(el('div', 'lv-settings'));
     panel.append(
-      el('div', 'lv-kicker', m.screens.configuration),
-      el('h2', 'lv-panel-title', m.screens.settings),
+      englishText('div', 'lv-kicker', m.screens.configuration),
+      englishText('h2', 'lv-panel-title', m.screens.settings),
     );
 
     const body = el('div', 'lv-set-body');
     for (const group of SETTING_GROUPS) {
       const sec = el('section', 'lv-set-group');
-      sec.append(el('h3', 'lv-set-grouptitle', m.settings[group.title]));
+      sec.append(englishText('h3', 'lv-set-grouptitle', m.settings[group.title]));
       for (const row of group.rows) sec.appendChild(this.buildSettingRow(row));
       body.appendChild(sec);
     }
@@ -1410,7 +1423,7 @@ export class Screens {
     const label = m.settings[row.label];
     const node = el('div', `lv-set-row lv-set-row--${row.kind}`);
     const labels = el('div', 'lv-set-labels');
-    labels.appendChild(el('span', 'lv-set-label', label));
+    labels.appendChild(englishText('span', 'lv-set-label', label));
     if (row.hint !== undefined) {
       const hint = writeEnglishTokens(
         el('span', 'lv-set-hint'),
@@ -1427,10 +1440,12 @@ export class Screens {
       group.dataset['setting'] = row.key;
       group.dataset['value'] = String(this.host.getSettings()[row.key]);
       group.tabIndex = 0;
+      group.lang = 'en';
       group.setAttribute('role', 'radiogroup');
       group.setAttribute('aria-label', label);
       for (const [value, textKey] of row.options) {
         const b = el('button', 'lv-seg-b', m.settings[textKey]);
+        b.lang = 'en';
         b.type = 'button';
         b.tabIndex = -1;
         b.dataset['seg'] = value;
@@ -1463,10 +1478,11 @@ export class Screens {
       sw.dataset['nav'] = 'switch';
       sw.dataset['setting'] = row.key;
       sw.dataset['value'] = String(this.host.getSettings()[row.key]);
+      sw.lang = 'en';
       sw.setAttribute('role', 'switch');
       sw.setAttribute('aria-checked', 'false');
       sw.setAttribute('aria-label', label);
-      sw.append(el('i', 'lv-switch-knob'), el('span', 'lv-switch-t', m.settings.off));
+      sw.append(el('i', 'lv-switch-knob'), englishText('span', 'lv-switch-t', m.settings.off));
       sw.addEventListener('click', () => {
         const next = sw.getAttribute('aria-checked') !== 'true';
         this.commit(row.key, next);
@@ -1495,8 +1511,10 @@ export class Screens {
     input.dataset['nav'] = 'range';
     input.dataset['setting'] = row.key;
     input.dataset['value'] = String(this.host.getSettings()[row.key]);
+    input.lang = 'en';
     input.setAttribute('aria-label', label);
     const read = el('span', 'lv-slider-v', '');
+    read.lang = 'en';
     const track = el('div', 'lv-slider-track');
     const fill = el('i', 'lv-slider-fill');
     track.appendChild(fill);
@@ -1546,8 +1564,8 @@ export class Screens {
     const view = this.makeView('controls', m.a11y.controls);
     const panel = Screens.frame(el('div', 'lv-controls'));
     panel.append(
-      el('div', 'lv-kicker', m.controls.heading),
-      el('h2', 'lv-panel-title', m.screens.controls),
+      englishText('div', 'lv-kicker', m.controls.heading),
+      englishText('h2', 'lv-panel-title', m.screens.controls),
     );
 
     const list = el('ul', 'lv-keys');
@@ -1575,6 +1593,7 @@ export class Screens {
     const view = this.makeView('results', this.translator.messages.a11y.runComplete);
     const panel = el('div', 'lv-results');
     const body = el('div', 'lv-res-body');
+    body.lang = 'en';
     panel.appendChild(body);
     view.append(el('div', 'lv-veil lv-veil--results'), panel);
     return { view, body };
@@ -1623,18 +1642,22 @@ export class Screens {
         ? unlockedCourse
         : undefined;
     const advanceCourse =
-      this.campaign.navigationError !== 'storage-unavailable' ? revealedCourse : undefined;
-    if (revealedCourse) {
+      CAMPAIGN_MODE_ENABLED && this.campaign.navigationError !== 'storage-unavailable'
+        ? revealedCourse
+        : undefined;
+    if (CAMPAIGN_MODE_ENABLED && revealedCourse) {
       const unlock = el('div', 'lv-route-unlock');
       unlock.dataset['route'] = revealedCourse.id;
       unlock.dataset['routeState'] = revealedCourse.state;
+      const unlockText = writeEnglishTokens(
+        el('span'),
+        m.campaign.routes[revealedCourse.id].unlockNotice,
+        ['CAIRN DRIFT', 'NEEDLE GRAVE'],
+      );
+      unlockText.lang = this.translator.locale;
       unlock.append(
         el('i', 'lv-route-unlock-mark'),
-        writeEnglishTokens(
-          el('span'),
-          m.campaign.routes[revealedCourse.id].unlockNotice,
-          ['CAIRN DRIFT', 'NEEDLE GRAVE'],
-        ),
+        unlockText,
       );
       left.appendChild(unlock);
     }
@@ -1697,6 +1720,7 @@ export class Screens {
     left.appendChild(stats);
 
     const objectives = el('section', 'lv-objectives lv-objectives--result');
+    objectives.hidden = !CAMPAIGN_MODE_ENABLED;
     objectives.appendChild(el('div', 'lv-kicker', m.campaign.routeObjectives));
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'results';
@@ -1844,10 +1868,13 @@ export class Screens {
     }
     actions.append(
       this.button(m.results.runAgain, advanceCourse ? '' : 'is-primary', 'again', () => this.host.restart()),
-      this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect()),
+      CAMPAIGN_MODE_ENABLED
+        ? this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect())
+        : this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
     );
     const error = el('p', 'lv-campaign-error lv-campaign-error--result');
-    error.dataset['campaignError'] = '1';
+    error.lang = this.translator.locale;
+    if (CAMPAIGN_MODE_ENABLED) error.dataset['campaignError'] = '1';
     error.setAttribute('role', 'status');
     error.setAttribute('aria-live', 'polite');
     error.hidden = true;
@@ -1888,7 +1915,9 @@ export class Screens {
     actions.style.setProperty('--n', '2');
     actions.append(
       this.button(m.results.retry, 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
-      this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect()),
+      CAMPAIGN_MODE_ENABLED
+        ? this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect())
+        : this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
     );
 
     body.append(head, timeBlock, actions);

@@ -294,6 +294,20 @@ export const NEEDLE_GRAVE: CourseDefinition = {
 
 export const COURSE_ORDER = ['cairn-drift', 'needle-grave'] as const satisfies readonly CourseId[];
 export const DEFAULT_COURSE_ID: CourseId = 'cairn-drift';
+
+/**
+ * Temporary release gate for the campaign-light route layer.
+ *
+ * Keep the authored NEEDLE data and campaign implementation intact while product direction is
+ * reconsidered, but make CAIRN the only route reachable by player-facing runtime paths. All
+ * authorization (saved selection, URL selection, unlocks, navigation, and next-route lookup)
+ * must flow through `isCourseAvailable`/`ACTIVE_COURSE_ORDER` so the disabled mode fails closed.
+ */
+export const CAMPAIGN_MODE_ENABLED = false;
+export const ACTIVE_COURSE_ORDER: readonly CourseId[] = CAMPAIGN_MODE_ENABLED
+  ? COURSE_ORDER
+  : [DEFAULT_COURSE_ID];
+
 export const COURSE_CATALOG: Readonly<Record<CourseId, CourseDefinition>> = Object.freeze({
   'cairn-drift': CAIRN_DRIFT,
   'needle-grave': NEEDLE_GRAVE,
@@ -303,13 +317,19 @@ export function isCourseId(value: unknown): value is CourseId {
   return value === 'cairn-drift' || value === 'needle-grave';
 }
 
+export function isCourseAvailable(id: CourseId): boolean {
+  return ACTIVE_COURSE_ORDER.includes(id);
+}
+
 export function getCourseDefinition(id: CourseId): CourseDefinition {
   return COURSE_CATALOG[id];
 }
 
 export function getNextCourse(id: CourseId): CourseId | null {
-  const index = COURSE_ORDER.indexOf(id);
-  return index >= 0 && index + 1 < COURSE_ORDER.length ? COURSE_ORDER[index + 1]! : null;
+  const index = ACTIVE_COURSE_ORDER.indexOf(id);
+  return index >= 0 && index + 1 < ACTIVE_COURSE_ORDER.length
+    ? ACTIVE_COURSE_ORDER[index + 1]!
+    : null;
 }
 
 export function courseRecordId(definition: CourseDefinition, seed: number): string {

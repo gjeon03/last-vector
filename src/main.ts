@@ -44,6 +44,7 @@ function fail(title: string, detail: string): void {
   box.className = 'lv-fatal';
   const heading = document.createElement('h1');
   heading.textContent = title;
+  heading.lang = 'en';
   const message = document.createElement('p');
   message.textContent = detail;
   box.append(heading, message);
@@ -71,6 +72,7 @@ function showLoader(translator: Translator): { setProgress: (v: number, label: s
   const title = document.createElement('div');
   title.className = 'lv-loader__title';
   title.textContent = translator.messages.meta.gameTitle;
+  title.lang = 'en';
   const barTrack = document.createElement('div');
   barTrack.className = 'lv-loader__bar';
   const bar = document.createElement('i');
@@ -78,6 +80,7 @@ function showLoader(translator: Translator): { setProgress: (v: number, label: s
   const label = document.createElement('div');
   label.className = 'lv-loader__label';
   label.textContent = translator.messages.loader.initialising;
+  label.lang = 'en';
   inner.append(title, barTrack, label);
   loader.appendChild(inner);
   root!.appendChild(loader);

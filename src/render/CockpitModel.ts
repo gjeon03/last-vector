@@ -102,6 +102,13 @@ const MFD_INTERVAL = 1 / 20;
 const MFD_DEADLINE_EPSILON = 1e-9;
 const MFD_MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 const MFD_HANGUL_STACK = `"NanumSquare Neo Hangul", ${MFD_MONO_STACK}`;
+/**
+ * The cockpit is an avionics surface, not narrative copy. Keep its terse labels on the canonical
+ * English/mono layer in every selected locale; Korean remains available for prose, radio and
+ * accessibility outside the glass. Retaining a named policy here also keeps the dormant Hangul
+ * fitting data available if the art direction changes again.
+ */
+const MFD_INTERFACE_LOCALE: Locale = 'en';
 const MFD_LABEL_ROI = Object.freeze({ x: 16, y: 16, width: 992, height: 32 });
 const MFD_PLANE_WIDTH = 1.08;
 const MFD_PLANE_HEIGHT = 0.18;
@@ -212,8 +219,8 @@ export class CockpitModel {
     this.locale = locale;
     this.translator = translator;
     this.fontReady = locale === 'en' || fontReady;
-    this.renderedLocale = locale === 'ko' && this.fontReady ? 'ko' : 'en';
-    this.renderedTranslator = this.renderedLocale === 'ko' ? translator : ENGLISH_TRANSLATOR;
+    this.renderedLocale = MFD_INTERFACE_LOCALE;
+    this.renderedTranslator = ENGLISH_TRANSLATOR;
     this.object.name = 'immersive-cockpit';
     this.motionRoot.name = 'cockpit-head-inertia';
     this.object.add(this.motionRoot);
@@ -314,8 +321,8 @@ export class CockpitModel {
     const ready = locale === 'en' || fontReady;
     if (locale === this.locale && translator === this.translator && ready === this.fontReady) return;
 
-    const nextRenderedLocale: Locale = locale === 'ko' && ready ? 'ko' : 'en';
-    const nextRenderedTranslator = nextRenderedLocale === 'ko' ? translator : ENGLISH_TRANSLATOR;
+    const nextRenderedLocale = MFD_INTERFACE_LOCALE;
+    const nextRenderedTranslator = ENGLISH_TRANSLATOR;
     const effectiveChanged = nextRenderedLocale !== this.renderedLocale
       || nextRenderedTranslator.messages !== this.renderedTranslator.messages;
     this.locale = locale;
@@ -323,8 +330,10 @@ export class CockpitModel {
     this.fontReady = ready;
     this.renderedLocale = nextRenderedLocale;
     this.renderedTranslator = nextRenderedTranslator;
-    if (effectiveChanged) this.prepareMfdLabels();
-    this.mfdDirty = true;
+    if (effectiveChanged) {
+      this.prepareMfdLabels();
+      this.mfdDirty = true;
+    }
   }
 
   setFontReady(locale: Locale, ready: boolean): void {

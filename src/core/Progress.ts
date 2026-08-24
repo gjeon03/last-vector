@@ -1,6 +1,6 @@
 import type { RunResult } from './contracts.ts';
 import type { CourseId, RankLetter } from './Courses.ts';
-import { isCourseId, PRECISION_MAX_OFFSET } from './Courses.ts';
+import { isCourseAvailable, isCourseId, PRECISION_MAX_OFFSET } from './Courses.ts';
 import { hasBestRunPrefix } from './Settings.ts';
 
 export const PROGRESS_KEY = 'last-vector.progress.v1';
@@ -187,6 +187,7 @@ function defaultStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | 
 }
 
 export function isCourseUnlocked(progress: ProgressV1, courseId: CourseId): boolean {
+  if (!isCourseAvailable(courseId)) return false;
   return courseId === 'cairn-drift' || progress.courses['cairn-drift']?.cleared === true;
 }
 

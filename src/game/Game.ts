@@ -43,8 +43,10 @@ import {
 import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import {
+  ACTIVE_COURSE_ORDER,
   CAIRN_DRIFT,
   calculateCourseRank,
+  isCourseAvailable,
   type CourseDefinition,
 } from '../core/Courses.ts';
 import { buildCourseUrl, type CourseResolution } from '../core/CourseSelection.ts';
@@ -774,6 +776,10 @@ export class Game {
   }
 
   private selectRoute(courseId: CourseDefinition['id']): void {
+    // The authored campaign remains in-tree, but release-disabled routes must not be reachable
+    // through a stale DOM callback or an externally forged host call.
+    if (!isCourseAvailable(courseId)) return;
+
     if (courseId === this.courseDefinition.id) {
       this.showRouteSelect();
       return;
@@ -811,7 +817,7 @@ export class Game {
       activeCourseId: this.courseDefinition.id,
       newlyUnlockedCourseId: this.newlyUnlockedCourseId,
       navigationError: this.campaignNavigationError,
-      routes: (['cairn-drift', 'needle-grave'] as const).map((id) => {
+      routes: ACTIVE_COURSE_ORDER.map((id) => {
         const course = progress.courses[id];
         return {
           id,
@@ -1124,7 +1130,9 @@ export class Game {
     this.elapsed = 0;
     this.autopilot = true;
     this.cinematic = true;
-    this.activeVantage = this.vantages[0];
+    // Authored vantages are still poses. Keeping one active here made ABORT RUN pin both ship and
+    // camera every frame, while a fresh title correctly enters the moving cinematic orbit.
+    this.activeVantage = null;
     this.input.releaseLock();
     this.setPhase('title');
     this.unlockLocaleAtTitle();

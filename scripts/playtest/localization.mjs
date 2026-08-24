@@ -34,6 +34,7 @@ const REQUIRED_METHODS = [
   'setSettings',
   'step',
   'present',
+  'pose',
   'locale',
   'errors',
 ];
@@ -54,34 +55,33 @@ const BEST_STORAGE_VALUE = JSON.stringify({
 const STATIC_COPY = {
   ko: {
     title: {
-      aria: '주 메뉴',
-      eyebrow: '구역',
+      aria: '주 메뉴', eyebrow: 'SECTOR',
       tagline: 'CAIRN 항로를 꿰뚫고, 드리프트가 닫히기 전에 TERMINUS에 도달하라.',
-      actions: { begin: '비행 시작', settings: '설정', controls: '조작법' },
+      actions: { begin: 'START FLIGHT', settings: 'SETTINGS', controls: 'CONTROLS' },
       localeAria: '언어 선택',
-      localeLabels: ['한국어', '영어'],
-      footer: ['선체 KESTREL-C7', '주성 ACHRA', '항법 고정 정상'],
+      localeLabels: ['한국어', 'English'],
+      footer: ['HULL KESTREL-C7', 'PRIMARY ACHRA', 'NAV LOCK NOMINAL'],
     },
     settings: {
-      aria: '설정', kicker: '환경 설정', title: '설정', back: '뒤로',
-      sections: ['비행', '화면', '영상', '오디오'],
+      aria: '설정', kicker: 'CONFIGURATION', title: 'SETTINGS', back: 'BACK',
+      sections: ['FLIGHT', 'DISPLAY', 'IMAGE', 'AUDIO'],
       rows: [
-        ['비행 보조', '항전 장치가 입력을 얼마나 감쇠할지 정합니다.'],
-        ['기본 시점', '비행 중 C를 눌러 시점을 전환합니다.'],
-        ['마우스 감도', ''], ['피치 반전', ''],
-        ['시야각', '넓을수록 빠르게 읽고, 좁을수록 멀리 봅니다.'],
-        ['카메라 흔들림', ''], ['품질', ''],
-        ['렌더 배율', '내부 해상도입니다. 품질보다 먼저 낮추세요.'],
-        ['프레임 표시', ''], ['모션 블러', ''], ['필름 그레인', ''],
-        ['색수차', ''], ['전체 음량', ''], ['음악', ''],
+        ['Flight assist', '항전 장치가 입력을 얼마나 감쇠할지 정합니다.'],
+        ['Default camera', '비행 중 C를 눌러 시점을 전환합니다.'],
+        ['Mouse sensitivity', ''], ['Invert pitch', ''],
+        ['Field of view', '넓을수록 빠르게 읽고, 좁을수록 멀리 봅니다.'],
+        ['Camera shake', ''], ['Quality', ''],
+        ['Render scale', '내부 해상도입니다. 품질보다 먼저 낮추세요.'],
+        ['Frame counter', ''], ['Motion blur', ''], ['Film grain', ''],
+        ['Chromatic aberration', ''], ['Master', ''], ['Score', ''],
       ],
       enumLabels: [
-        ['아케이드', '표준', '원본'], ['추적', '조종석'], ['낮음', '중간', '높음', '최고'],
+        ['ARCADE', 'STANDARD', 'RAW'], ['CHASE', 'COCKPIT'], ['LOW', 'MED', 'HIGH', 'ULTRA'],
       ],
-      switchLabels: ['끔', '끔', '켬', '켬', '켬'],
+      switchLabels: ['OFF', 'OFF', 'ON', 'ON', 'ON'],
     },
     controls: {
-      aria: '조작법', kicker: '조종사 참고', title: '조작법', back: '뒤로', or: '또는',
+      aria: '조작법', kicker: 'PILOT REFERENCE', title: 'CONTROLS', back: 'BACK', or: '또는',
       actions: [
         '조향 — 자동 복귀 가상 스틱', '스로틀 올림 / 내림', '좌 / 우 롤', '부스터',
         '제동 및 드리프트', '좌 / 우 평행 이동', '상 / 하 평행 이동',
@@ -90,36 +90,36 @@ const STATIC_COPY = {
       note: '출격하면 마우스가 고정됩니다. ESC를 누르면 마우스가 풀리고 비행이 일시정지됩니다.',
     },
     briefing: {
-      aria: '비행 브리핑', kicker: '비행 브리핑', transit: '목적지 VESPER TERMINUS',
-      statLabels: ['표식', '항로', '주성', '선체', '드리프트'],
+      aria: '비행 브리핑', kicker: 'RUN BRIEFING', transit: 'TRANSIT TO VESPER TERMINUS',
+      statLabels: ['MARKERS', 'CORRIDOR', 'PRIMARY', 'HULL', 'DRIFT'],
       lines: [
         'ACHRA가 꺼져 가고 있다. 매시간 선반 얼음과 회전하는 철편이 마지막 생존 항로로 쏟아진다.',
         '응답하는 CAIRN은 아홉 기. 오래전에 사라진 손들이 남긴 표식이 곧 항로다.',
         '순서대로 통과하라. 좁은 구간에서는 암석이 바짝 파고들며, 제동만이 선회 공간을 만든다.',
       ],
-      primer: '핵심 조작',
+      primer: 'CORE CONTROLS',
       primerActions: ['조향', '스로틀 올림 / 내림', '좌 / 우 롤', '부스터', '제동 및 드리프트', '마우스 없이 조향', '1인칭 조종석 전환'],
-      actions: { engage: '출격', return: '뒤로' },
+      actions: { engage: 'ENGAGE', return: 'BACK' },
     },
-    countdown: { aria: '출격 초읽기', launch: '출격 준비', go: '출발', live: '벡터 활성' },
+    countdown: { aria: '출격 초읽기', launch: 'LAUNCH SEQUENCE', go: 'GO', live: 'VECTOR LIVE' },
     pause: {
-      aria: '일시정지', kicker: '비행 정지', title: '일시정지',
+      aria: '일시정지', kicker: 'FLIGHT HELD', title: 'PAUSED',
       detail: '드리프트는 계속된다. 항로는 기다려 주지 않는다.',
-      actions: { resume: '계속', restart: '재시작', settings: '설정', controls: '조작법', abort: '비행 중단' },
+      actions: { resume: 'RESUME', restart: 'RESTART', settings: 'SETTINGS', controls: 'CONTROLS', abort: 'ABORT FLIGHT' },
     },
     results: {
-      aria: '비행 종료', kicker: '도착 확인', rank: '등급', total: '총 시간', newBest: '신기록',
-      stats: ['표식', '최고 속도', '선체'], headers: ['표식', '구간', '', '경과'],
-      actions: { again: '다시 비행', return: '타이틀로' },
+      aria: '비행 종료', kicker: 'ARRIVAL CONFIRMED', rank: 'RATING', total: 'TOTAL', newBest: 'NEW BEST',
+      stats: ['MARKERS', 'TOP SPEED', 'HULL', 'MAX OFFSET'], headers: ['MARKER', 'SPLIT', '', 'ELAPSED'],
+      actions: { again: 'RUN AGAIN', return: 'RETURN' },
     },
-    failure: { aria: '선체 파손', title: '선체 파손', time: '시간', retry: '재도전' },
+    failure: { aria: '선체 파손', title: 'HULL BREACH', time: 'TIME', retry: 'RETRY', return: 'RETURN' },
   },
   en: {
     title: {
       aria: 'Main menu', eyebrow: 'SECTOR',
       tagline: 'Thread the cairns. Make the terminus before the drift closes.',
-      actions: { begin: 'BEGIN RUN', settings: 'SETTINGS', controls: 'CONTROLS' },
-      localeAria: 'Language', localeLabels: ['Korean', 'English'],
+      actions: { begin: 'START FLIGHT', settings: 'SETTINGS', controls: 'CONTROLS' },
+      localeAria: 'Language', localeLabels: ['한국어', 'English'],
       footer: ['HULL KESTREL-C7', 'PRIMARY ACHRA', 'NAV LOCK NOMINAL'],
     },
     settings: {
@@ -163,22 +163,22 @@ const STATIC_COPY = {
     pause: {
       aria: 'Paused', kicker: 'FLIGHT HELD', title: 'PAUSED',
       detail: 'Drift continues. The corridor does not wait.',
-      actions: { resume: 'RESUME', restart: 'RESTART', settings: 'SETTINGS', controls: 'CONTROLS', abort: 'ABORT RUN' },
+      actions: { resume: 'RESUME', restart: 'RESTART', settings: 'SETTINGS', controls: 'CONTROLS', abort: 'ABORT FLIGHT' },
     },
     results: {
       aria: 'Run complete', kicker: 'ARRIVAL CONFIRMED', rank: 'RATING', total: 'TOTAL', newBest: 'NEW BEST',
-      stats: ['MARKERS', 'TOP SPEED', 'HULL'], headers: ['MARKER', 'SEGMENT', '', 'ELAPSED'],
+      stats: ['MARKERS', 'TOP SPEED', 'HULL', 'MAX OFFSET'], headers: ['MARKER', 'SEGMENT', '', 'ELAPSED'],
       actions: { again: 'RUN AGAIN', return: 'RETURN' },
     },
-    failure: { aria: 'Hull breach', title: 'HULL BREACH', time: 'TIME', retry: 'RETRY' },
+    failure: { aria: 'Hull breach', title: 'HULL BREACH', time: 'TIME', retry: 'RETRY', return: 'RETURN' },
   },
 };
 const TERMINAL_COPY = {
   ko: {
-    clean: '무손상',
-    damaged: '손상',
+    clean: 'UNTOUCHED',
+    damaged: 'SCARRED',
     speedUnit: 'M/S',
-    bestComparison: '최고 00:01.00 대비 +188.05',
+    bestComparison: '+188.05 vs BEST 00:01.00',
   },
   en: {
     clean: 'UNTOUCHED',
@@ -239,7 +239,7 @@ const EXPECTED_VIEW_SEMANTICS = {
     settings: [],
   },
   failure: {
-    actions: ['retry'],
+    actions: ['retry', 'return'],
     controls: [],
     settings: [],
   },
@@ -267,7 +267,7 @@ const EXPECTED_NAV_ORDER = {
   briefing: ['action:engage', 'action:return'],
   pause: ['action:resume', 'action:restart', 'action:settings', 'action:controls', 'action:abort'],
   results: ['action:again', 'action:return'],
-  failure: ['action:retry'],
+  failure: ['action:retry', 'action:return'],
 };
 const EXPECTED_METADATA = {
   ko: {
@@ -281,12 +281,12 @@ const EXPECTED_METADATA = {
 };
 const HUD_COPY = {
   ko: {
-    inputMode: '키보드 비행',
-    labels: ['추력', '부스터', '선체', '구간', '경과', '최고', '다음 표식', '출발'],
-    meterLabels: { throttle: '추력', hull: '선체' },
+    inputMode: 'KEYBOARD FLIGHT',
+    labels: ['THR', 'BOOST', 'HULL', 'SPLIT', 'ELAPSED', 'BEST', 'NEXT MARKER', 'DEPARTURE'],
+    meterLabels: { throttle: 'THR', hull: 'HULL' },
     capacityTitle: '완전 충전 시 사용 가능한 추진 시간',
     usableAria: '부스터 3.2초 사용 가능',
-    lockedCaption: '잠김',
+    lockedCaption: 'LOCK',
     lockedAria: '부스터 잠김 · 45%까지 충전 중',
   },
   en: {
@@ -301,17 +301,17 @@ const HUD_COPY = {
 };
 const EVENT_COPY = {
   ko: {
-    engage: ['출격', 'VESPER TERMINUS'],
+    engage: ['ENGAGE', 'VESPER TERMINUS'],
     camera: {
-      cockpit: ['조종석 시점', '조종석 카메라 활성'],
-      chase: ['추적 시점', '외부 카메라 활성'],
+      cockpit: ['COCKPIT VIEW', '조종석 카메라 활성'],
+      chase: ['CHASE VIEW', '외부 카메라 활성'],
     },
-    pointer: ['마우스 고정 불가', 'W A S D / 방향키로 비행 가능'],
-    boost: ['동력 고갈', '예비 동력 충전 중'],
-    hullTitle: '선체 충격',
-    accuracies: { 'dead-centre': '정중앙', clean: '정확', cleared: '통과' },
-    progress: { 2: 'CAIRN 2기 남음', 1: 'CAIRN 1기 남음', 0: 'TERMINUS 전방' },
-    missed: ['놓침', '재정렬 후 다시 진입'],
+    pointer: ['MOUSE CAPTURE UNAVAILABLE', 'W A S D / 방향키로 비행 가능'],
+    boost: ['DRIVE DRY', '예비 동력 충전 중'],
+    hullTitle: 'HULL IMPACT',
+    accuracies: { 'dead-centre': 'DEAD CENTRE', clean: 'CLEAN', cleared: 'CLEARED' },
+    progress: { 2: '2 CAIRNS REMAINING', 1: '1 CAIRN REMAINING', 0: 'TERMINUS AHEAD' },
+    missed: ['MISSED', '재정렬 후 다시 진입'],
   },
   en: {
     engage: ['ENGAGE', 'VESPER TERMINUS'],
@@ -355,22 +355,19 @@ const STAGED_FULL_SEVERITY_HULL_DAMAGE = 0.22;
 const MFD_CANVAS = { width: 1024, height: 256 };
 const MFD_LABEL_ROI = { x: 16, y: 16, width: 992, height: 32 };
 const MFD_SCREEN_SETTLE_EPSILON = 1e-3;
-// Focused pre-assertion measurement with identical 1024x256 source uploads and zero-delta remote
-// controls found 72/11,488 fallback pixels changed by at most one output code (0.6267%), versus
-// 2,832/11,488 Korean pixels (24.6518%) and a 5,932x larger mean channel delta. These gates sit
-// immediately above the measured fallback envelope and far below the localized signal.
+// Equivalent English avionics can differ by one output code across independent WebGL captures.
+// Korean mode now intentionally uses the same English/mono cockpit layer, so both ready and
+// failed-font Korean cases must stay inside this renderer envelope.
 const MFD_FALLBACK_MAX_CHANNEL_DELTA = 1;
 const MFD_FALLBACK_MAX_CHANGED_FRACTION = 0.01;
-const MFD_KOREAN_MIN_CHANGED_FRACTION = 0.10;
-const MFD_KOREAN_MIN_EXCESS_RATIO = 100;
 const MFD_LABELS = {
   en: [
     'ATTITUDE', 'VECTOR / RANGE', 'SHIP SYSTEMS', 'ENG', 'HULL', 'THR',
     'RETRO BRAKE', 'HULL WARN', 'PROX WARN',
   ],
   ko: [
-    '자세', '벡터 / 거리', '기체 계통', '동력', '선체', '추력',
-    '역추진 제동', '선체 경고', '근접 경고',
+    'ATTITUDE', 'VECTOR / RANGE', 'SHIP SYSTEMS', 'ENG', 'HULL', 'THR',
+    'RETRO BRAKE', 'HULL WARN', 'PROX WARN',
   ],
 };
 const LEGACY_FALLBACK = {
@@ -703,7 +700,7 @@ async function runLocalization({ report, session, options }) {
       && lateFailure.playableTitle.documentLang === 'ko'
       && lateFailure.playableTitle.titleVisible
       && lateFailure.playableTitle.titleText.length > 0
-      && lateFailure.playableTitle.begin?.text.includes('비행 시작')
+      && lateFailure.playableTitle.begin?.text.includes('START FLIGHT')
       && lateFailure.playableTitle.begin.visible
       && !lateFailure.playableTitle.begin.disabled
       && lateFailure.afterBegin.phase === 'briefing'
@@ -829,7 +826,7 @@ async function runLocalization({ report, session, options }) {
     verify(failure.locale?.selected === 'ko' && failure.locale?.fontStatus === 'failed'
       && failure.failureCalls.length === 3,
     'Rejected Korean font loads did not settle the public state as failed.', evidence);
-    verify(failure.visibleText.length > 0 && failure.begin?.text.includes('비행 시작')
+    verify(failure.visibleText.length > 0 && failure.begin?.text.includes('START FLIGHT')
       && failure.begin.visible && !failure.begin.disabled,
     'Korean fallback title copy or BEGIN control is empty, hidden, or disabled.', evidence);
     const emptyCalls = empty.calls.filter(({ status }) => status === 'empty');
@@ -842,7 +839,7 @@ async function runLocalization({ report, session, options }) {
       && empty.calls.every(({ status, faceCount }) => status === 'empty'
         || (status === 'fulfilled' && faceCount > 0)),
     'A declared empty face result did not deterministically settle Korean fonts as failed.', evidence);
-    verify(empty.visibleText.length > 0 && empty.begin?.text.includes('비행 시작')
+    verify(empty.visibleText.length > 0 && empty.begin?.text.includes('START FLIGHT')
       && empty.begin.visible && !empty.begin.disabled,
     'The empty-face failure did not preserve a playable Korean title.', evidence);
     verify(failure.boot.some(({ kind, fontFamily, bodyFontFamily }) => kind === 'loader'
@@ -869,11 +866,10 @@ async function runLocalization({ report, session, options }) {
 
   await report.check({
     id: 'I18N.mfd-canvas-pixels',
-    name: 'Cockpit labels change actual source-canvas pixels with safe font fallback',
+    name: 'Cockpit labels stay on the English avionics layer in every locale',
     assertion:
-      'The fixed 1024x256 label atlas ROI is deterministic for English, differs for ready Korean, '
-      + 'falls back byte-identically to English on Korean font failure, changes after late ready in '
-      + 'a locked run, and ignores a stale held Korean completion after en-ko-en.',
+      'The fixed 1024x256 label atlas is deterministic and English/mono for English, ready Korean, '
+      + 'failed-font Korean, late-ready Korean, and a stale en-ko-en completion.',
   }, async () => {
     const englishScenario = await openLocaleScenario(session, 'en');
     let english;
@@ -986,9 +982,9 @@ async function runLocalization({ report, session, options }) {
 
     const evidence = { english, korean, fallback, lateReady, stale };
     assertMfdEvidence(english.first, 'en', 'en', true, MFD_LABELS.en, evidence);
-    assertMfdEvidence(korean.first, 'ko', 'ko', true, MFD_LABELS.ko, evidence);
+    assertMfdEvidence(korean.first, 'ko', 'en', true, MFD_LABELS.en, evidence);
     assertMfdEvidence(fallback.evidence, 'ko', 'en', false, MFD_LABELS.en, evidence);
-    assertMfdEvidence(lateReady.ready, 'ko', 'ko', true, MFD_LABELS.ko, evidence);
+    assertMfdEvidence(lateReady.ready, 'ko', 'en', true, MFD_LABELS.en, evidence);
     assertMfdEvidence(stale.afterRelease, 'en', 'en', true, MFD_LABELS.en, evidence);
     verify(english.locale.fontStatus === 'not-required'
       && english.first.labelRoi.hash === english.repeated.labelRoi.hash
@@ -997,8 +993,8 @@ async function runLocalization({ report, session, options }) {
     verify(korean.locale.fontStatus === 'ready'
       && korean.first.labelRoi.hash === korean.repeated.labelRoi.hash
       && korean.first.mfdUpdates === korean.repeated.mfdUpdates
-      && korean.first.labelRoi.hash !== english.first.labelRoi.hash,
-    'Ready Korean did not produce a stable label hash distinct from English.', evidence);
+      && korean.first.labelRoi.hash === english.first.labelRoi.hash,
+    'Ready Korean left the canonical English cockpit label atlas.', evidence);
     verify(fallback.locale.selected === 'ko' && fallback.locale.fontStatus === 'failed'
       && fallback.evidence.locale === 'ko' && fallback.evidence.renderedLocale === 'en'
       && fallback.evidence.labelRoi.hash === english.first.labelRoi.hash,
@@ -1009,9 +1005,9 @@ async function runLocalization({ report, session, options }) {
       && lateReady.fallback.labelRoi.hash === english.first.labelRoi.hash
       && lateReady.dirtyOnly.labelRoi.hash === lateReady.fallback.labelRoi.hash
       && lateReady.dirtyOnly.mfdUpdates === lateReady.fallback.mfdUpdates
-      && lateReady.ready.mfdUpdates === lateReady.fallback.mfdUpdates + 1
-      && lateReady.ready.labelRoi.hash !== lateReady.fallback.labelRoi.hash,
-    'Fallback-to-late-ready did not remain setter-only until one redraw changed actual pixels.', evidence);
+      && lateReady.ready.mfdUpdates === lateReady.fallback.mfdUpdates
+      && lateReady.ready.labelRoi.hash === lateReady.fallback.labelRoi.hash,
+    'Korean font readiness incorrectly redrew or relocalized English avionics.', evidence);
     verify(stale.koreanPending.selected === 'ko' && stale.koreanPending.fontStatus === 'fallback'
       && stale.afterReleaseLocale.selected === 'en'
       && stale.afterReleaseLocale.fontStatus === 'not-required'
@@ -1023,15 +1019,15 @@ async function runLocalization({ report, session, options }) {
 
   await report.check({
     id: 'I18N.mfd-postfx-pixels',
-    name: 'Localized MFD pixels survive the final post-FX screen image',
+    name: 'English avionics remain pixel-stable across locale and font state',
     assertion:
       'With boost, warp, film grain, motion blur, and chromatic aberration settled off, physical-PNG '
-      + 'pixels strictly inside the projected MFD quad are stable for a frozen repeat, differ between '
-      + 'English and ready Korean, match English on failed-font fallback, and leave a remote control ROI unchanged.',
+      + 'pixels inside the projected MFD quad remain within the same renderer envelope for English, '
+      + 'ready Korean and failed-font Korean, while a remote control ROI remains unchanged.',
   }, async () => {
     const cases = {
       english: { locale: 'en', renderedLocale: 'en', initScripts: [] },
-      korean: { locale: 'ko', renderedLocale: 'ko', initScripts: [] },
+      korean: { locale: 'ko', renderedLocale: 'en', initScripts: [] },
       fallback: { locale: 'ko', renderedLocale: 'en', initScripts: [installForcedFontFailure] },
     };
     const evidence = {};
@@ -1077,8 +1073,6 @@ async function runLocalization({ report, session, options }) {
       verify(capture.control.overlapsMfd === false,
         `${name} remote background control ROI overlaps the MFD sample.`, capture);
     }
-    verify(evidence.english.mfd.hash !== evidence.korean.mfd.hash,
-      'Ready Korean and English produced the same final post-FX MFD pixel hash.', evidence);
     verify(evidence.english.control.hash === evidence.korean.control.hash
       && evidence.english.control.hash === evidence.fallback.control.hash,
     'A remote post-FX background control changed across locale/font fixtures.', evidence);
@@ -1086,38 +1080,24 @@ async function runLocalization({ report, session, options }) {
     const koreanLabelDiff = comparePixelSamples(evidence.english.mfd, evidence.korean.mfd);
     const fallbackControlDiff = comparePixelSamples(evidence.english.control, evidence.fallback.control);
     const koreanControlDiff = comparePixelSamples(evidence.english.control, evidence.korean.control);
-    const fallbackMeanExcess = Math.max(
-      0,
-      fallbackLabelDiff.normalizedMeanAbs - fallbackControlDiff.normalizedMeanAbs,
-    );
-    const koreanMeanExcess = Math.max(
-      0,
-      koreanLabelDiff.normalizedMeanAbs - koreanControlDiff.normalizedMeanAbs,
-    );
     evidence.pixelDiff = {
       fallbackLabel: fallbackLabelDiff,
       koreanLabel: koreanLabelDiff,
       fallbackControl: fallbackControlDiff,
       koreanControl: koreanControlDiff,
-      fallbackMeanExcess,
-      koreanMeanExcess,
-      koreanToFallbackExcessRatio: fallbackMeanExcess > 0
-        ? koreanMeanExcess / fallbackMeanExcess
-        : null,
       thresholds: {
         fallbackMaxChannelDelta: MFD_FALLBACK_MAX_CHANNEL_DELTA,
         fallbackMaxChangedFraction: MFD_FALLBACK_MAX_CHANGED_FRACTION,
-        koreanMinChangedFraction: MFD_KOREAN_MIN_CHANGED_FRACTION,
-        koreanMinExcessRatio: MFD_KOREAN_MIN_EXCESS_RATIO,
       },
     };
     verify(evidence.fallback.sourceCanvasHash === evidence.english.sourceCanvasHash
       && fallbackLabelDiff.maxChannelDelta <= MFD_FALLBACK_MAX_CHANNEL_DELTA
       && fallbackLabelDiff.changedFraction <= MFD_FALLBACK_MAX_CHANGED_FRACTION,
     'Failed Korean font fallback exceeded the measured one-code English renderer envelope.', evidence);
-    verify(koreanLabelDiff.changedFraction >= MFD_KOREAN_MIN_CHANGED_FRACTION
-      && koreanMeanExcess >= fallbackMeanExcess * MFD_KOREAN_MIN_EXCESS_RATIO,
-    'Ready Korean final pixels were not materially larger than the fallback renderer envelope.', evidence);
+    verify(evidence.korean.sourceCanvasHash === evidence.english.sourceCanvasHash
+      && koreanLabelDiff.maxChannelDelta <= MFD_FALLBACK_MAX_CHANNEL_DELTA
+      && koreanLabelDiff.changedFraction <= MFD_FALLBACK_MAX_CHANGED_FRACTION,
+    'Ready Korean final pixels left the English avionics renderer envelope.', evidence);
     return evidence;
   });
 
@@ -1374,7 +1354,8 @@ async function runLocalization({ report, session, options }) {
     name: 'Returning to title unlocks and reloads the persisted locale',
     assertion:
       'After run cleanup and the title phase transition, storage is reloaded, the run locale becomes '
-      + 'nullable/unlocked, Korean is applied, and the visible title BEGIN RUN action regains focus.',
+      + 'nullable/unlocked, Korean is applied, the START FLIGHT action regains focus, and the title '
+      + 'ship/camera resume their cinematic motion.',
   }, async () => {
     const locked = await localeSnapshot(page);
     if (await page.locator('[data-view="pause"][data-open="1"] [data-action="abort"]').count() === 0) {
@@ -1384,6 +1365,10 @@ async function runLocalization({ report, session, options }) {
     await abort.waitFor({ state: 'visible', timeout: 5_000 });
     await abort.click();
     await page.waitForFunction(() => window.__LV?.phase() === 'title');
+    await callHarness(page, 'step', [2, 1 / 60], options.timeoutMs);
+    const poseBefore = await callHarness(page, 'pose');
+    await callHarness(page, 'step', [30, 1 / 60], options.timeoutMs);
+    const poseAfter = await callHarness(page, 'pose');
     const locale = await localeSnapshot(page);
     const title = await page.evaluate(() => {
       const begin = document.querySelector('[data-view="title"][data-open="1"] [data-action="begin"]');
@@ -1392,13 +1377,23 @@ async function runLocalization({ report, session, options }) {
         beginFocused: document.activeElement === begin,
       };
     });
-    const evidence = { locked, locale, title };
+    const evidence = {
+      locked,
+      locale,
+      title,
+      motion: {
+        ship: vectorDistance(poseBefore.position, poseAfter.position),
+        camera: vectorDistance(poseBefore.camera.position, poseAfter.camera.position),
+      },
+    };
     verify(locked.active === 'en' && locked.locked, 'The run was not locked before returning to title.', evidence);
     verify(locale.selected === 'ko' && locale.active === null && locale.locked === false,
       'Returning to title did not reload Korean and clear the active run locale.', evidence);
     verify(locale.documentLang === 'ko', 'Returning to title did not apply lang=ko.', evidence);
     verify(title.beginVisible && title.beginFocused,
-      'The visible title BEGIN RUN action was not restored and focused.', evidence);
+      'The visible title START FLIGHT action was not restored and focused.', evidence);
+    verify(evidence.motion.ship > 1 && evidence.motion.camera > 1,
+      'Returning to title left the cinematic pinned to an authored still vantage.', evidence);
     return evidence;
   });
 
@@ -1547,9 +1542,10 @@ async function runLocalization({ report, session, options }) {
 
   await report.check({
     id: 'I18N.embedded-lang',
-    name: 'Embedded Latin tokens carry explicit English language semantics',
+    name: 'Hybrid Korean uses explicit English UI and Korean guidance boundaries',
     assertion:
-      'Korean ACHRA, CAIRN, C, ESC, and tagline CAIRN/TERMINUS tokens are exact lang=en spans.',
+      'English interface nodes and language names carry lang=en, Korean guidance inherits lang=ko, '
+      + 'and embedded ACHRA, CAIRN, C, ESC, CAIRN/TERMINUS tokens remain exact lang=en spans.',
   }, async () => {
     const scenario = await openLocaleScenario(session, 'ko');
     try {
@@ -1565,6 +1561,29 @@ async function runLocalization({ report, session, options }) {
         verify(JSON.stringify(evidence[surface]) === JSON.stringify(expected),
           `${surface} does not expose the required lang=en tokens.`, evidence);
       }
+      verify(evidence.boundaries.documentLang === 'ko'
+        && JSON.stringify(evidence.boundaries.english) === JSON.stringify([
+          'titleEyebrow',
+          'titleAction',
+          'titleFooter',
+          'settingLabel',
+          'settingEnum',
+          'settingSwitch',
+          'settingSlider',
+          'controlsTitle',
+          'briefingKicker',
+        ])
+        && JSON.stringify(evidence.boundaries.korean) === JSON.stringify([
+          'tagline',
+          'settingHint',
+          'controlDescription',
+          'briefingProse',
+        ])
+        && JSON.stringify(evidence.boundaries.localeButtons) === JSON.stringify([
+          { locale: 'ko', text: '한국어', lang: 'ko' },
+          { locale: 'en', text: 'English', lang: 'en' },
+        ]),
+      'Hybrid Korean language boundaries differ from the approved UI-spine strategy.', evidence);
       return evidence;
     } finally {
       await scenario.close();
@@ -1715,7 +1734,7 @@ async function runLocalization({ report, session, options }) {
         evidence[locale] = await measureOverflow(scenario.page);
         const comparisonHeader = evidence[locale].find(({ kind }) => kind === 'comparison-header');
         if (locale === 'ko') {
-          verify(comparisonHeader?.text === '최고기록 대비',
+          verify(comparisonHeader?.text === 'Δ BEST',
             'Korean results did not expose the approved comparison header for overflow measurement.', {
               comparisonHeader,
               measurements: evidence[locale],
@@ -1943,7 +1962,7 @@ async function runLocalization({ report, session, options }) {
         await callHarness(scenario.page, 'vantage', ['terminus']);
         await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
         const complete = await gateNameSnapshot(scenario.page);
-        const expectedFinal = locale === 'ko' ? 'TERMINUS 접근 항로' : 'TERMINUS APPROACH';
+        const expectedFinal = 'TERMINUS APPROACH';
         verify(early.every((entry, index) => entry.name === `CAIRN ${String(index + 1).padStart(2, '0')}`
           && entry.nameMessage === undefined && entry.domText === entry.name && entry.domLang === 'en'
           && entry.domTokens.length === 0),
@@ -2556,6 +2575,10 @@ function roundPixel(value) {
   return Math.round(value * 1_000) / 1_000;
 }
 
+function vectorDistance(left, right) {
+  return Math.hypot(...left.map((value, index) => value - right[index]));
+}
+
 function isNanumFontUrl(value) {
   return /NanumSquareNeo[^?#]*\.woff2(?:$|[?#])/u.test(value);
 }
@@ -2790,7 +2813,7 @@ function assertImpactEvent(locale, snapshot, before, staged) {
     === JSON.stringify({ type: 'log.hull-contact', percent: expectedPercent }),
   `${locale} hull-contact descriptor percent differs from physical hull-delta evidence.`, evidence);
   const legacy = `hull contact · ${expectedPercent}%`;
-  const localized = locale === 'ko' ? `선체 접촉 · ${expectedPercent}%` : legacy;
+  const localized = legacy;
   verify(line?.text === legacy && snapshot.dom.logs[index] === localized,
     `${locale} hull-contact legacy bytes or localized DOM differ.`, evidence);
   return { hullDamage, expectedSeverity, expectedPercent };
@@ -2809,9 +2832,7 @@ function assertBoostEvent(locale, snapshot) {
   const index = snapshot.telemetry.log.indexOf(line);
   verify(line?.text === 'overdrive reserve depleted'
     && JSON.stringify(line?.message) === JSON.stringify({ type: 'log.boost-depleted' })
-    && snapshot.dom.logs[index] === (locale === 'ko'
-      ? '오버드라이브 예비 동력 고갈'
-      : 'overdrive reserve depleted'),
+    && snapshot.dom.logs[index] === 'overdrive reserve depleted',
   `${locale} boost-depletion log descriptor, legacy field, or DOM differs.`, snapshot);
 }
 
@@ -2964,11 +2985,7 @@ function assertGateEventFlow(locale, flow) {
     const expectedLegacySub = expectedRemaining > 0
       ? `${expectedRemaining} CAIRN${expectedRemaining === 1 ? '' : 'S'} REMAINING`
       : 'TERMINUS AHEAD';
-    const expectedLocalizedSub = locale === 'ko'
-      ? expectedRemaining > 0
-        ? `CAIRN ${expectedRemaining}기 남음`
-        : 'TERMINUS 전방'
-      : expectedLegacySub;
+    const expectedLocalizedSub = expectedLegacySub;
     verify(JSON.stringify(callout.subMessage) === JSON.stringify({
       type: 'callout-sub.gate-progress',
       remaining: expectedRemaining,
@@ -3054,10 +3071,8 @@ function assertGateEventFlow(locale, flow) {
     });
     verify(line.text === `cairn ${padded} · ${expectedSeconds.toFixed(2)}s`,
       `${locale} gate log changed padding or seconds.toFixed(2) legacy bytes.`, { line, dom, pass });
-    verify(dom === (locale === 'ko'
-      ? `CAIRN ${padded} · ${expectedSeconds.toFixed(2)}초`
-      : line.text), `${locale} gate-clear log DOM differs.`, { line, dom, pass });
-    verify(JSON.stringify(tokens ?? []) === JSON.stringify(locale === 'ko' ? ['CAIRN'] : []),
+    verify(dom === line.text, `${locale} gate-clear log DOM differs.`, { line, dom, pass });
+    verify(JSON.stringify(tokens ?? []) === JSON.stringify([]),
     `${locale} gate-clear log embedded-English token structure differs.`, {
       line,
       dom,
@@ -3082,11 +3097,10 @@ function assertGateEventFlow(locale, flow) {
     === JSON.stringify({ type: 'log.gate-missed', gate: expectedMissGate }),
   `${locale} gate-miss log parameter differs from the independently staged gate.`, evidence);
   verify(missLine?.text === `cairn ${padded} missed`
-    && flow.missed.dom.logs[missIndex] === (locale === 'ko'
-      ? `CAIRN ${padded} 놓침`
-      : missLine.text), `${locale} gate-miss log descriptor or exact formatting differs.`, evidence);
+    && flow.missed.dom.logs[missIndex] === missLine.text,
+  `${locale} gate-miss log descriptor or exact formatting differs.`, evidence);
   verify(JSON.stringify(flow.missed.dom.logTokens[missIndex] ?? [])
-    === JSON.stringify(locale === 'ko' ? ['CAIRN'] : []),
+    === JSON.stringify([]),
   `${locale} gate-miss log embedded-English token structure differs.`, evidence);
   verify(splitRowsVerified.length > 0,
     `${locale} no real gate pass exposed an independently checked split-feed row.`, evidence);
@@ -3259,7 +3273,7 @@ function assertHudStatic(locale, hidden, available, locked) {
   `${locale} usable boost caption/title/ARIA differs.`, evidence);
   verify(locked.boost.title === expected.capacityTitle
     && locked.boost.caption === expected.lockedCaption
-    && locked.boost.captionLang === (locale === 'en' ? 'en' : null)
+    && locked.boost.captionLang === 'en'
     && locked.boost.aria === expected.lockedAria
     && locked.boost.availability === 'unavailable',
   `${locale} locked boost caption/ARIA or dynamic lang differs.`, evidence);
@@ -3417,10 +3431,14 @@ async function staticCopySnapshot(page, viewName) {
     if (!(view instanceof HTMLElement)) throw new Error(`Open ${requestedView} view is missing.`);
     const text = (selector) => view.querySelector(selector)?.textContent ?? '';
     const texts = (selector) => Array.from(view.querySelectorAll(selector), (node) => node.textContent ?? '');
-    const actions = () => Object.fromEntries(Array.from(view.querySelectorAll('[data-action]'), (node) => [
-      node.getAttribute('data-action'),
-      node.querySelector('.lv-btn-t')?.textContent ?? '',
-    ]));
+    const actions = () => Object.fromEntries(
+      Array.from(view.querySelectorAll('[data-action]'))
+        .filter((node) => node.closest('[hidden]') === null)
+        .map((node) => [
+          node.getAttribute('data-action'),
+          node.querySelector('.lv-btn-t')?.textContent ?? '',
+        ]),
+    );
     const aria = view.getAttribute('aria-label') ?? '';
 
     if (requestedView === 'title') {
@@ -3502,6 +3520,7 @@ async function staticCopySnapshot(page, viewName) {
       title: text('.lv-res-title'),
       time: text('.lv-res-timeblock > .lv-res-k'),
       retry: text('[data-action="retry"] .lv-btn-t'),
+      return: text('[data-action="return"] .lv-btn-t'),
     };
   }, viewName);
 }
@@ -3540,7 +3559,9 @@ async function semanticSnapshot(page, viewName) {
       options: Array.from(node.querySelectorAll(':scope [data-seg]'), (option) => option.getAttribute('data-seg')),
     }));
     return {
-      actions: Array.from(view.querySelectorAll('[data-action]'), (node) => node.getAttribute('data-action')),
+      actions: Array.from(view.querySelectorAll('[data-action]'))
+        .filter((node) => node.closest('[hidden]') === null)
+        .map((node) => node.getAttribute('data-action')),
       controls: Array.from(view.querySelectorAll('[data-control]'), (node) => node.getAttribute('data-control')),
       settings,
     };
@@ -3582,7 +3603,45 @@ async function collectEmbeddedLang(page) {
   await clickAction(page, 'title', 'begin');
   const briefingLine1 = await langTokens(page, '[data-view="briefing"]', '.lv-prose-l:nth-child(1)');
   const briefingLine2 = await langTokens(page, '[data-view="briefing"]', '.lv-prose-l:nth-child(2)');
-  return { tagline, briefingLine1, briefingLine2, cameraHint, pointerNote };
+  const boundaries = await page.evaluate(() => {
+    const effectiveLang = (selector) => {
+      const node = document.querySelector(selector);
+      return node instanceof HTMLElement ? node.closest('[lang]')?.getAttribute('lang') ?? '' : null;
+    };
+    const englishSelectors = {
+      titleEyebrow: '.lv-title-eyebrow',
+      titleAction: '[data-view="title"] [data-action="begin"] .lv-btn-t',
+      titleFooter: '.lv-title-foot',
+      settingLabel: '[data-view="settings"] [data-setting="cameraMode"] .lv-set-label',
+      settingEnum: '[data-view="settings"] [data-setting="cameraMode"]',
+      settingSwitch: '[data-view="settings"] [data-setting="invertY"]',
+      settingSlider: '[data-view="settings"] [data-setting="fov"]',
+      controlsTitle: '[data-view="controls"] .lv-panel-title',
+      briefingKicker: '[data-view="briefing"] .lv-brief-head .lv-kicker',
+    };
+    const koreanSelectors = {
+      tagline: '[data-view="title"] .lv-tagline',
+      settingHint: '[data-view="settings"] [data-setting="cameraMode"] .lv-set-hint',
+      controlDescription: '[data-view="controls"] [data-control="camera-toggle"] .lv-key-d',
+      briefingProse: '[data-view="briefing"] .lv-prose-l:first-child',
+    };
+    return {
+      documentLang: document.documentElement.lang,
+      english: Object.entries(englishSelectors)
+        .filter(([, selector]) => effectiveLang(selector) === 'en')
+        .map(([name]) => name),
+      korean: Object.entries(koreanSelectors)
+        .filter(([, selector]) => effectiveLang(selector) === 'ko')
+        .map(([name]) => name),
+      localeButtons: [...document.querySelectorAll('[data-view="title"] [data-locale]')]
+        .map((node) => ({
+          locale: node.getAttribute('data-locale'),
+          text: node.textContent?.trim() ?? '',
+          lang: node.getAttribute('lang'),
+        })),
+    };
+  });
+  return { tagline, briefingLine1, briefingLine2, cameraHint, pointerNote, boundaries };
 }
 
 async function safeDomSnapshot(page, phase) {

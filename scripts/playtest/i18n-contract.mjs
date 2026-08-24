@@ -263,8 +263,8 @@ await report.check(
       ko: ko.results.bestComparison('+1.23', '01:02.34'),
       en: en.results.bestComparison('+1.23', '01:02.34'),
     };
-    verify(bestComparisonFixtures.ko === '최고 01:02.34 대비 +1.23',
-      'Korean bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
+    verify(bestComparisonFixtures.ko === '+1.23 vs BEST 01:02.34',
+      'Korean-mode bestComparison differs from the English instrument fixture.', bestComparisonFixtures);
     verify(bestComparisonFixtures.en === '+1.23 vs BEST 01:02.34',
       'English bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
     const campaignRouteFixtures = {
@@ -286,19 +286,19 @@ await report.check(
       enNeedleRadio: en.campaign.routes['needle-grave'].radio1,
     };
     const expectedCampaignRouteFixtures = {
-      koCairnProgress: 'CAIRN 2기 남음',
+      koCairnProgress: '2 CAIRNS REMAINING',
       enCairnProgress: '2 CAIRNS REMAINING',
-      koCairnClear: 'cairn 07 · 12.34초',
+      koCairnClear: 'cairn 07 · 12.34s',
       enCairnClear: 'cairn 07 · 12.34s',
-      koCairnMiss: 'cairn 07 빗나감',
+      koCairnMiss: 'cairn 07 missed',
       enCairnMiss: 'cairn 07 missed',
-      koNeedleProgress: 'NEEDLE 2기 남음',
+      koNeedleProgress: '2 NEEDLES REMAINING',
       enNeedleProgress: '2 NEEDLES REMAINING',
-      koNeedleClear: 'needle 04 · 9.87초',
+      koNeedleClear: 'needle 04 · 9.87s',
       enNeedleClear: 'needle 04 · 9.87s',
-      koNeedleMiss: 'needle 04 빗나감',
+      koNeedleMiss: 'needle 04 missed',
       enNeedleMiss: 'needle 04 missed',
-      koNeedleShear: 'NEEDLE 03 · SHEAR 차단',
+      koNeedleShear: 'needle 03 · shear block',
       enNeedleShear: 'needle 03 · shear block',
       koNeedleRadio: 'Kestrel, NADIR 항로 개방. SHEAR 차폐판이 가동 중이다.',
       enNeedleRadio: 'Kestrel, the NADIR line is open. SHEAR shutters are live.',
@@ -442,56 +442,79 @@ await report.check(
       verify(getPath(en, path) === expected, `English ${path} changed a preserved token`);
     }
 
-    const canonicalKorean = {
-      'screens.beginRun': '비행 시작',
-      'screens.settings': '설정',
-      'screens.controls': '조작법',
-      'screens.runBriefing': '비행 브리핑',
-      'screens.destination': '목적지',
-      'screens.markers': '표식',
-      'screens.corridor': '항로',
-      'screens.drift': '드리프트',
-      'screens.closing': '수축 중',
-      'screens.coreControls': '핵심 조작',
-      'screens.engage': '출격',
-      'screens.back': '뒤로',
-      'screens.flightHeld': '비행 정지',
-      'screens.paused': '일시정지',
-      'screens.resume': '계속',
-      'screens.restart': '재시작',
-      'screens.abortRun': '비행 중단',
+    // Korean mode deliberately keeps the terse flight/interface spine in English. Korean is the
+    // meaning layer for prose, guidance, radio, accessibility and recovery—not a word-for-word
+    // reskin of cockpit terminology.
+    const hybridEnglishSpine = {
+      'screens.sector': 'SECTOR',
+      'screens.beginRun': 'START FLIGHT',
+      'screens.settings': 'SETTINGS',
+      'screens.controls': 'CONTROLS',
+      'screens.runBriefing': 'RUN BRIEFING',
+      'screens.destination': 'DESTINATION',
+      'screens.markers': 'MARKERS',
+      'screens.corridor': 'CORRIDOR',
+      'screens.drift': 'DRIFT',
+      'screens.closing': 'CLOSING',
+      'screens.coreControls': 'CORE CONTROLS',
+      'screens.engage': 'ENGAGE',
+      'screens.back': 'BACK',
+      'screens.flightHeld': 'FLIGHT HELD',
+      'screens.paused': 'PAUSED',
+      'screens.resume': 'RESUME',
+      'screens.restart': 'RESTART',
+      'screens.abortRun': 'ABORT FLIGHT',
+      'settings.sectionFlight': 'FLIGHT',
+      'settings.defaultCamera': 'Default camera',
+      'settings.renderScale': 'Render scale',
+      'hud.throttle': 'THR',
+      'hud.hull': 'HULL',
+      'hud.boost': 'BOOST',
+      'hud.segment': 'SPLIT',
+      'hud.elapsed': 'ELAPSED',
+      'hud.nextMarker': 'NEXT MARKER',
+      'results.arrivalConfirmed': 'ARRIVAL CONFIRMED',
+      'results.newRecord': 'NEW BEST',
+      'results.runAgain': 'RUN AGAIN',
+      'results.returnToTitle': 'RETURN',
+      'results.hullBreach': 'HULL BREACH',
+      'results.retry': 'RETRY',
+      'cockpit.attitude': 'ATTITUDE',
+      'cockpit.vectorRange': 'VECTOR / RANGE',
+      'cockpit.shipSystems': 'SHIP SYSTEMS',
+      'cockpit.energy': 'ENG',
+      'cockpit.retroBrake': 'RETRO BRAKE',
+    };
+    for (const [path, expected] of Object.entries(hybridEnglishSpine)) {
+      verify(getPath(ko, path) === expected, `Korean-mode ${path} left the English UI spine`);
+    }
+
+    const canonicalKoreanGuidance = {
       'screens.briefingLine1': 'ACHRA가 꺼져 가고 있다. 매시간 선반 얼음과 회전하는 철편이 마지막 생존 항로로 쏟아진다.',
       'screens.briefingLine2': '응답하는 CAIRN은 아홉 기. 오래전에 사라진 손들이 남긴 표식이 곧 항로다.',
       'screens.briefingLine3': '순서대로 통과하라. 좁은 구간에서는 암석이 바짝 파고들며, 제동만이 선회 공간을 만든다.',
-      'hud.keyboardFlight': '키보드 비행',
-      'hud.throttle': '추력',
-      'hud.hull': '선체',
-      'hud.boost': '부스터',
-      'hud.segment': '구간',
-      'hud.elapsed': '경과',
-      'hud.best': '최고',
-      'hud.nextMarker': '다음 표식',
-      'hud.departure': '출발',
-      'hud.charging': '충전',
-      'results.arrivalConfirmed': '도착 확인',
-      'results.newRecord': '신기록',
-      'results.runAgain': '다시 비행',
-      'results.hullBreach': '선체 파손',
-      'results.retry': '재도전',
-      'cockpit.attitude': '자세',
-      'cockpit.vectorRange': '벡터 / 거리',
-      'cockpit.shipSystems': '기체 계통',
-      'cockpit.energy': '동력',
-      'cockpit.retroBrake': '역추진 제동',
-      'cockpit.hullWarning': '선체 경고',
-      'cockpit.proximityWarning': '근접 경고',
+      'screens.pauseDetail': '드리프트는 계속된다. 항로는 기다려 주지 않는다.',
+      'controls.mouseSteer': '조향 — 자동 복귀 가상 스틱',
+      'controls.cameraToggle': '추적 / 1인칭 조종석 전환',
+      'controls.pointerLockNote': '출격하면 마우스가 고정됩니다. ESC를 누르면 마우스가 풀리고 비행이 일시정지됩니다.',
+      'settings.defaultCameraHint': '비행 중 C를 눌러 시점을 전환합니다.',
+      'settings.renderScaleHint': '내부 해상도입니다. 품질보다 먼저 낮추세요.',
+      'events.radio1': 'Kestrel, CAIRN 항로 진입을 허가한다. 행운을 빈다.',
+      'loader.runtimeFailureDetail': '반복된 실행 오류로 시뮬레이션이 중단되었습니다. 계속하려면 페이지를 새로고침해 주세요.',
+      'a11y.mainMenu': '주 메뉴',
     };
-    for (const [path, expected] of Object.entries(canonicalKorean)) {
+    for (const [path, expected] of Object.entries(canonicalKoreanGuidance)) {
       verify(getPath(ko, path) === expected, `Korean ${path} differs from canonical copy`);
     }
-    verify(ko.screens.korean === '한국어' && ko.screens.english === '영어', 'Korean selector labels must be locale-native');
-    verify(en.screens.korean === 'Korean' && en.screens.english === 'English', 'English selector labels must be locale-native');
-    return { preserved: paths, canonicalKoreanCount: Object.keys(canonicalKorean).length };
+    verify(ko.screens.korean === '한국어' && ko.screens.english === 'English',
+      'Korean selector labels must use each language\'s native name.');
+    verify(en.screens.korean === '한국어' && en.screens.english === 'English',
+      'English selector labels must use each language\'s native name.');
+    return {
+      preserved: paths,
+      hybridEnglishSpineCount: Object.keys(hybridEnglishSpine).length,
+      canonicalKoreanGuidanceCount: Object.keys(canonicalKoreanGuidance).length,
+    };
   },
 );
 

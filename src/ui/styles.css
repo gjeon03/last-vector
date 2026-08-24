@@ -1172,16 +1172,16 @@ html[lang='ko'] :is(
   .lv-res-k,
   .lv-res-statk,
   .lv-res-row.is-head
-) {
+):not(:lang(en)) {
   letter-spacing: 0.06em;
   text-indent: 0;
 }
 
-html[lang='ko'] .lv-btn:is(:hover, :focus) .lv-btn-t {
+html[lang='ko'] .lv-btn:is(:hover, :focus) .lv-btn-t:not(:lang(en)) {
   letter-spacing: 0.1em;
 }
 
-html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
+html[lang='ko'] .lv-root :is(span, h1, h2, dd):lang(en):not(.lv-btn-t) {
   word-break: normal;
   overflow-wrap: normal;
 }
@@ -1206,6 +1206,10 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
 .lv-screen.is-passthrough,
 .lv-screen.is-passthrough * {
   pointer-events: none;
+}
+
+.lv-root [hidden] {
+  display: none !important;
 }
 
 .lv-veil {
@@ -1275,33 +1279,29 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
 /* ------------------------------------------------------------------ title -- */
 
 .lv-title {
+  --lv-title-edge: clamp(20px, 5.5vw, 128px);
   position: relative;
-  margin: auto auto auto clamp(40px, 7.5vw, 200px);
+  margin: auto auto auto var(--lv-title-edge);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   /* max-content so the rule and the menu key off the wordmark's true width */
   width: max-content;
-  max-width: min(70vw, 940px);
+  max-width: min(960px, calc(100vw - var(--lv-title-edge) - var(--lv-title-edge)));
   max-height: 100vh;
   max-height: 100svh;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  padding: clamp(20px, 3vmin, 44px) clamp(24px, 4vmin, 66px) clamp(20px, 3vmin, 44px) 0;
+  padding: clamp(20px, 3vmin, 44px) clamp(24px, 4vmin, 66px) clamp(20px, 3vmin, 44px)
+    clamp(18px, 2.3vmin, 36px);
 }
 
-.lv-title::before {
-  content: '';
-  position: absolute;
-  inset: -26% -34% -26% -38%;
-  background: radial-gradient(
-    ellipse closest-side at 50% 50%,
-    rgba(2, 5, 11, 0.9),
-    rgba(2, 5, 11, 0.56) 46%,
-    rgba(2, 5, 11, 0) 100%
-  );
-  z-index: -1;
+.lv-screen--title .lv-veil {
+  background:
+    radial-gradient(ellipse 54% 76% at 23% 50%, rgba(2, 5, 11, 0.76), rgba(2, 5, 11, 0.46) 48%, rgba(2, 5, 11, 0.08) 78%, transparent 100%),
+    radial-gradient(ellipse 125% 105% at 46% 48%, rgba(3, 6, 13, 0) 38%, rgba(3, 6, 13, 0.68) 100%),
+    linear-gradient(to right, rgba(3, 6, 13, 0.72), rgba(3, 6, 13, 0.3) 38%, rgba(3, 6, 13, 0.06) 68%, rgba(3, 6, 13, 0.26));
 }
 
 .lv-title-eyebrow {
@@ -1524,6 +1524,11 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
 }
 
 @media (max-width: 520px) {
+  .lv-title {
+    --lv-title-edge: clamp(14px, 4vw, 24px);
+    padding-inline: clamp(10px, 3.5vw, 18px) clamp(10px, 3vw, 16px);
+  }
+
   .lv-route-strip {
     grid-template-columns: 1fr;
   }
@@ -1591,9 +1596,9 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd)[lang='en']:not(.lv-btn-t) {
   white-space: nowrap;
 }
 
-/* Cancel the button's inner padding so menu text hangs on the wordmark's left edge. */
+/* Keep every interactive surface on the same rail as the title and briefing copy. */
 .lv-title .lv-menu {
-  margin-left: calc(clamp(18px, 1.9vmin, 30px) * -1);
+  margin-left: 0;
 }
 
 /* entrance */

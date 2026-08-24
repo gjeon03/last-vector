@@ -506,6 +506,7 @@ export class Hud {
      * to know why the mouse is dead for as long as it is dead, not for two seconds at the start.
      */
     this.nInputMode = el('div', 'lv-inputmode', this.messages.hud.keyboardFlight);
+    this.nInputMode.lang = 'en';
     this.nInputMode.dataset['on'] = '0';
     top.append(this.nSector, this.nInputMode, fpsWrap);
     frame.appendChild(top);
@@ -526,11 +527,9 @@ export class Hud {
     thrTrack.append(this.nThrottleGhost, this.nThrottleFill, thrTicks);
     this.nThrottlePct = el('div', 'lv-thr-pct', '000');
     this.nThrottlePct.lang = 'en';
-    this.nThrottleRow.append(
-      el('div', 'lv-thr-k', this.messages.hud.throttle),
-      thrTrack,
-      this.nThrottlePct,
-    );
+    const throttleLabel = el('div', 'lv-thr-k', this.messages.hud.throttle);
+    throttleLabel.lang = 'en';
+    this.nThrottleRow.append(throttleLabel, thrTrack, this.nThrottlePct);
 
     const speed = el('div', 'lv-speed');
     this.nSpeed = el('div', 'lv-readout lv-readout--speed', '0');
@@ -576,7 +575,9 @@ export class Hud {
     this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    right.append(el('div', 'lv-right-k', this.messages.hud.nextMarker), gateCount, this.nGateName, times, this.nSplitFeed);
+    const nextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    nextMarkerLabel.lang = 'en';
+    right.append(nextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
     frame.appendChild(right);
 
     /* ---- centre-upper callout ---- */
@@ -613,7 +614,9 @@ export class Hud {
     const railKeys = el('div', 'lv-rail-keys');
     const railDestination = el('span', 'lv-rail-dest', this.messages.hud.terminus);
     railDestination.lang = 'en';
-    railKeys.append(el('span', '', this.messages.hud.departure), railDestination);
+    const railDeparture = el('span', '', this.messages.hud.departure);
+    railDeparture.lang = 'en';
+    railKeys.append(railDeparture, railDestination);
     this.nRail.append(railKeys, railTrack);
     frame.appendChild(this.nRail);
 
@@ -667,7 +670,9 @@ export class Hud {
     const row = el('div', `lv-bar lv-bar--${kind}`);
     const track = el('div', 'lv-bar-track');
     track.append(el('div', 'lv-bar-ghost'), el('div', 'lv-bar-fill'));
-    row.append(el('span', 'lv-bar-k', label), track);
+    const key = el('span', 'lv-bar-k', label);
+    key.lang = 'en';
+    row.append(key, track);
     return row;
   }
 
@@ -698,6 +703,7 @@ export class Hud {
   private buildTime(parent: HTMLElement, label: string, cls: string): HTMLElement {
     const row = el('div', `lv-time ${cls}`);
     const dt = el('dt', 'lv-time-k', label);
+    dt.lang = 'en';
     const dd = el('dd', 'lv-time-v', '--:--.--');
     dd.lang = 'en';
     row.append(dt, dd);
@@ -908,6 +914,7 @@ export class Hud {
       this.pGateNameType = gateNameType;
       if (t.gate.nameMessage) {
         this.writeDynamicText(this.nGateName, this.translator.domain(t.gate.nameMessage));
+        this.nGateName.lang = 'en';
       } else {
         this.nGateName.textContent = t.gate.name;
         this.nGateName.lang = 'en';
@@ -1015,8 +1022,7 @@ export class Hud {
       this.nBoostRow.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
       this.nBoostRow.dataset['availability'] = unavailable ? 'unavailable' : 'available';
       this.nBoostCap.textContent = unavailable ? this.messages.hud.locked : BOOST_USABLE_LABEL;
-      if (!unavailable || this.translator.locale === 'en') this.nBoostCap.lang = 'en';
-      else this.nBoostCap.removeAttribute('lang');
+      this.nBoostCap.lang = 'en';
       this.nBoostRow.setAttribute(
         'aria-label',
         unavailable
@@ -1065,12 +1071,15 @@ export class Hud {
       this.pCalloutId = c.id;
       if (c.titleMessage) {
         this.writeDynamicText(this.nCalloutTitle, this.translator.domain(c.titleMessage));
+        this.nCalloutTitle.lang = 'en';
       } else {
         this.writeLegacyEnglish(this.nCalloutTitle, c.title);
       }
       const sub = c.subMessage ? this.translator.domain(c.subMessage) : c.sub;
-      if (c.subMessage) this.writeDynamicText(this.nCalloutSub, sub ?? '');
-      else this.writeLegacyEnglish(this.nCalloutSub, sub ?? '');
+      if (c.subMessage) {
+        this.writeDynamicText(this.nCalloutSub, sub ?? '');
+        if (c.subMessage.type === 'callout-sub.gate-progress') this.nCalloutSub.lang = 'en';
+      } else this.writeLegacyEnglish(this.nCalloutSub, sub ?? '');
       this.nCalloutSub.dataset['on'] = sub ? '1' : '0';
       if (c.tone !== this.pCalloutTone) {
         this.pCalloutTone = c.tone;
@@ -1133,6 +1142,7 @@ export class Hud {
             node.textContent = this.translator.domain(line.message);
           } else {
             this.writeDynamicText(node, this.translator.domain(line.message));
+            node.lang = 'en';
           }
           node.dataset['tone'] = line.tone;
           this.logNodes.set(line.id, node);
@@ -1198,6 +1208,7 @@ export class Hud {
               splitDelta,
               this.messages.results.splitDelta(formatDelta(delta)),
             );
+            splitDelta.lang = 'en';
             splitDelta.dataset['tone'] =
               Math.round(delta * 100) === 0 ? 'flat' : delta < 0 ? 'good' : 'bad';
             node.appendChild(splitDelta);
