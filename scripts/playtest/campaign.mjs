@@ -346,6 +346,81 @@ async function runCampaign({ report, session, options }) {
   });
 
   await report.check({
+    id: 'CAMPAIGN.result-action-navigation',
+    name: 'Result action arrows follow the rendered axis',
+    assertion: 'Desktop horizontal actions use Left/Right without moving on Up/Down, while the compact stacked layout uses Up/Down without moving on Left/Right.',
+  }, async () => {
+    const actionFocus = () => page.evaluate(() =>
+      document.activeElement?.getAttribute('data-action') ?? null);
+    const measure = () => page.evaluate(() => {
+      const again = document.querySelector('[data-view="results"][data-open="1"] [data-action="again"]')?.getBoundingClientRect();
+      const routes = document.querySelector('[data-view="results"][data-open="1"] [data-action="route-select"]')?.getBoundingClientRect();
+      const centre = (rect) => rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+      return { again: centre(again), routes: centre(routes) };
+    });
+    const focusAgain = () => page.locator(
+      '[data-view="results"][data-open="1"] [data-action="again"]',
+    ).focus();
+
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const desktopGeometry = await measure();
+    await focusAgain();
+    await page.keyboard.press('ArrowDown');
+    const desktopAfterDown = await actionFocus();
+    await page.keyboard.press('ArrowRight');
+    const desktopAfterRight = await actionFocus();
+    await page.keyboard.press('ArrowUp');
+    const desktopAfterUp = await actionFocus();
+    await page.keyboard.press('ArrowLeft');
+    const desktopAfterLeft = await actionFocus();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    const compactGeometry = await measure();
+    await focusAgain();
+    await page.keyboard.press('ArrowRight');
+    const compactAfterRight = await actionFocus();
+    await page.keyboard.press('ArrowDown');
+    const compactAfterDown = await actionFocus();
+    await page.keyboard.press('ArrowLeft');
+    const compactAfterLeft = await actionFocus();
+    await page.keyboard.press('ArrowUp');
+    const compactAfterUp = await actionFocus();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+
+    const evidence = {
+      desktopGeometry,
+      compactGeometry,
+      desktop: {
+        afterDown: desktopAfterDown,
+        afterRight: desktopAfterRight,
+        afterUp: desktopAfterUp,
+        afterLeft: desktopAfterLeft,
+      },
+      compact: {
+        afterRight: compactAfterRight,
+        afterDown: compactAfterDown,
+        afterLeft: compactAfterLeft,
+        afterUp: compactAfterUp,
+      },
+    };
+    verify(desktopGeometry.again && desktopGeometry.routes
+      && Math.abs(desktopGeometry.again.y - desktopGeometry.routes.y) <= 2
+      && desktopGeometry.again.x < desktopGeometry.routes.x,
+    'Desktop result actions are not a horizontal left-to-right pair.', evidence);
+    verify(desktopAfterDown === 'again' && desktopAfterRight === 'route-select'
+      && desktopAfterUp === 'route-select' && desktopAfterLeft === 'again',
+    'Desktop result focus did not follow the horizontal arrow axis.', evidence);
+    verify(compactGeometry.again && compactGeometry.routes
+      && Math.abs(compactGeometry.again.x - compactGeometry.routes.x) <= 2
+      && compactGeometry.again.y < compactGeometry.routes.y,
+    'Compact result actions are not a vertical top-to-bottom stack.', evidence);
+    verify(compactAfterRight === 'again' && compactAfterDown === 'route-select'
+      && compactAfterLeft === 'route-select' && compactAfterUp === 'again',
+    'Compact result focus did not follow the vertical arrow axis.', evidence);
+    return evidence;
+  });
+
+  await report.check({
     id: 'CAMPAIGN.live-pb-delta',
     name: 'A repeat run reports a compatible per-gate PB delta',
     assertion: 'The next NEEDLE run loads the completed six-split PB and adds one correctly signed, toned delta only when the matching gate split appears.',

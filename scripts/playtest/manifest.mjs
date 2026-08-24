@@ -201,6 +201,7 @@ const EXPECTED_CHECKS = {
     'CAMPAIGN.shear-fixed-step',
     'CAMPAIGN.needle-autopilot',
     'CAMPAIGN.result-mastery-feedback',
+    'CAMPAIGN.result-action-navigation',
     'CAMPAIGN.live-pb-delta',
     'M5.runtime-errors',
     'M6.localhost-only',

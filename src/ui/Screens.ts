@@ -778,6 +778,51 @@ export class Screens {
     if (sound) this.opts.onSound('move');
   }
 
+  /**
+   * Result actions reflow from a horizontal row to a vertical stack on compact screens. Follow
+   * their rendered geometry instead of pretending one DOM-order axis describes both layouts.
+   * Returning true with no candidate deliberately consumes the perpendicular arrow: pressing
+   * Down on a horizontal row (or Right on a vertical stack) must not move focus sideways.
+   */
+  private moveResultArrow(key: 'ArrowDown' | 'ArrowUp' | 'ArrowLeft' | 'ArrowRight'): boolean {
+    if (this.view !== 'results') return false;
+    const current = this.navItems[this.navIndex];
+    const group = current?.closest<HTMLElement>('.lv-actions--res');
+    if (!current || !group) return false;
+
+    const direction = key === 'ArrowLeft'
+      ? { x: -1, y: 0 }
+      : key === 'ArrowRight'
+        ? { x: 1, y: 0 }
+        : key === 'ArrowUp'
+          ? { x: 0, y: -1 }
+          : { x: 0, y: 1 };
+    const origin = current.getBoundingClientRect();
+    const originX = origin.left + origin.width / 2;
+    const originY = origin.top + origin.height / 2;
+    let bestIndex = -1;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < this.navItems.length; i++) {
+      const candidate = this.navItems[i]!;
+      if (candidate === current || candidate.closest('.lv-actions--res') !== group) continue;
+      const rect = candidate.getBoundingClientRect();
+      const dx = rect.left + rect.width / 2 - originX;
+      const dy = rect.top + rect.height / 2 - originY;
+      const forward = dx * direction.x + dy * direction.y;
+      if (forward <= 1) continue;
+      const cross = Math.abs(dx * direction.y - dy * direction.x);
+      const score = forward + cross * 2;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex >= 0) this.focusNav(bestIndex);
+    return true;
+  }
+
   private onPointerOver = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     const item = target?.closest<HTMLElement>('[data-nav]');
@@ -806,6 +851,13 @@ export class Screens {
     if (active) {
       const actual = this.navItems.indexOf(active);
       if (actual >= 0) this.navIndex = actual;
+    }
+
+    if (
+      (key === 'ArrowDown' || key === 'ArrowUp' || key === 'ArrowLeft' || key === 'ArrowRight')
+      && this.moveResultArrow(key)
+    ) {
+      return true;
     }
 
     if (key === 'ArrowDown' || key === 's' || key === 'S' || (key === 'Tab' && !ev.shiftKey)) {
