@@ -374,9 +374,9 @@ const MFD_LABELS = {
   ],
 };
 const LEGACY_FALLBACK = {
-  title: 'LEGACY TITLE · DESCRIPTOR ABSENT',
-  sub: 'LEGACY SUB · KEEP ENGLISH',
-  log: 'legacy log · descriptor absent',
+  title: 'CAIRN ALERT',
+  sub: 'return to VESPER TERMINUS',
+  log: 'legacy log · return to VESPER TERMINUS',
 };
 
 await runManagedSuite({
@@ -2127,6 +2127,32 @@ async function runLocalization({ report, session, options }) {
         await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
         await callHarness(scenario.page, 'setPaused', [true]);
         const before = await callHarness(scenario.page, 'telemetry');
+        await scenario.page.evaluate(() => {
+          const telemetry = window.__LV?.telemetry();
+          if (!telemetry) throw new Error('Telemetry unavailable for legacy fallback prefill.');
+          telemetry.callout = {
+            id: 987654320,
+            title: 'ENGAGE',
+            titleMessage: { type: 'callout-title.engage' },
+            sub: 'W A S D / ARROWS STILL FLY',
+            subMessage: { type: 'callout-sub.keyboard-flight-available' },
+            tone: 'neutral',
+            ttl: 30,
+            ttlMax: 30,
+          };
+          telemetry.log.push({
+            id: 987654320,
+            text: 'cairn 01 missed',
+            message: { type: 'log.gate-missed', gate: 1 },
+            tone: 'neutral',
+            age: 0,
+          });
+        });
+        await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
+        const prefill = await pageTextSnapshot(scenario.page);
+        await scenario.page.evaluate(() => {
+          window.__LV_LEGACY_LOG_NODE = document.querySelector('.lv-log-line:last-child');
+        });
         await scenario.page.evaluate((fixture) => {
           const telemetry = window.__LV?.telemetry();
           if (!telemetry) throw new Error('Telemetry unavailable for legacy fallback fixture.');
@@ -2140,6 +2166,9 @@ async function runLocalization({ report, session, options }) {
             ttl: 30,
             ttlMax: 30,
           };
+          const prefillIndex = telemetry.log.findIndex((line) => line.id === 987654320);
+          if (prefillIndex < 0) throw new Error('Legacy fallback prefill log is missing.');
+          telemetry.log.splice(prefillIndex, 1);
           telemetry.log.push({
             id: 987654321,
             text: fixture.log,
@@ -2151,12 +2180,29 @@ async function runLocalization({ report, session, options }) {
         await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
         const after = await callHarness(scenario.page, 'telemetry');
         const dom = await pageTextSnapshot(scenario.page);
-        const evidenceEntry = { before, after, dom };
+        const reusedLogNode = await scenario.page.evaluate((text) =>
+          Array.from(document.querySelectorAll('.lv-log-line'))
+            .some((node) => node.textContent === text && node === window.__LV_LEGACY_LOG_NODE),
+        LEGACY_FALLBACK.log);
+        const evidenceEntry = { before, prefill, after, dom, reusedLogNode };
         verify(before.phase === 'flying' && after.phase === 'flying' && after.elapsed === before.elapsed,
           `${locale} fallback scenario was not driven/flying/simulation-paused.`, evidenceEntry);
+        verify(locale === 'ko'
+          ? prefill.calloutSubNode.childElementCount > 0
+            && prefill.logNodes.some((node) => node.childElementCount > 0)
+          : prefill.calloutSubNode.childElementCount === 0
+            && prefill.logNodes.every((node) => node.childElementCount === 0),
+        `${locale} descriptor-backed prefill did not establish the expected token structure.`, evidenceEntry);
         verify(dom.calloutTitle === LEGACY_FALLBACK.title && dom.calloutSub === LEGACY_FALLBACK.sub
           && dom.logs.includes(LEGACY_FALLBACK.log),
         `${locale} descriptor-less callout/log did not use exact legacy fallback bytes.`, evidenceEntry);
+        verify(dom.calloutTitleNode.childElementCount === 0 && dom.calloutTitleNode.lang === 'en'
+          && dom.calloutSubNode.childElementCount === 0 && dom.calloutSubNode.lang === 'en'
+          && dom.logNodes.some((node) => node.textContent === LEGACY_FALLBACK.log
+            && node.childElementCount === 0 && node.lang === 'en')
+          && reusedLogNode === true,
+        `${locale} descriptor-less callout/log fallback acquired token spans or lost whole-node lang=en.`,
+        evidenceEntry);
         verify(dom.gateName === 'CAIRN 01' && dom.gateLang === 'en'
           && after.gate.name === 'CAIRN 01' && after.gate.nameMessage === undefined,
         `${locale} natural early gate did not use the legacy name fallback.`, evidenceEntry);
@@ -2632,13 +2678,26 @@ function independentRunTime(seconds) {
 }
 
 async function pageTextSnapshot(page) {
-  return page.evaluate(() => ({
-    calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
-    calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
-    logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
-    gateName: document.querySelector('.lv-gatename')?.textContent ?? '',
-    gateLang: document.querySelector('.lv-gatename')?.getAttribute('lang') ?? null,
-  }));
+  return page.evaluate(() => {
+    const snapshot = (node) => ({
+      textContent: node?.textContent ?? '',
+      childElementCount: node?.childElementCount ?? null,
+      lang: node?.getAttribute('lang') ?? null,
+    });
+    const calloutTitleNode = snapshot(document.querySelector('.lv-callout-t'));
+    const calloutSubNode = snapshot(document.querySelector('.lv-callout-s'));
+    const logNodes = Array.from(document.querySelectorAll('.lv-log-line'), snapshot);
+    return {
+      calloutTitle: calloutTitleNode.textContent,
+      calloutSub: calloutSubNode.textContent,
+      calloutTitleNode,
+      calloutSubNode,
+      logs: logNodes.map((node) => node.textContent),
+      logNodes,
+      gateName: document.querySelector('.lv-gatename')?.textContent ?? '',
+      gateLang: document.querySelector('.lv-gatename')?.getAttribute('lang') ?? null,
+    };
+  });
 }
 
 function assertCalloutEvent(locale, snapshot, expected) {

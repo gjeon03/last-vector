@@ -639,6 +639,11 @@ export class Hud {
     }
   }
 
+  private writeLegacyEnglish(node: HTMLElement, text: string): void {
+    node.textContent = text;
+    node.lang = 'en';
+  }
+
   private syncCalloutAccessibility(): void {
     const hidden = !this.active || this.countdownActive || !this.calloutOn;
     if (hidden === this.pCalloutAriaHidden) return;
@@ -1055,12 +1060,14 @@ export class Hud {
     }
     if (c.id !== this.pCalloutId) {
       this.pCalloutId = c.id;
-      const title = c.titleMessage
-        ? this.translator.domain(c.titleMessage)
-        : c.title;
-      this.writeDynamicText(this.nCalloutTitle, title);
+      if (c.titleMessage) {
+        this.writeDynamicText(this.nCalloutTitle, this.translator.domain(c.titleMessage));
+      } else {
+        this.writeLegacyEnglish(this.nCalloutTitle, c.title);
+      }
       const sub = c.subMessage ? this.translator.domain(c.subMessage) : c.sub;
-      this.writeDynamicText(this.nCalloutSub, sub ?? '');
+      if (c.subMessage) this.writeDynamicText(this.nCalloutSub, sub ?? '');
+      else this.writeLegacyEnglish(this.nCalloutSub, sub ?? '');
       this.nCalloutSub.dataset['on'] = sub ? '1' : '0';
       if (c.tone !== this.pCalloutTone) {
         this.pCalloutTone = c.tone;
@@ -1116,12 +1123,13 @@ export class Hud {
         if (!node) {
           node = this.logPool.pop() ?? el('li', 'lv-log-line');
           node.className = 'lv-log-line';
-          const text = line.message ? this.translator.domain(line.message) : line.text;
-          if (line.message?.type === 'log.pointer-lock-refused') {
+          if (!line.message) {
+            this.writeLegacyEnglish(node, line.text);
+          } else if (line.message.type === 'log.pointer-lock-refused') {
             node.removeAttribute('lang');
-            node.textContent = text;
+            node.textContent = this.translator.domain(line.message);
           } else {
-            this.writeDynamicText(node, text);
+            this.writeDynamicText(node, this.translator.domain(line.message));
           }
           node.dataset['tone'] = line.tone;
           this.logNodes.set(line.id, node);
