@@ -28,6 +28,7 @@ const TOP_LEVEL_SECTIONS = [
 ];
 
 const DYNAMIC_ARITIES = new Map([
+  ['hud.meterPercent', 1],
   ['hud.boostUsable', 1],
   ['hud.boostRecharging', 1],
   ['results.splitDelta', 1],
@@ -274,8 +275,11 @@ await report.check(
   },
   async () => {
     const source = await readFile(new URL('../../src/i18n/typeFixtures.ts', import.meta.url), 'utf8');
+    const htmlSource = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
+    const mainSource = await readFile(new URL('../../src/main.ts', import.meta.url), 'utf8');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
     const hudSource = await readFile(new URL('../../src/ui/Hud.ts', import.meta.url), 'utf8');
+    const perfSource = await readFile(new URL('./perf-probe.mjs', import.meta.url), 'utf8');
     const directives = source.match(/@ts-expect-error/g) ?? [];
     verify(directives.length >= 3, 'At least three @ts-expect-error fixtures are required', {
       count: directives.length,
@@ -287,17 +291,70 @@ await report.check(
     verify(/bestComparison\(\s*['"][^'"]+['"]\s*\)/.test(source),
       'Missing bestComparison one-argument fixture');
     verify(/export\s+const\s+typeFixtures/.test(source), 'The fixture array must be exported');
+    const domSources = [
+      ['main.ts', mainSource],
+      ['Screens.ts', screensSource],
+      ['Hud.ts', hudSource],
+    ];
     const unsafeDomSinks = [
       ['innerHTML', /\.innerHTML\b/],
       ['insertAdjacentHTML', /\.insertAdjacentHTML\s*\(/],
       ['document.write', /\bdocument\.write\s*\(/],
-    ].flatMap(([name, pattern]) => [
-      ...(pattern.test(screensSource) ? [`Screens.ts:${name}`] : []),
-      ...(pattern.test(hudSource) ? [`Hud.ts:${name}`] : []),
-    ]);
+    ].flatMap(([name, pattern]) => domSources
+      .filter(([, candidate]) => pattern.test(candidate))
+      .map(([file]) => `${file}:${name}`));
     verify(unsafeDomSinks.length === 0,
-      'Screens.ts or Hud.ts uses a forbidden HTML-parsing DOM sink.', { unsafeDomSinks });
-    return { expectErrorDirectives: directives.length, unsafeDomSinks };
+      'main.ts, Screens.ts, or Hud.ts uses a forbidden HTML-parsing DOM sink.', { unsafeDomSinks });
+
+    const staticShell = {
+      lang: htmlSource.includes('<html lang="ko">'),
+      title: htmlSource.includes('<title>LAST VECTOR — THE CAIRN DRIFT</title>'),
+      description: htmlSource.includes(
+        '<meta name="description" content="붕괴하는 잔해 항로를 가르는 우주 비행 게임." />',
+      ),
+      noscriptTokens: [
+        '<span lang="en">LAST VECTOR</span>',
+        '<span lang="en">JavaScript</span>',
+        '<span lang="en">WebGL2</span>',
+      ].filter((fixture) => htmlSource.includes(fixture)),
+    };
+    verify(staticShell.lang && staticShell.title && staticShell.description
+      && staticShell.noscriptTokens.length === 3,
+    'index.html is not the canonical Korean static shell with English noscript tokens.', staticShell);
+
+    const coldInstrumentationIndex = perfSource.indexOf('capture(() => installColdInstrumentation(page))');
+    const coldWindowIndex = perfSource.indexOf('capture(() => collectColdWindow(page, options.timeoutMs))');
+    const cadenceIndex = perfSource.indexOf('capture(() => collectMfdUploadCadence(page, options.timeoutMs))');
+    const perfOrdering = { coldInstrumentationIndex, coldWindowIndex, cadenceIndex };
+    verify(coldInstrumentationIndex >= 0 && coldWindowIndex > coldInstrumentationIndex
+      && cadenceIndex > coldWindowIndex,
+    'The cold cockpit window is not captured before the MFD cadence arm.', perfOrdering);
+    verify(/async function collectProfile\(page, options, coldWindow\)/u.test(perfSource)
+      && /collectProfile\(page, options, unwrap\(coldWindowOutcome\)\)/u.test(perfSource),
+    'collectProfile does not consume the already-captured cold window.', perfOrdering);
+
+    const cadenceSource = perfSource.slice(
+      perfSource.indexOf('async function collectMfdUploadCadence'),
+      perfSource.indexOf('async function installColdInstrumentation'),
+    );
+    const cadenceRestoration = {
+      fullSnapshot: cadenceSource.includes('structuredClone(api.settings())'),
+      restoreSettings: cadenceSource.includes('api.setSettings(settingsBefore)'),
+      disableAutopilot: cadenceSource.includes('api.setAutopilot(false)'),
+      releaseDriven: cadenceSource.includes('api.setDriven(false)'),
+      finallyBlock: cadenceSource.includes('finally {'),
+    };
+    verify(Object.values(cadenceRestoration).every(Boolean),
+      'The MFD cadence probe does not snapshot and restore all mutable probe state.', cadenceRestoration);
+    verify(!/this\.el\.toggleAttribute\(\s*['"]aria-hidden/u.test(hudSource),
+      'Hud must not aria-hide its whole root because radio survives briefing.');
+    return {
+      expectErrorDirectives: directives.length,
+      unsafeDomSinks,
+      staticShell,
+      perfOrdering,
+      cadenceRestoration,
+    };
   },
 );
 

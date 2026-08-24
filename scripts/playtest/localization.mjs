@@ -283,6 +283,7 @@ const HUD_COPY = {
   ko: {
     inputMode: '키보드 비행',
     labels: ['추력', '부스터', '선체', '구간', '경과', '최고', '다음 표식', '출발'],
+    meterLabels: { throttle: '추력', hull: '선체' },
     capacityTitle: '완전 충전 시 사용 가능한 추진 시간',
     usableAria: '부스터 3.2초 사용 가능',
     lockedCaption: '잠김',
@@ -291,6 +292,7 @@ const HUD_COPY = {
   en: {
     inputMode: 'KEYBOARD FLIGHT',
     labels: ['THR', 'BOOST', 'HULL', 'SPLIT', 'ELAPSED', 'BEST', 'NEXT MARKER', 'DEPARTURE'],
+    meterLabels: { throttle: 'THR', hull: 'HULL' },
     capacityTitle: 'Usable drive time from a full reserve',
     usableAria: 'Boost reserve, 3.2 seconds usable',
     lockedCaption: 'LOCK',
@@ -341,6 +343,13 @@ const RADIO_COPY = {
     ['VESPER TERMINUS', 'Approach lit. Bring her in.'],
   ],
 };
+const RADIO_EN_TOKENS = [
+  ['Kestrel', 'CAIRN'],
+  [],
+  [],
+  ['Kestrel'],
+  [],
+];
 const HOSTILE_REASON = '<img src=x onerror=window.__LV_INJECTED=1>';
 const STAGED_FULL_SEVERITY_HULL_DAMAGE = 0.22;
 const MFD_CANVAS = { width: 1024, height: 256 };
@@ -1805,6 +1814,7 @@ async function runLocalization({ report, session, options }) {
           titleMessage: { type: 'callout-title.engage' },
           subMessage: undefined,
           dom: EVENT_COPY[locale].engage,
+          domTokens: locale === 'ko' ? [[], ['VESPER TERMINUS']] : [[], []],
         });
 
         const cameras = {};
@@ -1935,15 +1945,18 @@ async function runLocalization({ report, session, options }) {
         const complete = await gateNameSnapshot(scenario.page);
         const expectedFinal = locale === 'ko' ? 'TERMINUS 접근 항로' : 'TERMINUS APPROACH';
         verify(early.every((entry, index) => entry.name === `CAIRN ${String(index + 1).padStart(2, '0')}`
-          && entry.nameMessage === undefined && entry.domText === entry.name && entry.domLang === 'en'),
+          && entry.nameMessage === undefined && entry.domText === entry.name && entry.domLang === 'en'
+          && entry.domTokens.length === 0),
         `${locale} early gate fallback changed or acquired a descriptor.`, { early });
         verify(final.name === 'TERMINUS APPROACH'
           && JSON.stringify(final.nameMessage) === JSON.stringify({ type: 'gate-name.terminus-approach' })
-          && final.domText === expectedFinal && final.domLang === null,
+          && final.domText === expectedFinal && final.domLang === null
+          && JSON.stringify(final.domTokens) === JSON.stringify(locale === 'ko' ? ['TERMINUS'] : []),
         `${locale} final gate descriptor or localized DOM differs.`, { final, expectedFinal });
         verify(stable.same === true, `${locale} final gate descriptor identity changed across frames.`, stable);
         verify(complete.name === 'VESPER TERMINUS' && complete.nameMessage === undefined
-          && complete.domText === 'VESPER TERMINUS' && complete.domLang === 'en',
+          && complete.domText === 'VESPER TERMINUS' && complete.domLang === 'en'
+          && complete.domTokens.length === 0,
         `${locale} completion did not clear the gate descriptor into the legacy destination fallback.`, complete);
         evidence[locale] = { early, final, stable, complete };
       } finally {
@@ -1976,12 +1989,19 @@ async function runLocalization({ report, session, options }) {
         const atBoundary = await radioSnapshot(scenario.page);
         await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
         const run = await collectRadioFlow(scenario.page, options);
-        const expected = RADIO_COPY[locale].map(([speaker, text]) => ({ speaker, text }));
+        const expected = RADIO_COPY[locale].map(([speaker, text], index) => ({
+          speaker,
+          text,
+          tokens: locale === 'ko' ? RADIO_EN_TOKENS[index] : [],
+        }));
         verify(JSON.stringify(run.lines) === JSON.stringify(expected),
           `${locale} radio event sequence differs from the independent literal fixture.`, { run, expected });
         verify(first.speaker === expected[0].speaker && first.text === expected[0].text
-          && first.speakerLang === 'en', `${locale} first radio event differs.`, { first, expected });
-        verify(beforeBoundary.on === '1' && atBoundary.on === '0',
+          && JSON.stringify(first.textTokens) === JSON.stringify(expected[0].tokens)
+          && first.speakerLang === 'en' && first.ariaHidden === null,
+        `${locale} first radio event differs.`, { first, expected });
+        verify(beforeBoundary.on === '1' && beforeBoundary.ariaHidden === null
+          && atBoundary.on === '0' && atBoundary.ariaHidden === 'true',
           `${locale} radio dwell does not use the 55-character legacy-English boundary.`, {
             beforeBoundary,
             atBoundary,
@@ -2005,8 +2025,8 @@ async function runLocalization({ report, session, options }) {
     id: 'I18N.hud-static-copy',
     name: 'Static HUD labels, ARIA, and Latin-only nodes use the active locale safely',
     assertion:
-      'Both locales render exact static labels and boost copy, preserve raw numeric telemetry, '
-      + 'mark Latin-only nodes lang=en, and switch the boost caption language with its content.',
+      'Both locales render exact static labels, meters, boost copy, and Latin-only nodes; flight '
+      + 'regions are hidden from accessibility while inactive without hiding the radio-capable HUD root.',
   }, async () => {
     const evidence = {};
     for (const locale of ['ko', 'en']) {
@@ -2015,6 +2035,7 @@ async function runLocalization({ report, session, options }) {
       });
       try {
         await ready(scenario.page, options.timeoutMs);
+        const hidden = await hudStaticSnapshot(scenario.page);
         await callHarness(scenario.page, 'setDriven', [true]);
         await callHarness(scenario.page, 'startRun', [{ skipIntro: true }]);
         await callHarness(scenario.page, 'step', [1, 1 / 60], options.timeoutMs);
@@ -2028,8 +2049,8 @@ async function runLocalization({ report, session, options }) {
         }
         await callHarness(scenario.page, 'setInput', [null]);
         verify(locked !== null, `${locale} production boost reserve did not enter its locked state.`);
-        assertHudStatic(locale, available, locked);
-        evidence[locale] = { available, locked };
+        assertHudStatic(locale, hidden, available, locked);
+        evidence[locale] = { hidden, available, locked };
       } finally {
         await scenario.close();
       }
@@ -2059,6 +2080,8 @@ async function runLocalization({ report, session, options }) {
         calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
         calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
         logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
+        hostileLogChildren: Array.from(document.querySelectorAll('.lv-log-line'))
+          .find((node) => node.textContent?.includes(payload))?.children.length ?? -1,
         forbidden: Array.from(document.querySelectorAll('.lv-hud script, .lv-hud img, .lv-hud iframe, .lv-root script, .lv-root img, .lv-root iframe'),
           (node) => node.outerHTML),
         injected: window.__LV_INJECTED,
@@ -2075,7 +2098,8 @@ async function runLocalization({ report, session, options }) {
       verify(telemetry.log.some(({ text, message }) => text === `mouse capture refused · ${HOSTILE_REASON}`
         && JSON.stringify(message) === JSON.stringify({ type: 'log.pointer-lock-refused', reason: HOSTILE_REASON })),
       'Hostile reason did not retain the independent English legacy log and exact descriptor.', evidence);
-      verify(dom.positiveControl && dom.forbidden.length === 0 && dom.injected === undefined,
+      verify(dom.positiveControl && dom.forbidden.length === 0 && dom.injected === undefined
+        && dom.hostileLogChildren === 0,
         'Hostile text became active markup inside the HUD/root.', evidence);
       verify(payloadRequests.length === 0, 'Hostile text triggered an x resource request.', evidence);
       verify(errors.length === 0, 'Hostile text added a runtime/harness error.', evidence);
@@ -2545,30 +2569,45 @@ async function rejectHeldFonts(page, message) {
 
 async function hudEventSnapshot(page) {
   const telemetry = await callHarness(page, 'telemetry');
-  const dom = await page.evaluate(() => ({
-    calloutTitle: document.querySelector('.lv-callout-t')?.textContent ?? '',
-    calloutSub: document.querySelector('.lv-callout-s')?.textContent ?? '',
-    calloutOn: document.querySelector('.lv-callout')?.getAttribute('data-on') ?? null,
-    logs: Array.from(document.querySelectorAll('.lv-log-line'), (node) => node.textContent ?? ''),
-    calloutKeys: window.__LV?.telemetry().callout
-      ? Object.keys(window.__LV.telemetry().callout)
-      : [],
-    logKeys: window.__LV?.telemetry().log.map((line) => Object.keys(line)) ?? [],
-    splitFeed: Array.from(document.querySelectorAll('.lv-splitfeed-row'), (row) => {
-      const field = (selector) => {
-        const node = row.querySelector(selector);
-        return {
-          text: node?.textContent ?? '',
-          lang: node?.getAttribute('lang') ?? null,
+  const dom = await page.evaluate(() => {
+    const englishTokens = (node) => Array.from(node?.querySelectorAll(':scope > span[lang="en"]') ?? [],
+      (token) => token.textContent ?? '');
+    const callout = document.querySelector('.lv-callout');
+    const hud = document.querySelector('.lv-hud');
+    const title = document.querySelector('.lv-callout-t');
+    const sub = document.querySelector('.lv-callout-s');
+    const logNodes = Array.from(document.querySelectorAll('.lv-log-line'));
+    return {
+      calloutTitle: title?.textContent ?? '',
+      calloutSub: sub?.textContent ?? '',
+      calloutTitleTokens: englishTokens(title),
+      calloutSubTokens: englishTokens(sub),
+      calloutOn: callout?.getAttribute('data-on') ?? null,
+      calloutAriaHidden: callout?.getAttribute('aria-hidden') ?? null,
+      hudActive: hud?.getAttribute('data-active') ?? null,
+      countdownActive: hud?.getAttribute('data-countdown') ?? null,
+      logs: logNodes.map((node) => node.textContent ?? ''),
+      logTokens: logNodes.map((node) => englishTokens(node)),
+      calloutKeys: window.__LV?.telemetry().callout
+        ? Object.keys(window.__LV.telemetry().callout)
+        : [],
+      logKeys: window.__LV?.telemetry().log.map((line) => Object.keys(line)) ?? [],
+      splitFeed: Array.from(document.querySelectorAll('.lv-splitfeed-row'), (row) => {
+        const field = (selector) => {
+          const node = row.querySelector(selector);
+          return {
+            text: node?.textContent ?? '',
+            lang: node?.getAttribute('lang') ?? null,
+          };
         };
-      };
-      return {
-        index: field('.lv-splitfeed-i'),
-        time: field('.lv-splitfeed-t'),
-        duration: field('.lv-splitfeed-d'),
-      };
-    }),
-  }));
+        return {
+          index: field('.lv-splitfeed-i'),
+          time: field('.lv-splitfeed-t'),
+          duration: field('.lv-splitfeed-d'),
+        };
+      }),
+    };
+  });
   return { telemetry, dom };
 }
 
@@ -2611,9 +2650,18 @@ function assertCalloutEvent(locale, snapshot, expected) {
   verify(JSON.stringify(callout.titleMessage) === JSON.stringify(expected.titleMessage)
     && JSON.stringify(callout.subMessage) === JSON.stringify(expected.subMessage),
   `${locale} event attached the wrong descriptor.`, evidence);
+  const expectedAriaHidden = snapshot.dom.hudActive === '1'
+    && snapshot.dom.countdownActive !== '1' && snapshot.dom.calloutOn === '1'
+    ? null
+    : 'true';
   verify(snapshot.dom.calloutTitle === expected.dom[0]
-    && snapshot.dom.calloutSub === expected.dom[1] && snapshot.dom.calloutOn === '1',
+    && snapshot.dom.calloutSub === expected.dom[1] && snapshot.dom.calloutOn === '1'
+    && snapshot.dom.calloutAriaHidden === expectedAriaHidden,
   `${locale} event rendered the wrong localized callout DOM.`, evidence);
+  const expectedTokens = expected.domTokens ?? [[], []];
+  verify(JSON.stringify([snapshot.dom.calloutTitleTokens, snapshot.dom.calloutSubTokens])
+    === JSON.stringify(expectedTokens),
+  `${locale} callout embedded-English token structure differs.`, evidence);
   verify(JSON.stringify(snapshot.dom.calloutKeys)
     === JSON.stringify(['id', 'title', 'titleMessage', 'sub', 'subMessage', 'tone', 'ttl', 'ttlMax']),
   `${locale} callout does not use the stable explicit optional-field shape.`, evidence);
@@ -2626,6 +2674,7 @@ function assertPointerEvent(locale, snapshot, reason) {
     titleMessage: { type: 'callout-title.pointer-lock-unavailable' },
     subMessage: { type: 'callout-sub.keyboard-flight-available' },
     dom: EVENT_COPY[locale].pointer,
+    domTokens: locale === 'ko' ? [[], ['W A S D']] : [[], []],
   });
   const line = snapshot.telemetry.log.find(({ message }) => message?.type === 'log.pointer-lock-refused');
   const index = snapshot.telemetry.log.indexOf(line);
@@ -2635,7 +2684,8 @@ function assertPointerEvent(locale, snapshot, reason) {
     : expectedLegacy;
   verify(line?.text === expectedLegacy
     && JSON.stringify(line?.message) === JSON.stringify({ type: 'log.pointer-lock-refused', reason })
-    && snapshot.dom.logs[index] === expectedDom,
+    && snapshot.dom.logs[index] === expectedDom
+    && snapshot.dom.logTokens[index]?.length === 0,
   `${locale} pointer-refusal log descriptor, legacy field, or DOM differs.`, { snapshot, reason });
   verify(JSON.stringify(snapshot.dom.logKeys[index])
     === JSON.stringify(['id', 'text', 'message', 'tone', 'age']),
@@ -2731,6 +2781,7 @@ async function collectGateEventFlow(page, options) {
         callouts.push({
           callout,
           dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub],
+          domTokens: [snapshot.dom.calloutTitleTokens, snapshot.dom.calloutSubTokens],
           courseTotal: snapshot.telemetry.gate.total,
           observedNextIndex: snapshot.telemetry.gate.index,
           pass: historyAtCallout.at(-1),
@@ -2743,7 +2794,11 @@ async function collectGateEventFlow(page, options) {
         if (!line.message || seenLogs.has(line.id)) continue;
         if (line.message.type === 'log.gate-cleared' || line.message.type === 'log.gate-missed') {
           seenLogs.add(line.id);
-          logs.push({ line, dom: snapshot.dom.logs[index] });
+          logs.push({
+            line,
+            dom: snapshot.dom.logs[index],
+            tokens: snapshot.dom.logTokens[index],
+          });
         }
       }
     }
@@ -2772,6 +2827,7 @@ async function collectGateEventFlow(page, options) {
         deadCentre = {
           callout: snapshot.telemetry.callout,
           dom: [snapshot.dom.calloutTitle, snapshot.dom.calloutSub],
+          domTokens: [snapshot.dom.calloutTitleTokens, snapshot.dom.calloutSubTokens],
           courseTotal: snapshot.telemetry.gate.total,
           observedNextIndex: snapshot.telemetry.gate.index,
           pass: history.at(-1),
@@ -2824,6 +2880,7 @@ function assertGateEventFlow(locale, flow) {
   for (const {
     callout,
     dom,
+    domTokens,
     courseTotal,
     observedNextIndex,
     pass,
@@ -2867,6 +2924,16 @@ function assertGateEventFlow(locale, flow) {
       `${locale} gate pass changed an independent legacy English fixture.`, { callout, dom });
     verify(dom[0] === EVENT_COPY[locale].accuracies[accuracy] && dom[1] === expectedLocalizedSub,
       `${locale} gate accuracy DOM does not match its exact localized fixture.`, { callout, dom });
+    const expectedSubTokens = locale === 'ko'
+      ? [expectedRemaining > 0 ? 'CAIRN' : 'TERMINUS']
+      : [];
+    verify(JSON.stringify(domTokens) === JSON.stringify([[], expectedSubTokens]),
+      `${locale} gate callout embedded-English token structure differs.`, {
+        callout,
+        dom,
+        domTokens,
+        expectedSubTokens,
+      });
     if (expectedRemaining === 0 || expectedRemaining === 1 || expectedRemaining === 2) {
       verify(dom[1] === EVENT_COPY[locale].progress[expectedRemaining],
         `${locale} remaining ${expectedRemaining} DOM does not match its exact localized fixture.`, {
@@ -2908,7 +2975,7 @@ function assertGateEventFlow(locale, flow) {
   verify(clearLogs.length === 9 && flow.history.length === 9 && flow.finalSplits.length === 9,
     `${locale} did not retain nine independently correlatable gate-clear events.`, evidence);
   for (let index = 0; index < clearLogs.length; index++) {
-    const { line, dom } = clearLogs[index];
+    const { line, dom, tokens } = clearLogs[index];
     const pass = flow.history[index];
     const expectedGate = pass.index + 1;
     const expectedSeconds = pass.time;
@@ -2931,6 +2998,12 @@ function assertGateEventFlow(locale, flow) {
     verify(dom === (locale === 'ko'
       ? `CAIRN ${padded} · ${expectedSeconds.toFixed(2)}초`
       : line.text), `${locale} gate-clear log DOM differs.`, { line, dom, pass });
+    verify(JSON.stringify(tokens ?? []) === JSON.stringify(locale === 'ko' ? ['CAIRN'] : []),
+    `${locale} gate-clear log embedded-English token structure differs.`, {
+      line,
+      dom,
+      tokens,
+    });
   }
   assertCalloutEvent(locale, flow.missed, {
     legacyTitle: 'MISSED',
@@ -2953,6 +3026,9 @@ function assertGateEventFlow(locale, flow) {
     && flow.missed.dom.logs[missIndex] === (locale === 'ko'
       ? `CAIRN ${padded} 놓침`
       : missLine.text), `${locale} gate-miss log descriptor or exact formatting differs.`, evidence);
+  verify(JSON.stringify(flow.missed.dom.logTokens[missIndex] ?? [])
+    === JSON.stringify(locale === 'ko' ? ['CAIRN'] : []),
+  `${locale} gate-miss log embedded-English token structure differs.`, evidence);
   verify(splitRowsVerified.length > 0,
     `${locale} no real gate pass exposed an independently checked split-feed row.`, evidence);
   return { splitRowsVerified };
@@ -2968,17 +3044,26 @@ async function gateNameSnapshot(page) {
       nameMessage: gate?.nameMessage,
       domText: node?.textContent ?? '',
       domLang: node?.getAttribute('lang') ?? null,
+      domTokens: Array.from(node?.querySelectorAll(':scope > span[lang="en"]') ?? [],
+        (token) => token.textContent ?? ''),
     };
   });
 }
 
 async function radioSnapshot(page) {
-  return page.evaluate(() => ({
-    on: document.querySelector('.lv-radio')?.getAttribute('data-on') ?? null,
-    speaker: document.querySelector('.lv-radio-who')?.textContent ?? '',
-    speakerLang: document.querySelector('.lv-radio-who')?.getAttribute('lang') ?? null,
-    text: document.querySelector('.lv-radio-text')?.textContent ?? '',
-  }));
+  return page.evaluate(() => {
+    const radio = document.querySelector('.lv-radio');
+    const text = document.querySelector('.lv-radio-text');
+    return {
+      on: radio?.getAttribute('data-on') ?? null,
+      ariaHidden: radio?.getAttribute('aria-hidden') ?? null,
+      speaker: document.querySelector('.lv-radio-who')?.textContent ?? '',
+      speakerLang: document.querySelector('.lv-radio-who')?.getAttribute('lang') ?? null,
+      text: text?.textContent ?? '',
+      textTokens: Array.from(text?.querySelectorAll(':scope > span[lang="en"]') ?? [],
+        (token) => token.textContent ?? ''),
+    };
+  });
 }
 
 async function collectRadioFlow(page, options) {
@@ -2991,7 +3076,7 @@ async function collectRadioFlow(page, options) {
     const key = `${radio.speaker}\n${radio.text}`;
     if (radio.on === '1' && radio.text && !seen.has(key)) {
       seen.add(key);
-      lines.push({ speaker: radio.speaker, text: radio.text });
+      lines.push({ speaker: radio.speaker, text: radio.text, tokens: radio.textTokens });
     }
     const event = await hudEventSnapshot(page);
     if (firstAccuracy === null && event.telemetry.callout?.titleMessage?.type === 'callout-title.gate-cleared') {
@@ -3020,6 +3105,17 @@ async function collectRadioFlow(page, options) {
 async function hudStaticSnapshot(page) {
   return page.evaluate(() => {
     const text = (selector) => document.querySelector(selector)?.textContent ?? '';
+    const meter = (selector) => {
+      const node = document.querySelector(selector);
+      return {
+        role: node?.getAttribute('role') ?? null,
+        label: node?.getAttribute('aria-label') ?? null,
+        min: node?.getAttribute('aria-valuemin') ?? null,
+        max: node?.getAttribute('aria-valuemax') ?? null,
+        now: node?.getAttribute('aria-valuenow') ?? null,
+        text: node?.getAttribute('aria-valuetext') ?? null,
+      };
+    };
     const boost = document.querySelector('.lv-bar--boost');
     const caption = boost?.querySelector('.lv-bar-cap');
     const latinSelectors = [
@@ -3046,6 +3142,28 @@ async function hudStaticSnapshot(page) {
         rearmPercent: boost?.getAttribute('data-rearm-percent') ?? null,
         availability: boost?.getAttribute('data-availability') ?? null,
       },
+      meters: {
+        throttle: meter('.lv-thr'),
+        boost: meter('.lv-bar--boost'),
+        hull: meter('.lv-bar--hull'),
+      },
+      accessibility: {
+        rootHidden: document.querySelector('.lv-hud')?.getAttribute('aria-hidden') ?? null,
+        flightRegions: [
+          '.lv-gatetag', '.lv-top', '.lv-left', '.lv-right', '.lv-log', '.lv-rail',
+        ].map((selector) => ({
+          selector,
+          hidden: document.querySelector(selector)?.getAttribute('aria-hidden') ?? null,
+        })),
+        callout: {
+          on: document.querySelector('.lv-callout')?.getAttribute('data-on') ?? null,
+          hidden: document.querySelector('.lv-callout')?.getAttribute('aria-hidden') ?? null,
+        },
+        radio: {
+          on: document.querySelector('.lv-radio')?.getAttribute('data-on') ?? null,
+          hidden: document.querySelector('.lv-radio')?.getAttribute('aria-hidden') ?? null,
+        },
+      },
       latin: latinSelectors.map((selector) => ({
         selector,
         values: Array.from(document.querySelectorAll(selector), (node) => ({
@@ -3066,9 +3184,9 @@ async function hudStaticSnapshot(page) {
   });
 }
 
-function assertHudStatic(locale, available, locked) {
+function assertHudStatic(locale, hidden, available, locked) {
   const expected = HUD_COPY[locale];
-  const evidence = { locale, expected, available, locked };
+  const evidence = { locale, expected, hidden, available, locked };
   verify(available.inputMode === expected.inputMode
     && JSON.stringify(available.labels) === JSON.stringify(expected.labels),
   `${locale} static HUD labels differ from independent fixtures.`, evidence);
@@ -3090,6 +3208,34 @@ function assertHudStatic(locale, available, locked) {
     verify(entry.values.length > 0 && entry.values.every(({ lang }) => lang === 'en'),
       `${locale} Latin-only HUD nodes are missing lang=en.`, { entry, evidence });
   }
+
+  const expectedMeterText = (percent) => locale === 'ko' ? `${percent}%` : `${percent} percent`;
+  for (const [name, snapshot] of Object.entries(available.meters)) {
+    const percent = Number(snapshot.now);
+    const expectedLabel = name === 'throttle' ? expected.meterLabels.throttle
+      : name === 'hull' ? expected.meterLabels.hull : expected.usableAria;
+    verify(snapshot.role === 'meter' && snapshot.min === '0' && snapshot.max === '100'
+      && snapshot.label === expectedLabel && Number.isInteger(percent)
+      && percent >= 0 && percent <= 100 && snapshot.text === expectedMeterText(percent),
+    `${locale} ${name} meter semantics differ.`, { name, snapshot, evidence });
+  }
+  const lockedBoostPercent = Number(locked.meters.boost.now);
+  verify(locked.meters.boost.role === 'meter'
+    && locked.meters.boost.label === expected.lockedAria
+    && Number.isInteger(lockedBoostPercent)
+    && locked.meters.boost.text === expectedMeterText(lockedBoostPercent),
+  `${locale} locked boost meter semantics differ.`, evidence);
+  verify(hidden.accessibility.rootHidden === null
+    && hidden.accessibility.flightRegions.every(({ hidden: value }) => value === 'true')
+    && hidden.accessibility.callout.hidden === 'true'
+    && hidden.accessibility.radio.hidden === 'true',
+  `${locale} inactive HUD accessibility state exposes stale flight or radio copy.`, evidence);
+  verify(available.accessibility.rootHidden === null
+    && available.accessibility.flightRegions.every(({ hidden: value }) => value === null)
+    && available.accessibility.callout.hidden === 'true'
+    && available.accessibility.radio.on === '1'
+    && available.accessibility.radio.hidden === null,
+  `${locale} active HUD accessibility state does not mirror visible regions.`, evidence);
 }
 
 async function clickAction(page, view, action) {

@@ -33,11 +33,14 @@ const root = document.getElementById('app');
 if (!root) throw new Error('#app missing');
 
 function fail(title: string, detail: string): void {
-  root!.innerHTML = '';
   const box = document.createElement('div');
   box.className = 'lv-fatal';
-  box.innerHTML = `<h1>${title}</h1><p>${detail}</p>`;
-  root!.appendChild(box);
+  const heading = document.createElement('h1');
+  heading.textContent = title;
+  const message = document.createElement('p');
+  message.textContent = detail;
+  box.append(heading, message);
+  root!.replaceChildren(box);
 }
 
 function supportsWebGL2(): boolean {
@@ -54,26 +57,31 @@ function supportsWebGL2(): boolean {
  * loading card is written and painted *before* the Game constructor runs.
  */
 function showLoader(translator: Translator): { setProgress: (v: number, label: string) => void; done: () => void } {
-  const el = document.createElement('div');
-  el.className = 'lv-loader';
-  el.innerHTML = `
-    <div class="lv-loader__inner">
-      <div class="lv-loader__title">${translator.messages.meta.gameTitle}</div>
-      <div class="lv-loader__bar"><i></i></div>
-      <div class="lv-loader__label">${translator.messages.loader.initialising}</div>
-    </div>
-  `;
-  root!.appendChild(el);
-  const bar = el.querySelector('i') as HTMLElement;
-  const label = el.querySelector('.lv-loader__label') as HTMLElement;
+  const loader = document.createElement('div');
+  loader.className = 'lv-loader';
+  const inner = document.createElement('div');
+  inner.className = 'lv-loader__inner';
+  const title = document.createElement('div');
+  title.className = 'lv-loader__title';
+  title.textContent = translator.messages.meta.gameTitle;
+  const barTrack = document.createElement('div');
+  barTrack.className = 'lv-loader__bar';
+  const bar = document.createElement('i');
+  barTrack.appendChild(bar);
+  const label = document.createElement('div');
+  label.className = 'lv-loader__label';
+  label.textContent = translator.messages.loader.initialising;
+  inner.append(title, barTrack, label);
+  loader.appendChild(inner);
+  root!.appendChild(loader);
   return {
     setProgress(v: number, text: string) {
       bar.style.transform = `scaleX(${clamp01(v)})`;
       label.textContent = text;
     },
     done() {
-      el.classList.add('is-done');
-      window.setTimeout(() => el.remove(), 700);
+      loader.classList.add('is-done');
+      window.setTimeout(() => loader.remove(), 700);
     },
   };
 }

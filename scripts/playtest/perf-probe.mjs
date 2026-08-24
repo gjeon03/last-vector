@@ -79,6 +79,10 @@ async function runPerfProbe({ report, session, options }) {
   // The measured contract starts at the cockpit transition, not at an unrelated settings change.
   const coldInstrumentationOutcome = await capture(() => installColdInstrumentation(page));
 
+  // This must be the first cockpit render in the probe. The cadence arm also enters cockpit, so
+  // collecting its window first silently turns the cold assertion into a warm-transition check.
+  const coldWindowOutcome = await capture(() => collectColdWindow(page, options.timeoutMs));
+
   const mfdUploadOutcome = await capture(() => collectMfdUploadCadence(page, options.timeoutMs));
 
   await report.check({
@@ -118,10 +122,18 @@ async function runPerfProbe({ report, session, options }) {
       'A shader compiled or linked during the fixed MFD upload window.', evidence);
     verify(evidence.instrumentation.restored === true,
       'A patched WebGL descriptor was not restored before the live profile.', evidence);
+    verify(JSON.stringify(evidence.settings.before) === JSON.stringify(evidence.settings.after)
+      && evidence.settings.exact === true,
+    'The cadence window did not restore the complete pre-window settings snapshot.', evidence);
+    verify(evidence.cleanup.autopilotDisabled === true
+      && evidence.cleanup.fixedTimestepReleased === true
+      && evidence.cleanup.drivenReleased === true,
+    'The cadence window did not release its autopilot/driven controls.', evidence);
     return evidence;
   });
 
-  const profileOutcome = await capture(async () => collectProfile(page, options));
+  const profileOutcome = await capture(async () =>
+    collectProfile(page, options, unwrap(coldWindowOutcome)));
 
   await report.check({
     id: 'PERF.cold-cockpit',
@@ -239,12 +251,12 @@ async function runPerfProbe({ report, session, options }) {
   });
 }
 
-async function collectProfile(page, options) {
+async function collectProfile(page, options, coldWindow) {
   verify(page, 'Browser page is unavailable.');
   await callHarness(page, 'ready', [], options.timeoutMs);
 
   try {
-    const coldWindow = await collectColdWindow(page, options.timeoutMs);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
     const cameraMode = await callHarness(page, 'cameraMode');
     const profileTimeoutMs = Math.max(options.timeoutMs, (options.profileSeconds + 5) * 1_000);
     const sample = await callHarness(page, 'profile', [options.profileSeconds], profileTimeoutMs);
@@ -274,8 +286,8 @@ async function collectProfile(page, options) {
 
 /**
  * Count source-backed WebGL texture calls during an exact driven window. This is intentionally
- * separate from the live-rAF profile: wrapping is fully restored before the existing cold/live
- * measurements begin, and no screenshot or canvas readback occurs inside this window.
+ * separate from both rAF windows: it runs only after the cold transition, restores its wrappers
+ * and full settings snapshot, and performs no screenshot or canvas readback inside the window.
  */
 async function collectMfdUploadCadence(page, timeoutMs) {
   verify(page, 'Browser page is unavailable.');
@@ -283,43 +295,26 @@ async function collectMfdUploadCadence(page, timeoutMs) {
     const api = window.__LV;
     if (!api) throw new Error('Harness unavailable for MFD upload cadence.');
 
-    api.setDriven(true);
-    api.setSettings({
-      cameraMode: 'cockpit',
-      quality: 'high',
-      renderScale: 1,
-      showFps: false,
-      cameraShake: 0,
-      motionBlur: false,
-      filmGrain: false,
-      chromaticAberration: false,
-    });
-    api.startRun({ skipIntro: true });
-    await api.step(1, 1 / 60);
-    let warmTimer = null;
-    try {
-      await Promise.race([
-        api.present(),
-        new Promise((_, reject) => {
-          warmTimer = window.setTimeout(
-            () => reject(new Error(`Warm MFD presentation timed out after ${callTimeoutMs} ms.`)),
-            callTimeoutMs,
-          );
-        }),
-      ]);
-    } finally {
-      if (warmTimer !== null) window.clearTimeout(warmTimer);
-    }
-
-    const before = api.cockpitDebug();
-    const cameraMode = api.cameraMode();
+    const settingsBefore = structuredClone(api.settings());
     const calls = [];
     const sourceIds = new WeakMap();
     const sources = new Map();
     const restored = [];
+    const cleanupErrors = [];
     let nextSourceId = 1;
     let compileShaderCalls = 0;
     let linkProgramCalls = 0;
+    let warmTimer = null;
+    let before;
+    let after;
+    let cameraMode = null;
+    let operationError = null;
+    let restorationComplete = false;
+    const cleanup = {
+      autopilotDisabled: false,
+      fixedTimestepReleased: false,
+      drivenReleased: false,
+    };
 
     const sourceIdentity = (source) => {
       let id = sourceIds.get(source);
@@ -374,39 +369,96 @@ async function collectMfdUploadCadence(page, timeoutMs) {
       restored.push({ prototype, method, descriptor, constructorName });
     };
 
-    for (const constructorName of ['WebGLRenderingContext', 'WebGL2RenderingContext']) {
-      for (const method of ['texImage2D', 'texSubImage2D', 'compileShader', 'linkProgram']) {
-        patch(constructorName, method);
-      }
-    }
-
-    let after;
-    let restorationComplete = false;
     try {
+      api.setAutopilot(false);
+      api.setDriven(true);
+      api.setSettings({
+        cameraMode: 'cockpit',
+        quality: 'high',
+        renderScale: 1,
+        showFps: false,
+        cameraShake: 0,
+        motionBlur: false,
+        filmGrain: false,
+        chromaticAberration: false,
+      });
+      api.startRun({ skipIntro: true });
+      await api.step(1, 1 / 60);
+      await Promise.race([
+        api.present(),
+        new Promise((_, reject) => {
+          warmTimer = window.setTimeout(
+            () => reject(new Error(`Warm MFD presentation timed out after ${callTimeoutMs} ms.`)),
+            callTimeoutMs,
+          );
+        }),
+      ]);
+      before = api.cockpitDebug();
+      cameraMode = api.cameraMode();
+
+      for (const constructorName of ['WebGLRenderingContext', 'WebGL2RenderingContext']) {
+        for (const method of ['texImage2D', 'texSubImage2D', 'compileShader', 'linkProgram']) {
+          patch(constructorName, method);
+        }
+      }
       await api.step(60, 1 / 60);
       after = api.cockpitDebug();
+    } catch (error) {
+      operationError = error;
     } finally {
+      if (warmTimer !== null) window.clearTimeout(warmTimer);
       for (let index = restored.length - 1; index >= 0; index -= 1) {
         const entry = restored[index];
-        Object.defineProperty(entry.prototype, entry.method, entry.descriptor);
+        try {
+          Object.defineProperty(entry.prototype, entry.method, entry.descriptor);
+        } catch (error) {
+          cleanupErrors.push(`restore ${entry.constructorName}.${entry.method}: ${String(error)}`);
+        }
       }
-      restorationComplete = restored.every((entry) =>
+      restorationComplete = restored.length > 0 && restored.every((entry) =>
         Object.getOwnPropertyDescriptor(entry.prototype, entry.method)?.value === entry.descriptor.value);
-      api.setSettings({ cameraMode: 'chase' });
-      await api.step(1, 1 / 60);
-      await api.present();
-      api.setDriven(false);
-      await new Promise((resolve) => {
-        let frames = 30;
-        const settle = () => {
-          frames -= 1;
-          if (frames <= 0) resolve();
-          else requestAnimationFrame(settle);
-        };
-        requestAnimationFrame(settle);
-      });
+      try {
+        api.setSettings(settingsBefore);
+        // SettingsStore treats any renderScale patch as user intent. Restore that bookkeeping
+        // field separately so a future untouched snapshot is still byte-exact.
+        api.setSettings({ renderScaleTouched: settingsBefore.renderScaleTouched });
+      } catch (error) {
+        cleanupErrors.push(`restore settings: ${String(error)}`);
+      }
+      try {
+        api.setAutopilot(false);
+        cleanup.autopilotDisabled = true;
+      } catch (error) {
+        cleanupErrors.push(`disable autopilot: ${String(error)}`);
+      }
+      try {
+        api.setFixedTimestep(null);
+        cleanup.fixedTimestepReleased = true;
+      } catch (error) {
+        cleanupErrors.push(`release fixed timestep: ${String(error)}`);
+      }
+      try {
+        api.setDriven(false);
+        cleanup.drivenReleased = true;
+      } catch (error) {
+        cleanupErrors.push(`release driven mode: ${String(error)}`);
+      }
     }
 
+    const settingsAfter = structuredClone(api.settings());
+    if (operationError !== null) {
+      if (operationError instanceof Error) {
+        operationError.message += cleanupErrors.length > 0
+          ? ` Cleanup failures: ${cleanupErrors.join('; ')}`
+          : '';
+        throw operationError;
+      }
+      throw new Error(`${String(operationError)}${cleanupErrors.length > 0
+        ? ` Cleanup failures: ${cleanupErrors.join('; ')}` : ''}`);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new Error(`MFD cadence cleanup failed: ${cleanupErrors.join('; ')}`);
+    }
     if (!after) throw new Error('MFD upload cadence did not produce a final cockpit snapshot.');
     const texImage2D = calls.filter(({ kind }) => kind === 'texImage2D').length;
     const texSubImage2D = calls.filter(({ kind }) => kind === 'texSubImage2D').length;
@@ -429,6 +481,12 @@ async function collectMfdUploadCadence(page, timeoutMs) {
         patched: restored.map(({ constructorName, method }) => `${constructorName}.${method}`),
         restored: restorationComplete,
       },
+      settings: {
+        before: settingsBefore,
+        after: settingsAfter,
+        exact: JSON.stringify(settingsAfter) === JSON.stringify(settingsBefore),
+      },
+      cleanup,
     };
   }, { callTimeoutMs: timeoutMs });
 }

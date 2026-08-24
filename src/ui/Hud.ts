@@ -110,6 +110,53 @@ export function retrigger(node: HTMLElement, cls: string): void {
   node.classList.add(cls);
 }
 
+const HUD_EN_TOKENS = [
+  'VESPER TERMINUS',
+  'W A S D',
+  'TERMINUS',
+  'Kestrel',
+  'CAIRN',
+] as const;
+
+/**
+ * Write mixed Korean HUD copy as inert DOM, marking only preserved English tokens. This is used
+ * exclusively behind event/content guards: splitting a string creates nodes, so it must never
+ * enter the 60 Hz steady-state path.
+ */
+function writeEnglishTokens(node: HTMLElement, text: string): void {
+  node.removeAttribute('lang');
+  let cursor = 0;
+  let matched = false;
+  const fragment = document.createDocumentFragment();
+
+  while (cursor < text.length) {
+    let nextIndex = text.length;
+    let nextToken = '';
+    for (const token of HUD_EN_TOKENS) {
+      const index = text.indexOf(token, cursor);
+      if (index >= 0 && index < nextIndex) {
+        nextIndex = index;
+        nextToken = token;
+      }
+    }
+    if (!nextToken) break;
+    matched = true;
+    if (nextIndex > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, nextIndex)));
+    const tokenNode = document.createElement('span');
+    tokenNode.lang = 'en';
+    tokenNode.textContent = nextToken;
+    fragment.appendChild(tokenNode);
+    cursor = nextIndex + nextToken.length;
+  }
+
+  if (!matched) {
+    node.textContent = text;
+    return;
+  }
+  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  node.replaceChildren(fragment);
+}
+
 /* ------------------------------------------------------------ canvas palette */
 
 type RGB = readonly [number, number, number];
@@ -265,6 +312,7 @@ export class Hud {
   private readonly nSpeed: HTMLElement;
   private shownSpeed = -1;
   private readonly nGload: HTMLElement;
+  private readonly nThrottleRow: HTMLElement;
   private readonly nThrottleFill: HTMLElement;
   private readonly nThrottleGhost: HTMLElement;
   private readonly nThrottlePct: HTMLElement;
@@ -297,6 +345,7 @@ export class Hud {
   private readonly nRadio: HTMLElement;
   private readonly nRadioWho: HTMLElement;
   private readonly nRadioText: HTMLElement;
+  private readonly flightReadableRegions: HTMLElement[] = [];
 
   /* eased values */
   private readonly eThrottle = new Eased(0, 14);
@@ -322,11 +371,13 @@ export class Hud {
   /* change guards — avoid touching the DOM when nothing moved */
   private pThrottle = -1;
   private pThrottleGhost = -1;
-  private pThrottlePct = -1;
+  private pThrottlePct = 0;
   private pBoost = -1;
   private pBoostGhost = -1;
+  private pBoostPct = 100;
   private pBoostUnavailable = false;
   private pHull = -1;
+  private pHullPct = 100;
   private pHullState = '';
   private pGload = -1;
   private pSector = '';
@@ -356,6 +407,8 @@ export class Hud {
   private pGateCur = -1;
   private pDestination = '';
   private pAlpha = -1;
+  private pCalloutAriaHidden: boolean | undefined = undefined;
+  private pRadioAriaHidden: boolean | undefined = undefined;
   private cleared = false;
 
   /* rolling feeds */
@@ -369,6 +422,9 @@ export class Hud {
   private radioTtl = 0;
   private clock = 0;
   private active = false;
+  private countdownActive = false;
+  private calloutOn = false;
+  private radioOn = false;
   private showFps = false;
   private readonly reduced: boolean;
   private readonly mixBuf = [0, 0, 0];
@@ -454,7 +510,7 @@ export class Hud {
     /* ---- LEFT cluster: throttle / speed / bars ---- */
     const left = el('div', 'lv-left');
 
-    const thr = el('div', 'lv-thr');
+    this.nThrottleRow = el('div', 'lv-thr');
     const thrTrack = el('div', 'lv-thr-track');
     this.nThrottleGhost = el('div', 'lv-thr-ghost');
     this.nThrottleFill = el('div', 'lv-thr-fill');
@@ -467,7 +523,11 @@ export class Hud {
     thrTrack.append(this.nThrottleGhost, this.nThrottleFill, thrTicks);
     this.nThrottlePct = el('div', 'lv-thr-pct', '000');
     this.nThrottlePct.lang = 'en';
-    thr.append(el('div', 'lv-thr-k', this.messages.hud.throttle), thrTrack, this.nThrottlePct);
+    this.nThrottleRow.append(
+      el('div', 'lv-thr-k', this.messages.hud.throttle),
+      thrTrack,
+      this.nThrottlePct,
+    );
 
     const speed = el('div', 'lv-speed');
     this.nSpeed = el('div', 'lv-readout lv-readout--speed', '0');
@@ -487,9 +547,12 @@ export class Hud {
     this.nBoostCap = this.nBoostRow.querySelector('.lv-bar-cap') as HTMLElement;
     this.nHullRow = this.buildBar(this.messages.hud.hull, 'hull');
     this.nHullFill = this.nHullRow.querySelector('.lv-bar-fill') as HTMLElement;
+    this.configureMeter(this.nThrottleRow, this.messages.hud.throttle, 0);
+    this.configureMeter(this.nBoostRow, null, 100);
+    this.configureMeter(this.nHullRow, this.messages.hud.hull, 100);
     bars.append(this.nBoostRow, this.nHullRow);
 
-    left.append(thr, speed, bars);
+    left.append(this.nThrottleRow, speed, bars);
     frame.appendChild(left);
 
     /* ---- RIGHT cluster: gate counter / timers ---- */
@@ -531,6 +594,8 @@ export class Hud {
     const bars3 = el('span', 'lv-radio-eq');
     bars3.append(el('i'), el('i'), el('i'), el('i'));
     this.nRadio.append(bars3, this.nRadioWho, this.nRadioText);
+    this.nRadio.setAttribute('role', 'status');
+    this.nRadio.setAttribute('aria-live', 'polite');
     this.nLog = el('ul', 'lv-log');
     this.nLog.setAttribute('aria-live', 'polite');
     feed.append(this.nRadio, this.nLog);
@@ -549,7 +614,45 @@ export class Hud {
     this.nRail.append(railKeys, railTrack);
     frame.appendChild(this.nRail);
 
+    this.flightReadableRegions.push(this.nGateLabel, top, left, right, this.nLog, this.nRail);
+    for (const region of this.flightReadableRegions) region.setAttribute('aria-hidden', 'true');
+    this.syncCalloutAccessibility();
+    this.syncRadioAccessibility();
+
     this.setShowFps(false);
+  }
+
+  private configureMeter(node: HTMLElement, label: string | null, percent: number): void {
+    node.setAttribute('role', 'meter');
+    node.setAttribute('aria-valuemin', '0');
+    node.setAttribute('aria-valuemax', '100');
+    if (label !== null) node.setAttribute('aria-label', label);
+    node.setAttribute('aria-valuenow', String(percent));
+    node.setAttribute('aria-valuetext', this.messages.hud.meterPercent(percent));
+  }
+
+  private writeDynamicText(node: HTMLElement, text: string): void {
+    if (this.translator.locale === 'ko') writeEnglishTokens(node, text);
+    else {
+      node.removeAttribute('lang');
+      node.textContent = text;
+    }
+  }
+
+  private syncCalloutAccessibility(): void {
+    const hidden = !this.active || this.countdownActive || !this.calloutOn;
+    if (hidden === this.pCalloutAriaHidden) return;
+    this.pCalloutAriaHidden = hidden;
+    if (hidden) this.nCallout.setAttribute('aria-hidden', 'true');
+    else this.nCallout.removeAttribute('aria-hidden');
+  }
+
+  private syncRadioAccessibility(): void {
+    const hidden = !this.radioOn;
+    if (hidden === this.pRadioAriaHidden) return;
+    this.pRadioAriaHidden = hidden;
+    if (hidden) this.nRadio.setAttribute('aria-hidden', 'true');
+    else this.nRadio.removeAttribute('aria-hidden');
   }
 
   private buildBar(label: string, kind: string): HTMLElement {
@@ -602,6 +705,7 @@ export class Hud {
   }
 
   setActive(active: boolean, dim = false): void {
+    const activityChanged = active !== this.active;
     this.active = active;
     this.el.dataset['active'] = active ? '1' : '0';
     this.el.dataset['dim'] = dim ? '1' : '0';
@@ -617,6 +721,13 @@ export class Hud {
      * ambient: it is either shown at full strength or not shown.
      */
     this.el.style.setProperty('--ca', active ? '1' : '0');
+    if (activityChanged) {
+      for (const region of this.flightReadableRegions) {
+        if (active) region.removeAttribute('aria-hidden');
+        else region.setAttribute('aria-hidden', 'true');
+      }
+    }
+    this.syncCalloutAccessibility();
   }
 
   setShowFps(show: boolean): void {
@@ -631,7 +742,13 @@ export class Hud {
    * The callout is held, not dropped: it reappears the moment the countdown clears.
    */
   setCountdownActive(active: boolean): void {
+    if (active === this.countdownActive) {
+      this.el.dataset['countdown'] = active ? '1' : '0';
+      return;
+    }
+    this.countdownActive = active;
     this.el.dataset['countdown'] = active ? '1' : '0';
+    this.syncCalloutAccessibility();
   }
 
   setDestination(name: string): void {
@@ -641,10 +758,12 @@ export class Hud {
 
   radio(speaker: string, text: string, durationBasisLength = text.length): void {
     this.nRadioWho.textContent = speaker;
-    this.nRadioText.textContent = text;
+    this.writeDynamicText(this.nRadioText, text);
     this.radioTtl = 3.2 + Math.min(durationBasisLength, 120) * 0.035;
     retrigger(this.nRadio, 'is-in');
     this.nRadio.dataset['on'] = '1';
+    this.radioOn = true;
+    this.syncRadioAccessibility();
   }
 
   resize(): void {
@@ -780,8 +899,7 @@ export class Hud {
       this.pGateName = t.gate.name;
       this.pGateNameType = gateNameType;
       if (t.gate.nameMessage) {
-        this.nGateName.textContent = this.translator.domain(t.gate.nameMessage);
-        this.nGateName.removeAttribute('lang');
+        this.writeDynamicText(this.nGateName, this.translator.domain(t.gate.nameMessage));
       } else {
         this.nGateName.textContent = t.gate.name;
         this.nGateName.lang = 'en';
@@ -857,6 +975,8 @@ export class Hud {
     if (pct !== this.pThrottlePct) {
       this.pThrottlePct = pct;
       this.nThrottlePct.textContent = PAD3(pct);
+      this.nThrottleRow.setAttribute('aria-valuenow', String(pct));
+      this.nThrottleRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(pct));
     }
 
     this.eBoost.target = clamp(t.energy, 0, 1);
@@ -872,6 +992,12 @@ export class Hud {
     if (bgq !== this.pBoostGhost) {
       this.pBoostGhost = bgq;
       this.nBoostGhost.style.transform = `scaleX(${(bgq / 400).toFixed(4)})`;
+    }
+    const boostPct = Math.round(bo * 100);
+    if (boostPct !== this.pBoostPct) {
+      this.pBoostPct = boostPct;
+      this.nBoostRow.setAttribute('aria-valuenow', String(boostPct));
+      this.nBoostRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(boostPct));
     }
     const unavailable = t.boostLocked === true || t.energy <= 0.035;
     if (unavailable !== this.pBoostUnavailable) {
@@ -903,6 +1029,12 @@ export class Hud {
       this.pHull = hq;
       this.nHullFill.style.transform = `scaleX(${(hq / 400).toFixed(4)})`;
     }
+    const hullPct = Math.round(hull * 100);
+    if (hullPct !== this.pHullPct) {
+      this.pHullPct = hullPct;
+      this.nHullRow.setAttribute('aria-valuenow', String(hullPct));
+      this.nHullRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(hullPct));
+    }
     const state = hull < 0.3 ? 'crit' : hull < 0.65 ? 'warn' : 'ok';
     if (state !== this.pHullState) {
       this.pHullState = state;
@@ -916,22 +1048,27 @@ export class Hud {
       if (this.pCalloutId !== -1) {
         this.pCalloutId = -1;
         this.nCallout.dataset['on'] = '0';
+        this.calloutOn = false;
+        this.syncCalloutAccessibility();
       }
       return;
     }
     if (c.id !== this.pCalloutId) {
       this.pCalloutId = c.id;
-      this.nCalloutTitle.textContent = c.titleMessage
+      const title = c.titleMessage
         ? this.translator.domain(c.titleMessage)
         : c.title;
+      this.writeDynamicText(this.nCalloutTitle, title);
       const sub = c.subMessage ? this.translator.domain(c.subMessage) : c.sub;
-      this.nCalloutSub.textContent = sub ?? '';
+      this.writeDynamicText(this.nCalloutSub, sub ?? '');
       this.nCalloutSub.dataset['on'] = sub ? '1' : '0';
       if (c.tone !== this.pCalloutTone) {
         this.pCalloutTone = c.tone;
         this.nCallout.dataset['tone'] = c.tone;
       }
       this.nCallout.dataset['on'] = '1';
+      this.calloutOn = true;
+      this.syncCalloutAccessibility();
       retrigger(this.nCallout, 'is-in');
       this.pCalloutFade = -1;
     }
@@ -979,7 +1116,13 @@ export class Hud {
         if (!node) {
           node = this.logPool.pop() ?? el('li', 'lv-log-line');
           node.className = 'lv-log-line';
-          node.textContent = line.message ? this.translator.domain(line.message) : line.text;
+          const text = line.message ? this.translator.domain(line.message) : line.text;
+          if (line.message?.type === 'log.pointer-lock-refused') {
+            node.removeAttribute('lang');
+            node.textContent = text;
+          } else {
+            this.writeDynamicText(node, text);
+          }
           node.dataset['tone'] = line.tone;
           this.logNodes.set(line.id, node);
           this.nLog.appendChild(node);
@@ -1052,7 +1195,11 @@ export class Hud {
   private updateRadio(dt: number): void {
     if (this.radioTtl <= 0) return;
     this.radioTtl -= dt;
-    if (this.radioTtl <= 0) this.nRadio.dataset['on'] = '0';
+    if (this.radioTtl <= 0) {
+      this.nRadio.dataset['on'] = '0';
+      this.radioOn = false;
+      this.syncRadioAccessibility();
+    }
   }
 
   private updateFx(t: Telemetry, dt: number): void {

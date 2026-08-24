@@ -137,6 +137,7 @@ export const ko = {
     fps: 'FPS',
     terminus: 'TERMINUS',
     boostCapacityTitle: '완전 충전 시 사용 가능한 추진 시간',
+    meterPercent: (percent: number) => `${percent}%`,
     boostUsable: (seconds: number) => `부스터 ${seconds.toFixed(1)}초 사용 가능`,
     boostRecharging: (percent: number) => `부스터 잠김 · ${percent}%까지 충전 중`,
   },

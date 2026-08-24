@@ -139,6 +139,7 @@ export interface HudMessages {
   fps: string;
   terminus: string;
   boostCapacityTitle: string;
+  meterPercent: (percent: number) => string;
   boostUsable: (seconds: number) => string;
   boostRecharging: (percent: number) => string;
 }
