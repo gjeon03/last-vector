@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Ship } from './Ship.ts';
-import { ChaseCamera } from './ChaseCamera.ts';
+import { ChaseCamera, type AppliedCameraMode } from './ChaseCamera.ts';
 import { Course } from './Course.ts';
 import { ShipModel } from '../render/ShipModel.ts';
 import {
@@ -15,6 +15,12 @@ import { Star } from '../render/Star.ts';
 import { Planet } from '../render/Planet.ts';
 import { bakeNebula } from '../render/Nebula.ts';
 import { AsteroidField, type AsteroidInstance } from '../render/Asteroids.ts';
+import {
+  METEOR_POOL_CAPACITY,
+  MeteorField,
+  type MeteorContact,
+  type MeteorFieldDebugStats,
+} from '../render/MeteorField.ts';
 import { DustField } from '../render/Dust.ts';
 import { Trail } from '../render/Trail.ts';
 import { DerelictField, ShelfSpan, Terminus } from '../render/Structures.ts';
@@ -51,6 +57,20 @@ import {
 } from '../core/Courses.ts';
 import { buildCourseUrl, type CourseResolution } from '../core/CourseSelection.ts';
 import { ProgressStore } from '../core/Progress.ts';
+import {
+  buildRunModeUrl,
+  DEFAULT_RUN_MODE_ID,
+  SURVIVAL_RUN_MODE_ID,
+  type RunModeId,
+} from '../core/GameModes.ts';
+import { SurvivalRecordStore } from '../core/SurvivalRecords.ts';
+import {
+  deriveSurvivalPattern,
+  SurvivalRun,
+  survivalDifficultyAt,
+  type SurvivalRunStats,
+  type SurvivalSpawnDirective,
+} from './SurvivalRun.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -64,8 +84,10 @@ import type {
   Phase,
   RunResult,
   Settings,
+  SurvivalRunResult,
   Telemetry,
   UiAudioBus,
+  ViewMode,
 } from '../core/contracts.ts';
 import type {
   GatePassRecord,
@@ -73,6 +95,8 @@ import type {
   HarnessLocaleState,
   HarnessPose,
   HarnessShipVisualDebugState,
+  HarnessSurvivalCameraMode,
+  HarnessSurvivalDebugState,
   HazardReport,
   PerfSample,
 } from '../core/harness.ts';
@@ -121,13 +145,15 @@ const POINTER_LOCK_TITLE_MESSAGE: CalloutTitleMessage = Object.freeze({
 const KEYBOARD_FLIGHT_MESSAGE: CalloutSubMessage = Object.freeze({
   type: 'callout-sub.keyboard-flight-available',
 });
-const CAMERA_TITLE_MESSAGES: Readonly<Record<CameraMode, CalloutTitleMessage>> = Object.freeze({
+const CAMERA_TITLE_MESSAGES: Readonly<Record<ViewMode, CalloutTitleMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-title.camera-view', mode: 'cockpit' }),
   chase: Object.freeze({ type: 'callout-title.camera-view', mode: 'chase' }),
+  'far-chase': Object.freeze({ type: 'callout-title.camera-view', mode: 'far-chase' }),
 });
-const CAMERA_SUB_MESSAGES: Readonly<Record<CameraMode, CalloutSubMessage>> = Object.freeze({
+const CAMERA_SUB_MESSAGES: Readonly<Record<ViewMode, CalloutSubMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-sub.camera-active', mode: 'cockpit' }),
   chase: Object.freeze({ type: 'callout-sub.camera-active', mode: 'chase' }),
+  'far-chase': Object.freeze({ type: 'callout-sub.camera-active', mode: 'far-chase' }),
 });
 const ENGAGE_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.engage' });
 const HULL_IMPACT_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.hull-impact' });
@@ -176,6 +202,17 @@ interface LogSpec {
 /** Shader precompilation is optional polish; a slow or unsupported driver must still boot. */
 const COCKPIT_PREWARM_TIMEOUT_MS = 1500;
 const COCKPIT_PREWARM_POLL_MS = 10;
+
+/** Survival outcomes must not depend on presentation cadence. */
+const SURVIVAL_SIMULATION_STEP = 1 / 60;
+/**
+ * The accelerated survival soak deliberately submits 0.2 s frames. Twelve fixed ticks preserve
+ * that contract while bounding a real stall or a malformed harness step to 0.2 s of catch-up.
+ */
+const SURVIVAL_MAX_CATCH_UP_STEPS = 12;
+const SURVIVAL_MAX_CATCH_UP_SECONDS =
+  SURVIVAL_SIMULATION_STEP * SURVIVAL_MAX_CATCH_UP_STEPS;
+const SURVIVAL_ACCUMULATOR_EPSILON = SURVIVAL_SIMULATION_STEP * 1e-9;
 
 interface ShaderProgramReadiness {
   isReady(): boolean;
@@ -236,6 +273,7 @@ export interface GameOptions {
   courseDefinition?: CourseDefinition;
   courseResolution?: CourseResolution;
   progressStore?: ProgressStore;
+  survivalRecordStore?: SurvivalRecordStore;
   localeStore?: LocaleStore;
   fonts?: {
     result: LocaleFontResult;
@@ -243,6 +281,7 @@ export interface GameOptions {
     cancel(): void;
   };
   seed?: number;
+  runMode?: RunModeId;
 }
 
 export class Game {
@@ -272,8 +311,10 @@ export class Game {
   // every gate; with the star behind the camera the whole sector renders flat and frontal.
   private readonly lighting: ReturnType<typeof createLightingUniforms>;
   private readonly courseDefinition: CourseDefinition;
+  private readonly runMode: RunModeId;
   private readonly courseResolution: CourseResolution;
   private readonly progressStore: ProgressStore;
+  private readonly survivalRecordStore: SurvivalRecordStore;
   private newlyUnlockedCourseId: CourseDefinition['id'] | null = null;
   private campaignNavigationError: CampaignViewModel['navigationError'] = null;
   private readonly starfield: Starfield;
@@ -281,6 +322,7 @@ export class Game {
   private readonly planet: Planet;
   private readonly nebulaTarget: THREE.WebGLCubeRenderTarget;
   private readonly asteroids: AsteroidField;
+  private readonly meteorField: MeteorField | null;
   private readonly derelicts: DerelictField;
   private readonly shelfSpan: ShelfSpan;
   private readonly dust: DustField;
@@ -303,6 +345,7 @@ export class Game {
   /** Cancels the lingering GO card without letting an old run hide a new countdown. */
   private countdownClearTimer: number | null = null;
   private result: RunResult | null = null;
+  private survivalResult: SurvivalRunResult | null = null;
   private topSpeed = 0;
   private impacts = 0;
   private lastRadio = -1;
@@ -312,6 +355,17 @@ export class Game {
   private proximity = 0;
   private cinematicTime = 0;
   private boostBlend = 0;
+  private readonly survivalRun: SurvivalRun;
+  private survivalCameraMode: AppliedCameraMode = 'chase';
+  private survivalStress = false;
+  private survivalInvulnerability = 0;
+  private survivalSimulationAccumulator = 0;
+  private survivalSimulationMsLast = 0;
+  private survivalSimulationMsMax = 0;
+  private survivalDifficulty = 0;
+  private survivalTier = -1;
+  private readonly survivalMeteorAge = new Float32Array(METEOR_POOL_CAPACITY);
+  private readonly survivalMeteorClosest = new Float32Array(METEOR_POOL_CAPACITY);
   private wasBoosting = false;
   private wasBoostLocked = false;
   private gateTickTimer = 0;
@@ -384,6 +438,37 @@ export class Game {
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+  private readonly survivalShipPrevious = new THREE.Vector3();
+  private readonly survivalRight = new THREE.Vector3();
+  private readonly survivalUp = new THREE.Vector3();
+  private readonly survivalEntry = new THREE.Vector3();
+  private readonly survivalTarget = new THREE.Vector3();
+  private readonly survivalVelocity = new THREE.Vector3();
+  private readonly survivalDebugScratch: MeteorFieldDebugStats = {
+    capacity: 0,
+    activeCount: 0,
+    freeCount: 0,
+    peakActive: 0,
+    batchCount: 0,
+    activeBatchCount: 0,
+    geometryCount: 0,
+    materialCount: 0,
+    allocatedGpuInstances: 0,
+    estimatedTriangles: 0,
+    totalSpawned: 0,
+    totalDespawned: 0,
+  };
+  private readonly survivalStatsScratch: SurvivalRunStats = {
+    patternsScheduled: 0,
+    patternsEmitted: 0,
+    patternsDropped: 0,
+    meteorsScheduled: 0,
+    meteorsSpawned: 0,
+    meteorsDodged: 0,
+    nearMisses: 0,
+    collisions: 0,
+    peakActive: 0,
+  };
   private readonly scratchEuler = new THREE.Euler();
   /** Dedicated heading scratch so cockpit gate alignment cannot alias another visual calculation. */
   private readonly cockpitForward = new THREE.Vector3();
@@ -419,6 +504,7 @@ export class Game {
 
   constructor(options: GameOptions) {
     this.root = options.root;
+    this.runMode = options.runMode ?? DEFAULT_RUN_MODE_ID;
     this.courseDefinition = options.courseDefinition ?? CAIRN_DRIFT;
     this.courseResolution = options.courseResolution ?? {
       courseId: this.courseDefinition.id,
@@ -426,6 +512,7 @@ export class Game {
       diagnostic: null,
     };
     this.progressStore = options.progressStore ?? new ProgressStore();
+    this.survivalRecordStore = options.survivalRecordStore ?? new SurvivalRecordStore();
     const sun = this.courseDefinition.world.sunDirection;
     this.lighting = createLightingUniforms(new THREE.Vector3(sun[0], sun[1], sun[2]));
     this.localeStore = options.localeStore ?? new LocaleStore();
@@ -447,6 +534,7 @@ export class Game {
 
     const seed = options.seed ?? this.courseDefinition.defaultSeed;
     this.seed = seed;
+    this.survivalRun = new SurvivalRun({ seed });
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'lv-canvas';
@@ -522,7 +610,9 @@ export class Game {
     this.mainScene.add(this.terminus.object);
 
     this.asteroids = new AsteroidField({
-      count: maxProfile.asteroidCount,
+      // Survival never renders or collides against the route field. Constructing ~1,800 hidden
+      // instances would still spend boot CPU and heap, so keep only the reusable geometry shell.
+      count: this.runMode === SURVIVAL_RUN_MODE_ID ? 0 : maxProfile.asteroidCount,
       lighting: this.lighting,
       spine: this.course.spine,
       spread: SCALE.asteroidFieldRadius * this.courseDefinition.field.spreadFraction,
@@ -533,7 +623,9 @@ export class Game {
       corridor: this.courseDefinition.field.corridor,
       minRadius: this.courseDefinition.field.minRadius,
       maxRadius: this.courseDefinition.field.maxRadius,
-      hazardCount: this.courseDefinition.field.hazardCount,
+      hazardCount: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? 0
+        : this.courseDefinition.field.hazardCount,
       // Narrow: rock packed against the channel wall reads as a corridor. Spread wide it just
       // raises the field density and the line stays visually open.
       hazardBand: this.courseDefinition.field.hazardBand,
@@ -557,11 +649,21 @@ export class Game {
     });
     this.mainScene.add(this.asteroids.object);
 
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      this.meteorField = new MeteorField({
+        lighting: this.lighting,
+        seed: seed ^ 0x4d37_30f5,
+      });
+      this.mainScene.add(this.meteorField.object);
+    } else {
+      this.meteorField = null;
+    }
+
     this.derelicts = new DerelictField({
       lighting: this.lighting,
       spine: this.course.spine,
       seed: seed ^ 0x1a77,
-      count: this.courseDefinition.world.derelictCount,
+      count: this.runMode === SURVIVAL_RUN_MODE_ID ? 0 : this.courseDefinition.world.derelictCount,
     });
     this.mainScene.add(this.derelicts.object);
 
@@ -586,6 +688,16 @@ export class Game {
       seed: seed ^ 0x5bd1,
     });
     this.mainScene.add(this.shelfSpan.object);
+
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      // Survival keeps the polished sky/ship/post stack, but not the route's 1,000+ colliders or
+      // authored structures. The fixed meteor pool is the entire reachable hazard world.
+      this.course.object.visible = false;
+      this.terminus.object.visible = false;
+      this.asteroids.object.visible = false;
+      this.derelicts.object.visible = false;
+      this.shelfSpan.object.visible = false;
+    }
 
     this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
     this.mainScene.add(this.dust.object);
@@ -647,6 +759,23 @@ export class Game {
         this.restart();
       }
       if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
+        if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+          const next: AppliedCameraMode = this.survivalCameraMode === 'chase'
+            ? 'cockpit'
+            : this.survivalCameraMode === 'cockpit'
+              ? 'far-chase'
+              : 'chase';
+          this.survivalCameraMode = next;
+          if (this.activeVantage === null && !this.cinematic) this.chase.setCameraMode(next);
+          this.pushCallout({
+            titleMessage: CAMERA_TITLE_MESSAGES[next],
+            sub: undefined,
+            subMessage: CAMERA_SUB_MESSAGES[next],
+            tone: 'neutral',
+            ttl: 1.1,
+          });
+          return;
+        }
         const next: CameraMode = this.settings.value.cameraMode === 'chase' ? 'cockpit' : 'chase';
         this.settings.set('cameraMode', next);
         // Keep the public camera contract synchronous with the key action. The pose itself is
@@ -709,7 +838,8 @@ export class Game {
     };
 
     this.buildVantages();
-    this.resetShipToStart();
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) this.resetSurvivalToStart();
+    else this.resetShipToStart();
     this.chase.snapTo(this.ship);
 
     this.settings.subscribe((s) => this.onSettingsChanged(s));
@@ -751,6 +881,8 @@ export class Game {
       quitToTitle: () => this.toTitle(),
       selectRoute: (courseId) => this.selectRoute(courseId),
       showRouteSelect: () => this.showRouteSelect(),
+      selectRunMode: (mode) => this.selectRunMode(mode),
+      getRunMode: () => this.runMode,
       requestLocale: (locale) => this.applyLocale(locale),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
       getSettings: () => this.settings.value,
@@ -809,6 +941,20 @@ export class Game {
   private showRouteSelect(): void {
     this.toTitle();
     this.overlay.syncCampaign(this.campaignViewModel());
+  }
+
+  private selectRunMode(mode: RunModeId): void {
+    // The world is built once for a mode. Switching is therefore a title-only, boot-owned
+    // navigation just like changing an authored route, never a partial runtime teardown.
+    if (this.phase !== 'title' || mode === this.runMode) return;
+    const locale = this.activeRunLocale ?? this.selectedLocale;
+    writeLocaleHandoff(locale);
+    const target = buildRunModeUrl(window.location.href, mode);
+    try {
+      window.location.assign(target);
+    } catch {
+      this.root.dataset['modeNavigation'] = 'failed';
+    }
   }
 
   private campaignViewModel(): CampaignViewModel {
@@ -928,7 +1074,9 @@ export class Game {
   // ---------------------------------------------------------------------------------
 
   private createTelemetry(): Telemetry {
+    const survivalBest = this.survivalRecordStore.getBest();
     return {
+      runMode: this.runMode,
       phase: 'boot',
       speed: 0,
       maxSpeed: FLIGHT.maxSpeed,
@@ -951,19 +1099,38 @@ export class Game {
         alignment: 0,
       },
       courseRemaining: 0,
-      courseTotal: this.course.totalLength,
+      courseTotal: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? this.survivalRun.ruleset.maxDifficultySeconds
+        : this.course.totalLength,
       elapsed: 0,
       splits: [],
-      bestTime: readBestTime(this.course.id),
-      bestSplits: readBestSplits(this.course.id),
-      courseLength: this.course.totalLength,
-      sectorName: this.courseDefinition.text.canonicalSector,
-      destinationName: this.courseDefinition.text.canonicalDestination,
+      bestTime: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? survivalBest?.scoreSeconds ?? null
+        : readBestTime(this.course.id),
+      bestSplits: this.runMode === SURVIVAL_RUN_MODE_ID ? [] : readBestSplits(this.course.id),
+      courseLength: this.runMode === SURVIVAL_RUN_MODE_ID ? undefined : this.course.totalLength,
+      sectorName: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? LEGACY_ENGLISH.messages.survival.meteorSurvival
+        : this.courseDefinition.text.canonicalSector,
+      destinationName: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? LEGACY_ENGLISH.messages.survival.arenaName
+        : this.courseDefinition.text.canonicalDestination,
       callout: null,
       log: this.logLines,
       proximity: 0,
       impactFlash: 0,
       fps: 60,
+      survival: this.runMode === SURVIVAL_RUN_MODE_ID
+        ? {
+            difficulty: 0,
+            difficultyTier: 0,
+            activeMeteors: 0,
+            activeCap: METEOR_POOL_CAPACITY,
+            meteorsDodged: 0,
+            nearMisses: 0,
+            collisions: 0,
+          }
+        : undefined,
     };
   }
 
@@ -987,6 +1154,29 @@ export class Game {
     this.gateTickTimer = 0;
     this.shipModel.resetPlumeState(this.shipVisualClock);
     this.asteroids.resetMotion();
+    this.shipRoot.position.copy(this.ship.position);
+    this.shipRoot.quaternion.copy(this.ship.quaternion);
+    for (const trail of this.trails) trail.reset();
+  }
+
+  private resetSurvivalToStart(): void {
+    this.ship.reset(this.tmpA.set(0, 0, 0), this.tmpQuat.identity(), FLIGHT.cruiseSpeed * 0.62);
+    this.boostBlend = 0;
+    this.wasBoosting = false;
+    this.wasBoostLocked = false;
+    this.gateTickTimer = 0;
+    this.survivalInvulnerability = 0;
+    this.survivalSimulationAccumulator = 0;
+    this.survivalSimulationMsLast = 0;
+    this.survivalSimulationMsMax = 0;
+    this.survivalDifficulty = 0;
+    this.survivalTier = -1;
+    this.proximity = 0;
+    this.survivalRun.reset(this.seed);
+    this.meteorField?.reset();
+    this.survivalMeteorAge.fill(0);
+    this.survivalMeteorClosest.fill(Infinity);
+    this.shipModel.resetPlumeState(this.shipVisualClock);
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     for (const trail of this.trails) trail.reset();
@@ -1017,10 +1207,12 @@ export class Game {
     this.cancelCountdownClear();
     this.paused = false;
     void this.audio.unlock();
-    this.course.reset();
+    if (this.runMode === DEFAULT_RUN_MODE_ID) this.course.reset();
     this.gateHistory.length = 0;
     this.logLines.length = 0;
-    this.resetShipToStart();
+    this.survivalStress = false;
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) this.resetSurvivalToStart();
+    else this.resetShipToStart();
     this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
@@ -1028,9 +1220,12 @@ export class Game {
     this.impacts = 0;
     this.lastRadio = -1;
     this.result = null;
+    this.survivalResult = null;
     this.telemetry.splits = [];
-    this.telemetry.bestTime = readBestTime(this.course.id);
-    this.telemetry.bestSplits = readBestSplits(this.course.id);
+    this.telemetry.bestTime = this.runMode === DEFAULT_RUN_MODE_ID
+      ? readBestTime(this.course.id)
+      : this.survivalRecordStore.getBest()?.scoreSeconds ?? null;
+    this.telemetry.bestSplits = this.runMode === DEFAULT_RUN_MODE_ID ? readBestSplits(this.course.id) : [];
     this.clearPause();
     this.autopilot = false;
     this.cinematic = false;
@@ -1124,8 +1319,11 @@ export class Game {
     this.cancelCountdownClear();
     this.countdown = null;
     this.overlay.setCountdown(null);
-    this.course.reset();
-    this.resetShipToStart();
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) this.resetSurvivalToStart();
+    else {
+      this.course.reset();
+      this.resetShipToStart();
+    }
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
     this.autopilot = true;
@@ -1171,7 +1369,12 @@ export class Game {
     if (!this.driven) this.adaptResolution(rawDt);
     if (this.frameTimes.length < 6000) this.frameTimes.push(rawDt * 1000);
 
-    if (!this.paused) this.simulate(dt);
+    if (!this.paused && this.runMode === SURVIVAL_RUN_MODE_ID) {
+      this.advanceSurvivalSimulation(dt);
+    } else if (!this.paused) {
+      // Time trial intentionally retains its historical one-variable-step-per-frame semantics.
+      this.simulate(dt);
+    }
     this.updateVisuals(dt);
     this.render();
 
@@ -1180,6 +1383,36 @@ export class Game {
       this.firstFrameResolve = null;
       resolve();
     }
+  }
+
+  /**
+   * Advances the complete survival simulation on a fixed clock while rendering remains tied to
+   * the outer frame. Capping the stored time prevents a long stall from creating an unbounded
+   * spiral of catch-up work; paused frames never call this method, so they accrue no debt.
+   */
+  private advanceSurvivalSimulation(dt: number): void {
+    const frameSeconds = Number.isFinite(dt) ? Math.max(0, dt) : 0;
+    this.survivalSimulationAccumulator = Math.min(
+      SURVIVAL_MAX_CATCH_UP_SECONDS,
+      this.survivalSimulationAccumulator + frameSeconds,
+    );
+    const steps = Math.min(
+      SURVIVAL_MAX_CATCH_UP_STEPS,
+      Math.floor(
+        (this.survivalSimulationAccumulator + SURVIVAL_ACCUMULATOR_EPSILON) /
+          SURVIVAL_SIMULATION_STEP,
+      ),
+    );
+    if (steps === 0) return;
+
+    this.survivalSimulationAccumulator = Math.max(
+      0,
+      this.survivalSimulationAccumulator - steps * SURVIVAL_SIMULATION_STEP,
+    );
+    if (this.survivalSimulationAccumulator < SURVIVAL_ACCUMULATOR_EPSILON) {
+      this.survivalSimulationAccumulator = 0;
+    }
+    for (let step = 0; step < steps; step++) this.simulate(SURVIVAL_SIMULATION_STEP);
   }
 
   /**
@@ -1290,6 +1523,7 @@ export class Game {
        alive so N can still reach the restart action, but stick/throttle/gamepad state cannot add
        control authority behind the terminal overlay. */
     const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.resolveCommand(dt);
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) this.survivalShipPrevious.copy(this.ship.position);
 
     if (this.phase === 'countdown') {
       this.countdownTimer += dt;
@@ -1306,7 +1540,9 @@ export class Game {
           this.setPhase('flying');
           this.pushCallout({
             titleMessage: ENGAGE_MESSAGE,
-            sub: this.courseDefinition.text.canonicalDestination,
+            sub: this.runMode === SURVIVAL_RUN_MODE_ID
+              ? LEGACY_ENGLISH.messages.survival.arenaName
+              : this.courseDefinition.text.canonicalDestination,
             subMessage: undefined,
             tone: 'good',
             ttl: 1.6,
@@ -1337,15 +1573,19 @@ export class Game {
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
     // Motion belongs to simulation, not visual update. The collision pass below and the render
     // later in this same frame therefore read the same positions.
-    this.asteroids.updateMotion(dt, this.ship.position);
-    this.resolveCollisions(dt);
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      this.updateSurvival(dt);
+    } else {
+      this.asteroids.updateMotion(dt, this.ship.position);
+      this.resolveCollisions(dt);
+    }
 
     if (this.phase === 'flying') {
       /* All contacts in this frame have now contributed damage. Resolve the terminal outcome once,
          before course progression, so a lethal strike and terminus crossing in the same frame
          deterministically produce a breach rather than a saved result. */
       this.checkFailure();
-      if (this.phase === 'flying') {
+      if (this.phase === 'flying' && this.runMode === DEFAULT_RUN_MODE_ID) {
         this.course.update(this.ship.position, this.ship.speed, this.elapsed);
         this.checkArrival();
       }
@@ -1411,7 +1651,7 @@ export class Game {
     // Fixing the loudness at its source rather than ducking it downstream: no menu mix at the
     // title, no new contract surface, and uiClick goes from +0.5 dB over the bed to about +6.7.
     if (this.cinematic) command.throttle = Math.min(command.throttle, Game.ATTRACT_THROTTLE);
-    const gate = this.course.nextGate;
+    const gate = this.runMode === DEFAULT_RUN_MODE_ID ? this.course.nextGate : null;
     const boostClearanceRadii = needleRoute ? 28 : 12;
     const far = gate
       ? this.ship.position.distanceTo(gate.position) > gate.radius * boostClearanceRadii
@@ -1432,6 +1672,201 @@ export class Game {
     command.strafeY = 0;
     void dt;
     return command;
+  }
+
+  private spawnSurvivalMeteor(directive: SurvivalSpawnDirective): MeteorContact | null {
+    const field = this.meteorField;
+    if (!field) return null;
+
+    this.ship.getForward(this.survivalEntry);
+    this.survivalRight.set(1, 0, 0).applyQuaternion(this.ship.quaternion);
+    this.survivalUp.set(0, 1, 0).applyQuaternion(this.ship.quaternion);
+    const cosElevation = Math.cos(directive.entryElevationRadians);
+    this.survivalEntry
+      .multiplyScalar(Math.cos(directive.entryAzimuthRadians) * cosElevation)
+      .addScaledVector(
+        this.survivalRight,
+        Math.sin(directive.entryAzimuthRadians) * cosElevation,
+      )
+      .addScaledVector(this.survivalUp, Math.sin(directive.entryElevationRadians))
+      .normalize();
+
+    // One ballistic intercept is chosen at spawn. Continuing straight reaches it; any later
+    // manoeuvre escapes it. This keeps threats readable and prevents hidden homing assistance.
+    this.survivalTarget
+      .copy(this.ship.position)
+      .addScaledVector(this.ship.velocity, directive.reactionSeconds)
+      .addScaledVector(this.survivalRight, directive.targetOffsetX * 170)
+      .addScaledVector(this.survivalUp, directive.targetOffsetY * 105);
+    this.survivalVelocity.copy(this.survivalEntry).multiplyScalar(-directive.speed);
+    this.survivalEntry
+      .multiplyScalar(directive.speed * directive.reactionSeconds)
+      .add(this.survivalTarget);
+
+    const contact = field.spawn({
+      position: this.survivalEntry,
+      velocity: this.survivalVelocity,
+      radius: directive.radius,
+      geometryVariant: directive.geometryVariant,
+      spawnId: directive.spawnId,
+      spinAxis: {
+        x: directive.spinAxis[0],
+        y: directive.spinAxis[1],
+        z: directive.spinAxis[2],
+      },
+      spinRate: directive.spinRate,
+    });
+    if (contact) {
+      this.survivalMeteorAge[contact.slot] = 0;
+      this.survivalMeteorClosest[contact.slot] = Infinity;
+    }
+    return contact;
+  }
+
+  private updateSurvival(dt: number): void {
+    const field = this.meteorField;
+    if (!field) return;
+    const started = performance.now();
+    this.survivalInvulnerability = Math.max(0, this.survivalInvulnerability - dt);
+
+    // `advanceTo` intentionally allocates authored directives only when a pattern is due. Do not
+    // call it on the other ~40-130 frames between patterns: a five-minute survival run would
+    // otherwise manufacture thousands of empty result arrays and copied stat objects for GC.
+    if (this.phase === 'flying' && this.elapsed + 1e-9 >= this.survivalRun.nextPatternAt) {
+      const advance = this.survivalRun.advanceTo(this.elapsed, field.freeCount);
+      this.survivalDifficulty = advance.difficulty.intensity;
+      if (advance.difficulty.tier !== this.survivalTier) {
+        this.survivalTier = advance.difficulty.tier;
+        if (this.survivalTier === 2) this.radioSurvival(1);
+        else if (this.survivalTier === 4) this.radioSurvival(2);
+        else if (this.survivalTier === 5) this.radioSurvival(3);
+      }
+      for (const pattern of advance.patterns) {
+        for (const directive of pattern.spawns) this.spawnSurvivalMeteor(directive);
+      }
+    }
+
+    field.update(dt, this.chase.camera.position);
+    if (this.phase === 'flying') this.resolveSurvivalMeteors(dt);
+    this.survivalRun.observeActiveCount(field.activeCount);
+    this.survivalSimulationMsLast = performance.now() - started;
+    this.survivalSimulationMsMax = Math.max(
+      this.survivalSimulationMsMax,
+      this.survivalSimulationMsLast,
+    );
+  }
+
+  private resolveSurvivalMeteors(dt: number): void {
+    const field = this.meteorField;
+    if (!field) return;
+    let appliedImpact = false;
+    let nearest = Infinity;
+
+    // Reverse order keeps swap-removal safe: a moved tail slot has already been visited.
+    for (let i = field.activeCount - 1; i >= 0; i--) {
+      const contact = field.getActiveContact(i);
+      if (!contact) continue;
+      const slot = contact.slot;
+      const age = this.survivalMeteorAge[slot] + dt;
+      this.survivalMeteorAge[slot] = age;
+
+      const dx = contact.position.x - this.ship.position.x;
+      const dy = contact.position.y - this.ship.position.y;
+      const dz = contact.position.z - this.ship.position.z;
+      const centreDistance = Math.hypot(dx, dy, dz);
+      const surfaceDistance = centreDistance - contact.radius - this.ship.radius;
+      nearest = Math.min(nearest, surfaceDistance);
+      this.survivalMeteorClosest[slot] = Math.min(
+        this.survivalMeteorClosest[slot],
+        surfaceDistance,
+      );
+
+      const hitTime = field.sweptSphereHitTime(
+        contact,
+        this.survivalShipPrevious,
+        this.ship.position,
+        this.ship.radius,
+      );
+      if (hitTime >= 0) {
+        // Reconstruct the first contact, not the end-of-frame poses. A meteor can cross the
+        // entire ship in one frame; using its final position flips the normal and turns the
+        // fastest head-on impacts into zero-severity contacts.
+        this.tmpA.copy(this.survivalShipPrevious).lerp(this.ship.position, hitTime);
+        this.tmpB.copy(contact.previousPosition).lerp(contact.position, hitTime);
+        this.tmpA.sub(this.tmpB);
+        const impactDistance = this.tmpA.length();
+        if (impactDistance > 1e-4) {
+          this.tmpA.divideScalar(impactDistance);
+        } else {
+          this.tmpA.copy(contact.velocity).sub(this.ship.velocity);
+          if (this.tmpA.lengthSq() > 1e-8) this.tmpA.normalize();
+          else this.tmpA.set(0, 0, 1).applyQuaternion(this.ship.quaternion);
+        }
+        field.despawn(contact);
+        this.survivalRun.recordCollision();
+        if (!this.survivalStress && this.survivalInvulnerability <= 0 && !appliedImpact) {
+          const penetration = Math.max(
+            0.5,
+            contact.radius + this.ship.radius - impactDistance,
+          );
+          const severity = this.ship.applyImpact(this.tmpA, penetration, contact.velocity);
+          this.impacts++;
+          this.damageFlash = Math.min(1, this.damageFlash + severity * 1.4 + 0.2);
+          this.audio.play('impact', severity);
+          this.survivalInvulnerability = 0.45;
+          appliedImpact = true;
+        }
+        continue;
+      }
+
+      const relativeVelocityX = contact.velocity.x - this.ship.velocity.x;
+      const relativeVelocityY = contact.velocity.y - this.ship.velocity.y;
+      const relativeVelocityZ = contact.velocity.z - this.ship.velocity.z;
+      const movingAway = dx * relativeVelocityX + dy * relativeVelocityY + dz * relativeVelocityZ > 0;
+      if ((age > 1 && movingAway && centreDistance > 280) || age > 11) {
+        this.survivalRun.recordMeteorDodged();
+        if (this.survivalMeteorClosest[slot] < 18) this.survivalRun.recordNearMiss();
+        field.despawn(contact);
+      }
+    }
+    this.proximity = nearest === Infinity
+      ? 0
+      : clamp01(1 - nearest / FLIGHT_THRESHOLDS.proximityRange);
+  }
+
+  /** Shortens the external boom before a meteor can fill the frame from behind the ship. */
+  private resolveSurvivalCameraOcclusion(): void {
+    const field = this.meteorField;
+    if (!field || field.activeCount === 0) return;
+    const camera = this.chase.camera;
+    this.tmpA.copy(camera.position).sub(this.ship.position);
+    const lengthSq = this.tmpA.lengthSq();
+    if (lengthSq <= 1e-8) return;
+    const length = Math.sqrt(lengthSq);
+    let allowed = 1;
+
+    for (let i = 0; i < field.activeCount; i++) {
+      const contact = field.getActiveContact(i);
+      if (!contact) continue;
+      const ox = this.ship.position.x - contact.position.x;
+      const oy = this.ship.position.y - contact.position.y;
+      const oz = this.ship.position.z - contact.position.z;
+      const clearance = contact.radius + 1.8;
+      const c = ox * ox + oy * oy + oz * oz - clearance * clearance;
+      // The collision response owns a meteor already intersecting the ship; collapsing the
+      // camera to zero at that instant would add a second, much harsher hit cue.
+      if (c <= 0) continue;
+      const halfB = ox * this.tmpA.x + oy * this.tmpA.y + oz * this.tmpA.z;
+      const discriminant = halfB * halfB - lengthSq * c;
+      if (discriminant < 0) continue;
+      const first = (-halfB - Math.sqrt(discriminant)) / lengthSq;
+      if (first >= 0 && first < allowed) allowed = first;
+    }
+
+    if (allowed < 1) {
+      const margin = Math.min(0.12, 1.5 / length);
+      camera.position.copy(this.ship.position).addScaledVector(this.tmpA, Math.max(0.12, allowed - margin));
+    }
   }
 
   private resolveCollisions(dt: number): void {
@@ -1512,6 +1947,10 @@ export class Game {
 
   private checkFailure(): void {
     if (this.phase !== 'flying' || this.ship.hull > 0) return;
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      this.finishSurvival();
+      return;
+    }
     this.autopilot = false;
     this.result = null;
     this.cancelCountdownClear();
@@ -1519,6 +1958,34 @@ export class Game {
     this.setPhase('failed');
     this.overlay.showFailure(this.elapsed);
     this.input.releaseLock();
+  }
+
+  private finishSurvival(): void {
+    if (this.phase !== 'flying') return;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    const previousBest = this.survivalRecordStore.getBest();
+    const outcome = this.survivalRecordStore.record(this.survivalRun.finish(this.elapsed));
+    const stats = this.survivalRun.snapshotStats(this.survivalStatsScratch);
+    this.survivalResult = {
+      runMode: SURVIVAL_RUN_MODE_ID,
+      totalTime: this.elapsed,
+      bestTime: previousBest?.scoreSeconds ?? null,
+      isNewBest: outcome.isNewBest,
+      topSpeed: this.topSpeed,
+      meteorsDodged: stats.meteorsDodged,
+      nearMisses: stats.nearMisses,
+      collisions: stats.collisions,
+      peakActive: stats.peakActive,
+    };
+    this.result = null;
+    this.telemetry.bestTime = outcome.best?.scoreSeconds ?? previousBest?.scoreSeconds ?? null;
+    this.setPhase('finished');
+    this.overlay.showSurvivalResult(this.survivalResult);
+    this.audio.play('finish');
+    if (outcome.isNewBest) this.audio.play('newBest');
+    this.input.releaseLock();
+    this.autopilot = true;
   }
 
   private finish(): void {
@@ -1600,8 +2067,11 @@ export class Game {
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     this.shipMeshHolder.rotation.copy(this.ship.visualLean);
 
+    const appliedCameraMode: AppliedCameraMode = this.runMode === SURVIVAL_RUN_MODE_ID
+      ? this.survivalCameraMode
+      : this.settings.value.cameraMode;
     const cockpitActive =
-      this.activeVantage === null && !this.cinematic && this.settings.value.cameraMode === 'cockpit';
+      this.activeVantage === null && !this.cinematic && appliedCameraMode === 'cockpit';
     if (this.activeVantage) {
       this.applyVantage(this.activeVantage);
     } else if (this.cinematic) {
@@ -1611,7 +2081,10 @@ export class Game {
         boost: boostBlend,
         impact: this.damageFlash,
         proximity: this.proximity,
-      }, this.settings.value.cameraMode);
+      }, appliedCameraMode);
+      if (this.runMode === SURVIVAL_RUN_MODE_ID && appliedCameraMode !== 'cockpit') {
+        this.resolveSurvivalCameraOcclusion();
+      }
     }
 
     this.cockpitModel.setVisible(cockpitActive);
@@ -1620,7 +2093,7 @@ export class Game {
       // visible stick/head rig on the command that actually reaches the ship instead of leaving
       // held pre-breach input frozen into the cockpit behind the terminal overlay.
       const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.input.command;
-      const gate = this.course.nextGate;
+      const gate = this.runMode === DEFAULT_RUN_MODE_ID ? this.course.nextGate : null;
       this.ship.getForward(this.cockpitForward);
       const state = this.cockpitState;
       state.dt = dt;
@@ -1657,11 +2130,13 @@ export class Game {
     this.planet.update(this.clock);
 
     const camPos = this.chase.camera.position;
-    this.asteroids.update(dt, camPos);
-    this.derelicts.update(this.clock, camPos);
-    this.shelfSpan.update(this.clock, camPos);
-    this.terminus.update(this.clock, camPos, pixelScale);
+    if (this.runMode === DEFAULT_RUN_MODE_ID) {
+      this.asteroids.update(dt, camPos);
+      this.derelicts.update(this.clock, camPos);
+      this.shelfSpan.update(this.clock, camPos);
+      this.terminus.update(this.clock, camPos, pixelScale);
     this.course.update3d(dt, this.clock, this.elapsed, camPos, pixelScale);
+    }
 
     // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
     // short at cruise and only tearing open under boost — that contrast is the point.
@@ -1852,7 +2327,22 @@ export class Game {
     t.proximity = num(this.proximity);
     t.impactFlash = num(this.damageFlash);
     t.fps = num(this.fps, 60);
-    t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
+    if (this.runMode === SURVIVAL_RUN_MODE_ID && t.survival) {
+      const stats = this.survivalRun.snapshotStats(this.survivalStatsScratch);
+      const field = this.meteorField;
+      t.survival.difficulty = num(this.survivalDifficulty);
+      t.survival.difficultyTier = Math.max(0, this.survivalTier);
+      t.survival.activeMeteors = field?.activeCount ?? 0;
+      t.survival.activeCap = field?.capacity ?? METEOR_POOL_CAPACITY;
+      t.survival.meteorsDodged = stats.meteorsDodged;
+      t.survival.nearMisses = stats.nearMisses;
+      t.survival.collisions = stats.collisions;
+      t.courseRemaining = Math.max(0, this.survivalRun.ruleset.maxDifficultySeconds - this.elapsed);
+      t.courseTotal = this.survivalRun.ruleset.maxDifficultySeconds;
+    } else {
+      t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
+      t.courseTotal = this.course.totalLength;
+    }
 
     // Reused scratch: this runs 60 times a second and allocating an Euler here was measurable.
     this.scratchEuler.setFromQuaternion(this.ship.quaternion, 'ZYX');
@@ -1888,32 +2378,44 @@ export class Game {
       t.velocityAnchor.distance = speed;
     }
 
-    const gate = this.course.nextGate;
-    const targetPosition = gate ? gate.position : this.terminus.position;
-    t.gate.index = this.course.nextIndex;
-    t.gate.total = this.course.gates.length;
-    t.gate.name = gate ? gate.name : this.courseDefinition.text.canonicalDestination;
-    t.gate.nameMessage = gate?.nameMessage;
-    t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      t.gate.index = 0;
+      t.gate.total = 0;
+      t.gate.name = LEGACY_ENGLISH.messages.survival.arenaName;
+      t.gate.nameMessage = undefined;
+      t.gate.distance = 0;
+      t.gate.anchor.x = 0;
+      t.gate.anchor.y = 0;
+      t.gate.anchor.onScreen = false;
+      t.gate.anchor.angle = 0;
+      t.gate.anchor.distance = 0;
+      t.gate.alignment = 1;
+    } else {
+      const gate = this.course.nextGate;
+      const targetPosition = gate ? gate.position : this.terminus.position;
+      t.gate.index = this.course.nextIndex;
+      t.gate.total = this.course.gates.length;
+      t.gate.name = gate ? gate.name : this.courseDefinition.text.canonicalDestination;
+      t.gate.nameMessage = gate?.nameMessage;
+      t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
-    this.tmpA.copy(targetPosition).project(this.chase.camera);
-    const onScreen = this.tmpA.z > -1 && this.tmpA.z < 1 && Math.abs(this.tmpA.x) <= 1 && Math.abs(this.tmpA.y) <= 1;
-    t.gate.anchor.x = num(this.tmpA.x);
-    t.gate.anchor.y = num(this.tmpA.y);
-    t.gate.anchor.onScreen = onScreen;
-    t.gate.anchor.distance = t.gate.distance;
+      this.tmpA.copy(targetPosition).project(this.chase.camera);
+      const onScreen = this.tmpA.z > -1 && this.tmpA.z < 1
+        && Math.abs(this.tmpA.x) <= 1 && Math.abs(this.tmpA.y) <= 1;
+      t.gate.anchor.x = num(this.tmpA.x);
+      t.gate.anchor.y = num(this.tmpA.y);
+      t.gate.anchor.onScreen = onScreen;
+      t.gate.anchor.distance = t.gate.distance;
 
-    // Behind the camera the *projection* mirrors, so the bearing is taken from the raw
-    // camera-space vector instead of the projected point. Camera space already has +x right
-    // and +y up, so atan2(y, x) is the bearing directly — the sign flip that used to guard
-    // against the projection mirror negated both components, which is a rotation by pi. The
-    // arrow pointed the long way round for every target behind the camera, and flipped between
-    // opposite screen edges frame to frame near z = 0.
-    this.tmpB.copy(targetPosition).applyMatrix4(this.chase.camera.matrixWorldInverse);
-    t.gate.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+      // Behind the camera the *projection* mirrors, so the bearing is taken from the raw
+      // camera-space vector instead of the projected point. Camera space already has +x right
+      // and +y up, so atan2(y, x) is the bearing directly.
+      this.tmpB.copy(targetPosition).applyMatrix4(this.chase.camera.matrixWorldInverse);
+      t.gate.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
 
-    this.ship.getForward(this.tmpC);
-    t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
+      this.ship.getForward(this.tmpC);
+      t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
+    }
 
     if (t.callout) {
       t.callout.ttl -= dt;
@@ -1998,7 +2500,9 @@ export class Game {
     });
     const intensity =
       this.phase === 'flying'
-        ? clamp01(0.34 + this.ship.speed01 * 0.5 + this.course.progress(this.ship.position) * 0.3)
+        ? this.runMode === SURVIVAL_RUN_MODE_ID
+          ? clamp01(0.38 + this.ship.speed01 * 0.38 + this.survivalDifficulty * 0.34)
+          : clamp01(0.34 + this.ship.speed01 * 0.5 + this.course.progress(this.ship.position) * 0.3)
         : this.phase === 'finished'
           ? 0.5
           : 0.22;
@@ -2093,6 +2597,10 @@ export class Game {
   }
 
   private radio(step: number): void {
+    if (this.runMode === SURVIVAL_RUN_MODE_ID) {
+      if (step === 0) this.radioSurvival(0);
+      return;
+    }
     const line = RADIO_LINES[this.courseDefinition.id].find((candidate) => candidate.at === step);
     if (!line || this.lastRadio === step) return;
     this.lastRadio = step;
@@ -2100,6 +2608,17 @@ export class Game {
     const localizedText = this.activeTranslator.messages.campaign.routes[this.courseDefinition.id][line.key];
     const legacyDurationBasis = LEGACY_ENGLISH.messages.campaign.routes[this.courseDefinition.id][line.key].length;
     this.overlay.radio(line.speaker, localizedText, legacyDurationBasis);
+  }
+
+  private radioSurvival(index: 0 | 1 | 2 | 3): void {
+    if (this.lastRadio === index) return;
+    this.lastRadio = index;
+    const keys = ['radio1', 'radio2', 'radio3', 'radio4'] as const;
+    const key = keys[index];
+    const localizedText = this.activeTranslator.messages.survival[key];
+    const legacyDurationBasis = LEGACY_ENGLISH.messages.survival[key].length;
+    this.audio.play('radio');
+    this.overlay.radio('VECTOR CONTROL', localizedText, legacyDurationBasis);
   }
 
   private pushCallout(spec: CalloutSpec): void {
@@ -2486,11 +3005,95 @@ export class Game {
     return this.phase;
   }
 
+  getRunMode(): RunModeId {
+    return this.runMode;
+  }
+
+  getSurvivalDebug(): HarnessSurvivalDebugState {
+    const field = this.meteorField;
+    const pool = field?.getDebugStats(this.survivalDebugScratch) ?? this.survivalDebugScratch;
+    const info = this.renderer.info;
+    return {
+      enabled: this.runMode === SURVIVAL_RUN_MODE_ID,
+      elapsedSeconds: this.elapsed,
+      difficulty: this.survivalDifficulty,
+      maxDifficultySeconds: this.survivalRun.ruleset.maxDifficultySeconds,
+      cameraMode: this.survivalCameraMode,
+      activeMeteors: field?.activeCount ?? 0,
+      activeCap: field?.capacity ?? 0,
+      peakActiveMeteors: pool.peakActive,
+      poolSize: field?.capacity ?? 0,
+      freeMeteors: field?.freeCount ?? 0,
+      totalSpawned: pool.totalSpawned,
+      totalRecycled: pool.totalDespawned,
+      drawCalls: info.render.calls,
+      triangles: info.render.triangles,
+      programs: info.programs?.length ?? 0,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      simulationMsLast: this.survivalSimulationMsLast,
+      simulationMsMax: this.survivalSimulationMsMax,
+    };
+  }
+
+  setSurvivalElapsed(seconds: number): HarnessSurvivalDebugState {
+    const field = this.meteorField;
+    if (this.runMode !== SURVIVAL_RUN_MODE_ID || !field) return this.getSurvivalDebug();
+    const elapsed = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+    this.elapsed = elapsed;
+    this.survivalStress = true;
+    this.survivalInvulnerability = 0;
+    this.survivalSimulationAccumulator = 0;
+    this.survivalSimulationMsLast = 0;
+    this.survivalSimulationMsMax = 0;
+    const difficulty = survivalDifficultyAt(elapsed, this.survivalRun.ruleset);
+    this.survivalDifficulty = difficulty.intensity;
+    this.survivalTier = difficulty.tier;
+    this.survivalRun.reset(this.seed);
+    this.survivalRun.advanceTo(elapsed, 0);
+    field.reset();
+    this.survivalMeteorAge.fill(0);
+    this.survivalMeteorClosest.fill(Infinity);
+
+    if (elapsed >= this.survivalRun.ruleset.maxDifficultySeconds) {
+      let patternIndex = 0;
+      while (field.freeCount > 0) {
+        const pattern = deriveSurvivalPattern(
+          this.seed,
+          patternIndex++,
+          this.survivalRun.ruleset.maxDifficultySeconds,
+          this.survivalRun.ruleset,
+        );
+        for (const directive of pattern.spawns) {
+          if (field.freeCount === 0) break;
+          this.spawnSurvivalMeteor(directive);
+        }
+      }
+      this.survivalRun.observeActiveCount(field.activeCount);
+      field.update(0, this.chase.camera.position);
+    }
+    return this.getSurvivalDebug();
+  }
+
+  setSurvivalCameraMode(mode: HarnessSurvivalCameraMode): HarnessSurvivalDebugState {
+    if (mode !== 'chase' && mode !== 'cockpit' && mode !== 'far-chase') {
+      return this.getSurvivalDebug();
+    }
+    this.survivalCameraMode = mode;
+    if (this.runMode === SURVIVAL_RUN_MODE_ID && this.activeVantage === null && !this.cinematic) {
+      this.chase.setCameraMode(mode);
+    }
+    return this.getSurvivalDebug();
+  }
+
   getCameraMode(): CameraMode {
     // Report the camera's applied projection state, not the saved preference. In harness-driven
     // mode a setting can change between rendered frames, and those two values intentionally
     // differ until updateVisuals applies the new pose/near plane.
-    return this.chase.getCameraMode();
+    const mode = this.chase.getCameraMode();
+    // The stable settings/harness contract remains binary. Survival exposes its third, wider
+    // boom preset through a separate mode-specific debug surface.
+    return mode === 'far-chase' ? 'chase' : mode;
   }
 
   /** Read-only cockpit evidence for deterministic integration and render-budget checks. */
@@ -2961,6 +3564,7 @@ export class Game {
     this.planet.dispose();
     this.nebulaTarget.dispose();
     this.asteroids.dispose();
+    this.meteorField?.dispose();
     this.derelicts.dispose();
     this.shelfSpan.dispose();
     this.dust.dispose();

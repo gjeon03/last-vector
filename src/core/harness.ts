@@ -16,6 +16,7 @@ import type {
 } from './contracts.ts';
 import type { CourseId, ObjectiveId } from './Courses.ts';
 import type { CourseResolution } from './CourseSelection.ts';
+import type { RunModeId } from './GameModes.ts';
 import type { ProgressV1, ProgressWriteOutcome } from './Progress.ts';
 
 export interface HarnessInput {
@@ -231,6 +232,37 @@ export interface HarnessCourseState {
   resolution: CourseResolution;
 }
 
+/** Survival owns a third awareness camera without widening the persisted binary setting. */
+export type HarnessSurvivalCameraMode = CameraMode | 'far-chase';
+
+/**
+ * JSON-safe survival performance evidence. Renderer counts are global totals for the presented
+ * frame; pool fields describe the fixed-capacity MeteorField only.
+ */
+export interface HarnessSurvivalDebugState {
+  enabled: boolean;
+  elapsedSeconds: number;
+  /** Normalised 0..1 production difficulty. */
+  difficulty: number;
+  maxDifficultySeconds: number;
+  cameraMode: HarnessSurvivalCameraMode;
+  activeMeteors: number;
+  activeCap: number;
+  peakActiveMeteors: number;
+  poolSize: number;
+  freeMeteors: number;
+  totalSpawned: number;
+  totalRecycled: number;
+  drawCalls: number;
+  triangles: number;
+  programs: number;
+  geometries: number;
+  textures: number;
+  /** Optional paired CPU timing instrumentation for the survival simulation. */
+  simulationMsLast?: number;
+  simulationMsMax?: number;
+}
+
 /** Dependency-free catalog projection; it deliberately excludes render/world objects. */
 export interface HarnessCatalogState {
   order: readonly CourseId[];
@@ -296,6 +328,17 @@ export interface HarnessApi {
   phase(): Phase;
   /** Non-null once the run has finished successfully; failures deliberately keep this null. */
   result(): RunResult | null;
+  /** Boot-selected mode identity. A loaded world never changes mode without navigation. */
+  runMode(): RunModeId;
+  /** Fixed-pool, difficulty, camera and renderer evidence for the survival performance gate. */
+  survivalDebug(): HarnessSurvivalDebugState;
+  /**
+   * Test-only: stage an absolute survival clock. At 300 seconds the implementation fills the
+   * already-allocated pool to its active cap without constructing render resources.
+   */
+  setSurvivalElapsed(seconds: number): HarnessSurvivalDebugState;
+  /** Test-only: apply one of the three survival camera presets without mutating Settings. */
+  setSurvivalCameraMode(mode: HarnessSurvivalCameraMode): HarnessSurvivalDebugState;
   /** Active boot-built route identity and URL-resolution evidence. */
   course(): HarnessCourseState;
   /** Immutable route authoring projected to a compact JSON-safe catalog. */

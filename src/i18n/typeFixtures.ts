@@ -5,6 +5,8 @@ const translator = createTranslator('en');
 export const typeFixtures = [
   translator.messages.campaign.routes['needle-grave'].briefingLine2,
   translator.messages.campaign.routes['cairn-drift'].objectives.precision,
+  translator.messages.survival.cameraCycle,
+  translator.domain({ type: 'callout-title.camera-view', mode: 'far-chase' }),
   translator.messages.hud.boostUsable(3.5),
   translator.messages.events.gateClearedLog(7, 12.34),
   translator.messages.campaign.routes['needle-grave'].gateShearBlockedLog(3),

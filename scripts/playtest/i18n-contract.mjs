@@ -19,6 +19,7 @@ const TOP_LEVEL_SECTIONS = [
   'loader',
   'screens',
   'campaign',
+  'survival',
   'controls',
   'settings',
   'hud',
@@ -308,11 +309,27 @@ await report.check(
         expected: expectedCampaignRouteFixtures,
         actual: campaignRouteFixtures,
       });
+    const survivalFixtures = {
+      koMode: ko.survival.meteorSurvival,
+      enMode: en.survival.meteorSurvival,
+      koArena: ko.survival.arenaName,
+      enArena: en.survival.arenaName,
+      koCamera: ko.survival.cameraCycle,
+      enCamera: en.survival.cameraCycle,
+    };
+    verify(survivalFixtures.koMode === 'METEOR SURVIVAL'
+      && survivalFixtures.enMode === 'METEOR SURVIVAL'
+      && survivalFixtures.koArena === 'METEOR FIELD'
+      && survivalFixtures.enArena === 'METEOR FIELD',
+    'Survival machine labels must remain canonical English in both locales.', survivalFixtures);
+    verify(/[가-힣]/u.test(survivalFixtures.koCamera) && !/[가-힣]/u.test(survivalFixtures.enCamera),
+      'Survival camera guidance does not follow the hybrid Korean/English strategy.', survivalFixtures);
     return {
       leafCount: leaves.length,
       dynamicArities: Object.fromEntries(DYNAMIC_ARITIES),
       bestComparisonFixtures,
       campaignRouteFixtures,
+      survivalFixtures,
     };
   },
 );
@@ -592,6 +609,7 @@ const descriptors = [
   { type: 'callout-title.pointer-lock-unavailable' },
   { type: 'callout-title.camera-view', mode: 'cockpit' },
   { type: 'callout-title.camera-view', mode: 'chase' },
+  { type: 'callout-title.camera-view', mode: 'far-chase' },
   { type: 'callout-title.engage' },
   { type: 'callout-title.hull-impact' },
   { type: 'callout-title.boost-depleted' },
@@ -603,6 +621,7 @@ const descriptors = [
   { type: 'callout-sub.keyboard-flight-available' },
   { type: 'callout-sub.camera-active', mode: 'cockpit' },
   { type: 'callout-sub.camera-active', mode: 'chase' },
+  { type: 'callout-sub.camera-active', mode: 'far-chase' },
   { type: 'callout-sub.boost-recharging' },
   { type: 'callout-sub.gate-progress', remaining: 2 },
   { type: 'callout-sub.gate-progress', remaining: 1 },
@@ -665,8 +684,10 @@ await report.check(
       [{ type: 'callout-sub.keyboard-flight-available' }, 'W A S D / ARROWS STILL FLY'],
       [{ type: 'callout-title.camera-view', mode: 'cockpit' }, 'COCKPIT VIEW'],
       [{ type: 'callout-title.camera-view', mode: 'chase' }, 'CHASE VIEW'],
+      [{ type: 'callout-title.camera-view', mode: 'far-chase' }, 'FAR CHASE VIEW'],
       [{ type: 'callout-sub.camera-active', mode: 'cockpit' }, 'PILOT CAMERA ACTIVE'],
       [{ type: 'callout-sub.camera-active', mode: 'chase' }, 'EXTERIOR CAMERA ACTIVE'],
+      [{ type: 'callout-sub.camera-active', mode: 'far-chase' }, 'DISTANT EXTERIOR CAMERA ACTIVE'],
       [{ type: 'callout-title.engage' }, 'ENGAGE'],
       [{ type: 'callout-title.hull-impact' }, 'HULL IMPACT'],
       [{ type: 'callout-title.boost-depleted' }, 'DRIVE DRY'],

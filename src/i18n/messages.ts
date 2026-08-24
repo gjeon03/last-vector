@@ -112,6 +112,52 @@ export interface CampaignMessages {
   routes: Record<CampaignMessageCourseId, CampaignRouteMessages>;
 }
 
+/**
+ * METEOR SURVIVAL keeps the product's machine-facing labels in English in both locales, while
+ * the longer briefing and outcome copy follows the selected language. Keeping the complete mode
+ * vocabulary together prevents the Korean catalog from drifting back toward a full transliteration
+ * of the avionics UI.
+ */
+export interface SurvivalMessages {
+  mode: string;
+  modeSelection: string;
+  timeTrial: string;
+  meteorSurvival: string;
+  arenaName: string;
+  titleTagline: string;
+  briefingSub: string;
+  briefingLine1: string;
+  briefingLine2: string;
+  briefingLine3: string;
+  activeThreat: string;
+  intensity: string;
+  survived: string;
+  best: string;
+  dodged: string;
+  endure: string;
+  pressure: string;
+  ballistic: string;
+  rising: string;
+  continuous: string;
+  viewCycle: string;
+  cameraCycle: string;
+  cameraCycleShort: string;
+  runEnded: string;
+  resultDetail: string;
+  newRecord: string;
+  nearMisses: string;
+  impacts: string;
+  peakThreat: string;
+  topSpeed: string;
+  retry: string;
+  returnToTitle: string;
+  resultA11y: string;
+  radio1: string;
+  radio2: string;
+  radio3: string;
+  radio4: string;
+}
+
 export interface ControlMessages {
   heading: string;
   or: string;
@@ -203,8 +249,10 @@ export interface EventMessages {
   keyboardFlightAvailable: string;
   cockpitView: string;
   chaseView: string;
+  farChaseView: string;
   pilotCameraActive: string;
   exteriorCameraActive: string;
+  distantExteriorCameraActive: string;
   engage: string;
   hullImpact: string;
   boostDepletedTitle: string;
@@ -288,6 +336,7 @@ export interface Messages {
   loader: LoaderMessages;
   screens: ScreenMessages;
   campaign: CampaignMessages;
+  survival: SurvivalMessages;
   controls: ControlMessages;
   settings: SettingMessages;
   hud: HudMessages;

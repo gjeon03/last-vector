@@ -17,7 +17,9 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
     case 'callout-title.pointer-lock-unavailable':
       return messages.events.pointerLockUnavailable;
     case 'callout-title.camera-view':
-      return message.mode === 'cockpit' ? messages.events.cockpitView : messages.events.chaseView;
+      if (message.mode === 'cockpit') return messages.events.cockpitView;
+      if (message.mode === 'far-chase') return messages.events.farChaseView;
+      return messages.events.chaseView;
     case 'callout-title.engage':
       return messages.events.engage;
     case 'callout-title.hull-impact':
@@ -35,9 +37,9 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
     case 'callout-sub.keyboard-flight-available':
       return messages.events.keyboardFlightAvailable;
     case 'callout-sub.camera-active':
-      return message.mode === 'cockpit'
-        ? messages.events.pilotCameraActive
-        : messages.events.exteriorCameraActive;
+      if (message.mode === 'cockpit') return messages.events.pilotCameraActive;
+      if (message.mode === 'far-chase') return messages.events.distantExteriorCameraActive;
+      return messages.events.exteriorCameraActive;
     case 'callout-sub.boost-recharging':
       return messages.events.boostRechargingSub;
     case 'callout-sub.gate-progress':

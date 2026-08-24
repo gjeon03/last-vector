@@ -13,6 +13,7 @@
  */
 
 import type { CourseId } from './Courses.ts';
+import type { RunModeId } from './GameModes.ts';
 
 export type Phase =
   | 'boot'
@@ -27,6 +28,7 @@ export type Locale = 'ko' | 'en';
 export type LocaleFontStatus = 'not-required' | 'ready' | 'fallback' | 'failed';
 export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
 export type GateMissCause = 'aperture' | 'shear';
+export type ViewMode = CameraMode | 'far-chase';
 
 export type GateNameMessage =
   | { type: 'gate-name.terminus-approach' }
@@ -34,7 +36,7 @@ export type GateNameMessage =
 
 export type CalloutTitleMessage =
   | { type: 'callout-title.pointer-lock-unavailable' }
-  | { type: 'callout-title.camera-view'; mode: CameraMode }
+  | { type: 'callout-title.camera-view'; mode: ViewMode }
   | { type: 'callout-title.engage' }
   | { type: 'callout-title.hull-impact' }
   | { type: 'callout-title.boost-depleted' }
@@ -43,7 +45,7 @@ export type CalloutTitleMessage =
 
 export type CalloutSubMessage =
   | { type: 'callout-sub.keyboard-flight-available' }
-  | { type: 'callout-sub.camera-active'; mode: CameraMode }
+  | { type: 'callout-sub.camera-active'; mode: ViewMode }
   | { type: 'callout-sub.boost-recharging' }
   | { type: 'callout-sub.gate-progress'; remaining: number; courseId?: CourseId }
   | { type: 'callout-sub.gate-realign' }
@@ -86,6 +88,8 @@ export interface GateTelemetry {
 }
 
 export interface Telemetry {
+  /** Optional for external/legacy producers; the shipped game always supplies it. */
+  runMode?: RunModeId;
   phase: Phase;
   /** Metres / second. */
   speed: number;
@@ -161,6 +165,19 @@ export interface Telemetry {
    */
   courseLength?: number;
   fps: number;
+  /** Survival-only projection. Absent in the time-trial and older standalone fixtures. */
+  survival?: SurvivalTelemetry;
+}
+
+export interface SurvivalTelemetry {
+  /** Smooth authored pressure, 0..1; reaches its ceiling after five minutes. */
+  difficulty: number;
+  difficultyTier: number;
+  activeMeteors: number;
+  activeCap: number;
+  meteorsDodged: number;
+  nearMisses: number;
+  collisions: number;
 }
 
 export interface Callout {
@@ -210,6 +227,18 @@ export interface RunResult {
   newlyUnlockedCourseId?: CourseId | null;
 }
 
+export interface SurvivalRunResult {
+  runMode: 'meteor-survival';
+  totalTime: number;
+  bestTime: number | null;
+  isNewBest: boolean;
+  topSpeed: number;
+  meteorsDodged: number;
+  nearMisses: number;
+  collisions: number;
+  peakActive: number;
+}
+
 /** Everything the HUD layer is allowed to ask the game to do. */
 /**
  * Interface sounds, as the interface layer sees them.
@@ -249,6 +278,10 @@ export interface HudHost {
   selectRoute(courseId: CourseId): void;
   /** Returns to the title route strip without changing the active boot-built route. */
   showRouteSelect(): void;
+  /** Optional so older standalone HUD hosts keep satisfying this contract. */
+  selectRunMode?(mode: RunModeId): void;
+  /** Run mode is immutable for one Game instance; switching rebuilds through navigation. */
+  getRunMode?(): RunModeId;
   /** Requests a persisted locale change; the game accepts it only while the title is active. */
   requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;

@@ -392,7 +392,7 @@ async function runLocalization({ report, session, options }) {
     name: 'A clean first boot selects Korean before player-facing UI',
     assertion:
       'An isolated empty-storage boot uses lang=ko before both loader and Overlay insertion, exposes '
-      + 'the exact 1.8.0 locale/MFD/campaign contract with required fontStatus, and remains unlocked on the title screen.',
+      + 'the exact 1.9.0 locale/MFD/campaign/survival contract with required fontStatus, and remains unlocked on the title screen.',
   }, async () => {
     const scenario = await openBootScenario(session, { initScripts: [installBootProbe] });
     try {
@@ -402,7 +402,7 @@ async function runLocalization({ report, session, options }) {
       const boot = await scenario.page.evaluate(() => window.__LV_BOOT_PROBE ?? []);
       const title = await titleLocaleEvidence(scenario.page);
       const evidence = { inspection, locale, boot, title, requests: scenario.requests };
-      verify(inspection.version === '1.8.0', 'Harness version is not exactly 1.8.0.', evidence);
+      verify(inspection.version === '1.9.0', 'Harness version is not exactly 1.9.0.', evidence);
       verify(inspection.methods.locale === true, 'Harness locale() capability is missing.', evidence);
       verify(locale.selected === 'ko' && locale.active === null && locale.locked === false,
         'Empty storage did not produce an unlocked Korean title.', evidence);

@@ -7,12 +7,24 @@
  * keyboard path and the pointer path are the same path.
  */
 
-import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
+import type {
+  HudHost,
+  Locale,
+  QualityLevel,
+  RunResult,
+  Settings,
+  SurvivalRunResult,
+} from '../core/contracts.ts';
 import {
   CAMPAIGN_MODE_ENABLED,
   PRECISION_MAX_OFFSET,
   type CourseId,
 } from '../core/Courses.ts';
+import {
+  DEFAULT_RUN_MODE_ID,
+  SURVIVAL_RUN_MODE_ID,
+  type RunModeId,
+} from '../core/GameModes.ts';
 import type { Translator } from '../i18n/index.ts';
 import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
@@ -81,6 +93,7 @@ export interface ScreenFocusToken {
   nav?: string;
   locale?: Locale;
   route?: CourseId;
+  runMode?: RunModeId;
 }
 
 const COURSE_IDS = ['cairn-drift', 'needle-grave'] as const satisfies readonly CourseId[];
@@ -444,6 +457,7 @@ export class Screens {
   private readonly host: HudHost;
   private readonly opts: ScreensOptions;
   private readonly translator: Translator;
+  private readonly runMode: RunModeId;
   private readonly views = new Map<ScreenView, HTMLElement>();
   private view: ScreenView = 'none';
   private campaign: CampaignViewModel = defaultCampaignView();
@@ -487,6 +501,7 @@ export class Screens {
     this.host = host;
     this.opts = opts;
     this.translator = translator;
+    this.runMode = host.getRunMode?.() ?? DEFAULT_RUN_MODE_ID;
     this.el = el('div', 'lv-screens');
 
     this.el.appendChild(this.buildTitle());
@@ -544,29 +559,31 @@ export class Screens {
 
     const m = this.translator.messages;
     const routeCopy = m.campaign.routes[activeCourseId];
-    if (this.nTitleSector) this.nTitleSector.textContent = routeCopy.sectorName;
-    if (this.nTitleTagline) {
-      writeEnglishTokens(
-        this.nTitleTagline,
-        routeCopy.tagline,
-        ['CAIRN', 'TERMINUS', 'NEEDLE GRAVE', 'NADIR RELAY'],
-      );
-    }
-    if (this.nBeginDestination) this.nBeginDestination.textContent = routeCopy.destination;
-    if (this.nBriefTitle) this.nBriefTitle.textContent = routeCopy.sectorName;
-    if (this.nBriefTransit) {
-      writeEnglishTokens(
-        this.nBriefTransit,
-        `${m.screens.transitTo} ${routeCopy.destination}`,
-        [routeCopy.destination],
-      );
-    }
-    for (let i = 0; i < this.nBriefLines.length; i++) {
-      writeEnglishTokens(
-        this.nBriefLines[i]!,
-        routeCopy[CAMPAIGN_BRIEF_KEYS[i]!] ?? '',
-        ['ACHRA', 'CAIRN', 'NEEDLE GRAVE', 'SHEAR'],
-      );
+    if (this.runMode === DEFAULT_RUN_MODE_ID) {
+      if (this.nTitleSector) this.nTitleSector.textContent = routeCopy.sectorName;
+      if (this.nTitleTagline) {
+        writeEnglishTokens(
+          this.nTitleTagline,
+          routeCopy.tagline,
+          ['CAIRN', 'TERMINUS', 'NEEDLE GRAVE', 'NADIR RELAY'],
+        );
+      }
+      if (this.nBeginDestination) this.nBeginDestination.textContent = routeCopy.destination;
+      if (this.nBriefTitle) this.nBriefTitle.textContent = routeCopy.sectorName;
+      if (this.nBriefTransit) {
+        writeEnglishTokens(
+          this.nBriefTransit,
+          `${m.screens.transitTo} ${routeCopy.destination}`,
+          [routeCopy.destination],
+        );
+      }
+      for (let i = 0; i < this.nBriefLines.length; i++) {
+        writeEnglishTokens(
+          this.nBriefLines[i]!,
+          routeCopy[CAMPAIGN_BRIEF_KEYS[i]!] ?? '',
+          ['ACHRA', 'CAIRN', 'NEEDLE GRAVE', 'SHEAR'],
+        );
+      }
     }
 
     for (const id of COURSE_IDS) {
@@ -686,12 +703,14 @@ export class Screens {
     const view = active.closest<HTMLElement>('[data-view]');
     if (!view || view.dataset['open'] !== '1') return null;
     const nav = active.closest<HTMLElement>('[data-nav]');
+    const checked = nav?.querySelector<HTMLElement>('[aria-checked="true"]') ?? null;
     return {
       view: view.dataset['view'] as ScreenView,
       action: active.dataset['action'] as ScreenAction | undefined,
       nav: nav?.dataset['nav'],
-      locale: active.dataset['locale'] as Locale | undefined,
+      locale: (active.dataset['locale'] ?? checked?.dataset['locale']) as Locale | undefined,
       route: active.dataset['route'] as CourseId | undefined,
+      runMode: (active.dataset['runMode'] ?? checked?.dataset['runMode']) as RunModeId | undefined,
     };
   }
 
@@ -699,7 +718,7 @@ export class Screens {
     if (!token || token.view !== this.view) return;
     const view = this.views.get(token.view);
     if (!view) return;
-    const candidates = view.querySelectorAll<HTMLElement>('[data-nav], [data-locale]');
+    const candidates = view.querySelectorAll<HTMLElement>('[data-nav], [data-locale], [data-run-mode]');
     let match: HTMLElement | null = null;
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
@@ -709,6 +728,7 @@ export class Screens {
       if (token.nav !== undefined && candidateNav?.dataset['nav'] !== token.nav) continue;
       if (token.locale !== undefined && candidate.dataset['locale'] !== token.locale) continue;
       if (token.route !== undefined && candidate.dataset['route'] !== token.route) continue;
+      if (token.runMode !== undefined && candidate.dataset['runMode'] !== token.runMode) continue;
       match = candidate;
       break;
     }
@@ -748,15 +768,28 @@ export class Screens {
        on BEGIN and uses S/W to reach SETTINGS and return. When campaign mode is enabled, append
        its visible route cards without moving their visual placement. Hidden feature-gated regions
        are always filtered below so their descendants cannot become invisible focus stops. */
-    const found = root.dataset['view'] === 'title'
-      ? [
-          ...root.querySelectorAll<HTMLElement>('.lv-menu [data-nav]'),
-          ...root.querySelectorAll<HTMLElement>('.lv-route-strip [data-nav]'),
-        ]
-      : [...root.querySelectorAll<HTMLElement>('[data-nav]')];
+    let found: HTMLElement[];
+    if (root.dataset['view'] === 'title') {
+      found = [
+        ...root.querySelectorAll<HTMLElement>('.lv-menu [data-nav]'),
+        ...root.querySelectorAll<HTMLElement>('.lv-mode-select [data-nav]'),
+        ...root.querySelectorAll<HTMLElement>('.lv-route-strip [data-nav]'),
+      ];
+    } else {
+      const all = [...root.querySelectorAll<HTMLElement>('[data-nav]')];
+      /* A scrollable article is reachable, but not the first thing focused when a briefing or
+         result opens. Primary actions retain their established landing point; one more Tab (or
+         Shift+Tab from the first action) reaches the clipped evidence and lets PageDown/End work
+         natively. */
+      found = [
+        ...all.filter((node) => node.dataset['nav'] !== 'scroll'),
+        ...all.filter((node) => node.dataset['nav'] === 'scroll'),
+      ];
+    }
     this.navItems.length = 0;
     for (let i = 0; i < found.length; i++) {
       const node = found[i]!;
+      if (node.dataset['nav'] === 'mode' && node.tabIndex < 0) continue;
       if (node.dataset['disabled'] !== '1' && !node.closest('[hidden]')) this.navItems.push(node);
     }
     this.navIndex = 0;
@@ -833,6 +866,9 @@ export class Screens {
     const target = ev.target as HTMLElement | null;
     const item = target?.closest<HTMLElement>('[data-nav]');
     if (!item) return;
+    /* Scroll articles are keyboard stops, not hover controls. Focusing one merely because a new
+       screen appeared under the stationary pointer steals the intended ENGAGE/RETRY landing. */
+    if (item.dataset['nav'] === 'scroll') return;
     const idx = this.navItems.indexOf(item);
     if (idx >= 0 && idx !== this.navIndex) {
       this.navIndex = idx;
@@ -866,6 +902,12 @@ export class Screens {
       return true;
     }
 
+    const activeMode = active?.closest<HTMLButtonElement>('.lv-mode-option') ?? null;
+    if (activeMode && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+      this.adjustModeOption(activeMode, key === 'ArrowLeft' ? -1 : 1);
+      return true;
+    }
+
     if (key === 'ArrowDown' || key === 's' || key === 'S' || (key === 'Tab' && !ev.shiftKey)) {
       this.focusNav(this.navIndex + 1);
       return true;
@@ -886,8 +928,15 @@ export class Screens {
     }
     if (key === 'Enter' || key === ' ') {
       if (isRange) return true;
+      /* Roving radio focus can be moved by assistive technology independently of navIndex.
+         Activate the radio that actually owns focus; never fall through to a stale BEGIN item. */
+      if (activeMode) {
+        activeMode.click();
+        return true;
+      }
       const node = this.navItems[this.navIndex];
       if (!node) return true;
+      if (node.dataset['nav'] === 'scroll') return false;
       if (node.dataset['nav'] === 'segmented') {
         /* A radiogroup has no click behaviour of its own, so Enter used to be a dead key that
            still played a confirm. Advance through the options instead, wrapping. */
@@ -913,6 +962,10 @@ export class Screens {
   private adjust(dir: number): void {
     const node = this.navItems[this.navIndex];
     if (!node) return;
+    if (node.dataset['nav'] === 'mode' && node instanceof HTMLButtonElement) {
+      this.adjustModeOption(node, dir);
+      return;
+    }
     if (node.dataset['nav'] === 'route') {
       const current = COURSE_IDS.indexOf(node.dataset['route'] as CourseId);
       const next = clamp(current + dir, 0, COURSE_IDS.length - 1);
@@ -939,6 +992,19 @@ export class Screens {
         this.opts.onSound('move');
       }
     }
+  }
+
+  private adjustModeOption(option: HTMLButtonElement, dir: number): void {
+    const group = option.closest<HTMLElement>('[role="radiogroup"]');
+    if (!group) return;
+    const options = [...group.querySelectorAll<HTMLButtonElement>('.lv-mode-option')];
+    if (options.length === 0) return;
+    const current = Math.max(0, options.indexOf(option));
+    const next = (current + dir + options.length) % options.length;
+    const target = options[next]!;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (target !== option) target.click();
   }
 
   /* ------------------------------------------------------------ shell helper */
@@ -1000,6 +1066,67 @@ export class Screens {
   private static frame(node: HTMLElement): HTMLElement {
     for (let i = 0; i < 4; i++) node.appendChild(el('i', `lv-brk lv-brk--${i}`));
     return node;
+  }
+
+  /** Marks an actual overflow owner as a keyboard-readable region without changing its layout. */
+  private scrollRegion(node: HTMLElement, id: string, label: string): HTMLElement {
+    node.tabIndex = 0;
+    node.dataset['nav'] = 'scroll';
+    node.dataset['scrollRegion'] = id;
+    node.setAttribute('role', 'region');
+    node.setAttribute('aria-label', label);
+    return node;
+  }
+
+  /**
+   * The physical C binding is shared, but survival has one additional camera stop. Keeping the
+   * mode branch at the presentation boundary means the time-trial legend remains byte-for-byte
+   * the copy players already learned while the survival primer tells the whole truth.
+   */
+  private controlCopy(row: ControlRow, short: boolean): string {
+    if (row.id === 'camera-toggle' && this.runMode === SURVIVAL_RUN_MODE_ID) {
+      return short
+        ? this.translator.messages.survival.cameraCycleShort
+        : this.translator.messages.survival.cameraCycle;
+    }
+    return this.translator.messages.controls[short ? row.short ?? row.action : row.action];
+  }
+
+  /** A single instrument strip, deliberately distinct from the dormant campaign card grid. */
+  private buildModeSelector(): HTMLElement {
+    const m = this.translator.messages.survival;
+    const section = el('section', 'lv-mode-select');
+    section.dataset['modeSelector'] = 'title';
+    section.hidden = this.host.getRunMode === undefined || this.host.selectRunMode === undefined;
+    section.appendChild(englishText('div', 'lv-kicker lv-mode-kicker', m.mode));
+
+    const group = el('div', 'lv-mode-seg');
+    group.dataset['value'] = this.runMode;
+    group.setAttribute('role', 'radiogroup');
+    group.setAttribute('aria-label', m.modeSelection);
+
+    const options: readonly (readonly [RunModeId, string])[] = [
+      [DEFAULT_RUN_MODE_ID, m.timeTrial],
+      [SURVIVAL_RUN_MODE_ID, m.meteorSurvival],
+    ];
+    for (const [mode, label] of options) {
+      const option = englishText('button', 'lv-mode-option', label) as HTMLButtonElement;
+      option.type = 'button';
+      option.tabIndex = mode === this.runMode ? 0 : -1;
+      option.dataset['nav'] = 'mode';
+      option.dataset['seg'] = mode;
+      option.dataset['runMode'] = mode;
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', mode === this.runMode ? 'true' : 'false');
+      option.addEventListener('click', () => {
+        if (mode === this.runMode || !this.host.selectRunMode) return;
+        this.opts.onSound('click');
+        this.host.selectRunMode(mode);
+      });
+      group.appendChild(option);
+    }
+    section.appendChild(group);
+    return section;
   }
 
   private buildRouteStrip(): HTMLElement {
@@ -1077,14 +1204,20 @@ export class Screens {
 
   private buildTitle(): HTMLElement {
     const m = this.translator.messages;
+    const survival = this.runMode === SURVIVAL_RUN_MODE_ID;
     const view = this.makeView('title', m.a11y.mainMenu);
+    view.dataset['modeContext'] = this.runMode;
     const inner = el('div', 'lv-title');
 
     const eyebrow = el('div', 'lv-title-eyebrow');
     eyebrow.lang = 'en';
-    this.nTitleSector = englishText('span', 'lv-title-sector', m.meta.sectorName);
+    this.nTitleSector = englishText(
+      'span',
+      'lv-title-sector',
+      survival ? m.survival.meteorSurvival : m.meta.sectorName,
+    );
     eyebrow.append(
-      englishText('span', '', m.screens.sector),
+      englishText('span', '', survival ? m.survival.mode : m.screens.sector),
       el('i', 'lv-dot'),
       this.nTitleSector,
     );
@@ -1108,8 +1241,14 @@ export class Screens {
     const rule = el('div', 'lv-rule');
     rule.appendChild(el('i', 'lv-rule-glint'));
 
-    const tag = writeEnglishTokens(el('p', 'lv-tagline'), m.meta.tagline, ['CAIRN', 'TERMINUS']);
+    const tag = writeEnglishTokens(
+      el('p', 'lv-tagline'),
+      survival ? m.survival.titleTagline : m.meta.tagline,
+      survival ? ['METEOR'] : ['CAIRN', 'TERMINUS'],
+    );
     this.nTitleTagline = tag;
+
+    const modeSelector = this.buildModeSelector();
 
     const routes = this.buildRouteStrip();
     routes.hidden = !CAMPAIGN_MODE_ENABLED;
@@ -1128,10 +1267,10 @@ export class Screens {
       'is-primary',
       'begin',
       () => this.host.start(),
-      m.meta.destinationName,
+      survival ? m.survival.endure : m.meta.destinationName,
     );
     const destination = begin.querySelector<HTMLElement>('.lv-btn-s');
-    this.nBeginDestination = destination;
+    this.nBeginDestination = survival ? null : destination;
     if (destination) destination.lang = 'en';
     menu.append(
       begin,
@@ -1180,7 +1319,7 @@ export class Screens {
       englishText('span', '', m.screens.navigationNominal),
     );
 
-    inner.append(eyebrow, mark, rule, tag, routes, campaignError, menu, foot);
+    inner.append(eyebrow, mark, rule, tag, modeSelector, routes, campaignError, menu, foot);
     view.append(el('div', 'lv-veil'), inner);
     return view;
   }
@@ -1188,6 +1327,12 @@ export class Screens {
   /* ---------------------------------------------------------------- briefing */
 
   private buildBriefing(): HTMLElement {
+    return this.runMode === SURVIVAL_RUN_MODE_ID
+      ? this.buildSurvivalBriefing()
+      : this.buildTimeTrialBriefing();
+  }
+
+  private buildTimeTrialBriefing(): HTMLElement {
     const m = this.translator.messages;
     const routeCopy = m.campaign.routes[this.campaign.activeCourseId];
     const view = this.makeView('briefing', m.a11y.runBriefing);
@@ -1209,6 +1354,7 @@ export class Screens {
     );
 
     const cols = el('div', 'lv-brief-cols');
+    this.scrollRegion(cols, 'briefing-content', m.a11y.runBriefing);
 
     const stats = el('dl', 'lv-stats');
     const addStat = (k: string, v: string, valueLang?: 'en'): HTMLElement => {
@@ -1256,21 +1402,7 @@ export class Screens {
       this.nBriefLines.push(p);
     }
 
-    const primer = el('div', 'lv-primer');
-    primer.appendChild(englishText('div', 'lv-kicker', m.screens.coreControls));
-    const keys = el('ul', 'lv-primer-list');
-    for (let i = 0; i < CONTROLS.length; i++) {
-      const row = CONTROLS[i]!;
-      if (!row.primer) continue;
-      const li = el('li');
-      li.dataset['control'] = row.id;
-      li.append(
-        keyChips(row, m.controls.or),
-        el('span', '', m.controls[row.short ?? row.action]),
-      );
-      keys.appendChild(li);
-    }
-    primer.appendChild(keys);
+    const primer = this.buildControlPrimer();
 
     cols.append(meta, prose, primer);
 
@@ -1283,6 +1415,79 @@ export class Screens {
     panel.append(head, cols, actions);
     view.append(el('div', 'lv-veil'), panel);
     return view;
+  }
+
+  private buildSurvivalBriefing(): HTMLElement {
+    const m = this.translator.messages;
+    const s = m.survival;
+    const view = this.makeView('briefing', m.a11y.runBriefing);
+    view.dataset['modeContext'] = SURVIVAL_RUN_MODE_ID;
+    const panel = Screens.frame(el('div', 'lv-brief lv-brief--survival'));
+
+    const head = el('header', 'lv-brief-head');
+    head.append(
+      englishText('div', 'lv-kicker', m.screens.runBriefing),
+      englishText('h2', 'lv-brief-title', s.meteorSurvival),
+      englishText('div', 'lv-brief-sub', s.briefingSub),
+    );
+
+    const stats = el('dl', 'lv-stats lv-stats--survival');
+    const addStat = (key: string, value: string): void => {
+      const row = el('div', 'lv-stat');
+      row.append(englishText('dt', '', key), englishText('dd', '', value));
+      stats.appendChild(row);
+    };
+    addStat(s.activeThreat, s.ballistic);
+    addStat(s.intensity, s.rising);
+    addStat(s.pressure, s.continuous);
+    addStat(m.screens.hull, m.meta.shipName);
+    addStat(s.viewCycle, 'CHASE / COCKPIT / FAR CHASE');
+
+    const prose = el('div', 'lv-prose lv-prose--survival');
+    const lines = [s.briefingLine1, s.briefingLine2, s.briefingLine3] as const;
+    for (let i = 0; i < lines.length; i++) {
+      const paragraph = writeEnglishTokens(
+        el('p', 'lv-prose-l'),
+        lines[i]!,
+        ['METEOR FIELD', 'BALLISTIC', 'FIELD'],
+      );
+      paragraph.style.setProperty('--n', String(i));
+      prose.appendChild(paragraph);
+    }
+
+    const meta = el('div', 'lv-brief-meta');
+    meta.appendChild(stats);
+    const primer = this.buildControlPrimer();
+    const cols = el('div', 'lv-brief-cols lv-brief-cols--survival');
+    this.scrollRegion(cols, 'survival-briefing-content', m.a11y.runBriefing);
+    cols.append(meta, prose, primer);
+
+    const actions = el('div', 'lv-actions');
+    actions.append(
+      this.button(m.screens.engage, 'is-primary', 'engage', () => this.host.engage()),
+      this.button(m.screens.back, 'is-ghost', 'return', () => this.opts.onBack()),
+    );
+
+    panel.append(head, cols, actions);
+    view.append(el('div', 'lv-veil'), panel);
+    return view;
+  }
+
+  private buildControlPrimer(): HTMLElement {
+    const m = this.translator.messages;
+    const primer = el('div', 'lv-primer');
+    primer.appendChild(englishText('div', 'lv-kicker', m.screens.coreControls));
+    const keys = el('ul', 'lv-primer-list');
+    for (let i = 0; i < CONTROLS.length; i++) {
+      const row = CONTROLS[i]!;
+      if (!row.primer) continue;
+      const li = el('li');
+      li.dataset['control'] = row.id;
+      li.append(keyChips(row, m.controls.or), el('span', '', this.controlCopy(row, true)));
+      keys.appendChild(li);
+    }
+    primer.appendChild(keys);
+    return primer;
   }
 
   /**
@@ -1574,7 +1779,7 @@ export class Screens {
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
       li.style.setProperty('--n', String(i));
-      li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
+      li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', this.controlCopy(row, false)));
       list.appendChild(li);
     }
 
@@ -1605,7 +1810,10 @@ export class Screens {
     const routeCopy = m.campaign.routes[campaignCourse.id];
     const body = this.nResultBody;
     body.textContent = '';
+    body.lang = 'en';
     delete body.dataset['state'];
+    delete body.dataset['runMode'];
+    delete body.dataset['survivalResult'];
     this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
@@ -1628,6 +1836,7 @@ export class Screens {
 
     /* two columns: the run's headline number on the left, its shape on the right */
     const main = el('div', 'lv-res-main');
+    this.scrollRegion(main, 'result-content', m.a11y.runComplete);
     main.style.setProperty('--n', '1');
 
     const left = el('div', 'lv-res-left');
@@ -1889,6 +2098,118 @@ export class Screens {
   }
 
   /**
+   * Survival is scored by duration, not by route splits or rank. It receives its own compact
+   * after-action layout so a failed hull is not mislabeled as a failed time trial and so the
+   * six numbers worth comparing fit without manufacturing a fake segment graph.
+   */
+  showSurvivalResult(r: SurvivalRunResult): void {
+    const m = this.translator.messages;
+    const s = m.survival;
+    const body = this.nResultBody;
+    body.textContent = '';
+    body.lang = this.translator.locale;
+    body.dataset['state'] = 'survival';
+    body.dataset['runMode'] = SURVIVAL_RUN_MODE_ID;
+    body.dataset['survivalResult'] = '1';
+    this.views.get('results')?.setAttribute('aria-label', s.resultA11y);
+
+    const head = el('header', 'lv-res-head lv-survival-head');
+    head.style.setProperty('--n', '0');
+    const headline = el('div', 'lv-res-headline');
+    const detail = el('p', 'lv-survival-detail', s.resultDetail);
+    detail.lang = this.translator.locale;
+    headline.append(
+      englishText('div', 'lv-kicker', s.runEnded),
+      englishText('h2', 'lv-res-title', s.meteorSurvival),
+      detail,
+    );
+
+    const lockup = el('div', 'lv-survival-lockup');
+    lockup.setAttribute('aria-hidden', 'true');
+    lockup.append(
+      englishText('span', 'lv-survival-lockup-k', s.mode),
+      englishText('span', 'lv-survival-lockup-v', s.arenaName),
+      el('i', 'lv-survival-pulse'),
+    );
+    head.append(headline, lockup);
+    body.appendChild(head);
+
+    const main = el('div', 'lv-survival-result-main');
+    this.scrollRegion(main, 'survival-result-content', s.resultA11y);
+    main.style.setProperty('--n', '1');
+    const hero = el('section', 'lv-survival-hero');
+    hero.dataset['stat'] = 'survived';
+    const timeBlock = el('div', 'lv-res-timeblock');
+    timeBlock.append(
+      englishText('div', 'lv-res-k', s.survived),
+      englishText('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
+    if (r.isNewBest) {
+      const badge = el('div', 'lv-newbest');
+      badge.append(el('i', 'lv-newbest-tick'), englishText('span', '', s.newRecord));
+      timeBlock.appendChild(badge);
+    } else if (r.bestTime != null) {
+      const delta = englishText(
+        'div',
+        'lv-res-delta',
+        `${formatDelta(r.totalTime - r.bestTime)} vs ${s.best} ${formatTime(r.bestTime)}`,
+      );
+      delta.dataset['tone'] = r.totalTime >= r.bestTime ? 'good' : 'bad';
+      timeBlock.appendChild(delta);
+    }
+    hero.appendChild(timeBlock);
+
+    const best = el('div', 'lv-survival-best');
+    best.dataset['stat'] = 'best';
+    const displayedBest = r.isNewBest ? r.totalTime : r.bestTime;
+    best.append(
+      englishText('span', 'lv-survival-best-k', s.best),
+      englishText('span', 'lv-survival-best-v', formatTime(displayedBest)),
+    );
+    hero.appendChild(best);
+
+    const ledger = el('section', 'lv-survival-ledger');
+    ledger.appendChild(englishText('div', 'lv-kicker', s.endure));
+    const stats = el('dl', 'lv-survival-stats');
+    const addStat = (id: string, label: string, value: string, tone?: 'good' | 'warn'): void => {
+      const row = el('div', 'lv-survival-stat');
+      row.dataset['stat'] = id;
+      if (tone) row.dataset['tone'] = tone;
+      row.append(
+        englishText('dt', 'lv-survival-stat-k', label),
+        englishText('dd', 'lv-survival-stat-v', value),
+      );
+      stats.appendChild(row);
+    };
+    addStat('dodged', s.dodged, String(r.meteorsDodged).padStart(3, '0'), 'good');
+    addStat('near-misses', s.nearMisses, String(r.nearMisses).padStart(2, '0'));
+    addStat(
+      'impacts',
+      s.impacts,
+      String(r.collisions).padStart(2, '0'),
+      r.collisions === 0 ? 'good' : 'warn',
+    );
+    addStat('peak-threat', s.peakThreat, String(r.peakActive).padStart(2, '0'));
+    addStat('top-speed', s.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`);
+    ledger.appendChild(stats);
+    main.append(hero, ledger);
+    body.appendChild(main);
+
+    const actions = el('div', 'lv-actions lv-actions--res lv-survival-actions');
+    actions.style.setProperty('--n', '2');
+    actions.append(
+      this.button(s.retry, 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
+      this.button(s.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+    );
+    body.appendChild(actions);
+
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /**
    * Reuses the results shell for a terminal hull breach without presenting a failed run as a
    * result. Retry remains primary and the route strip is the only alternate exit. The N chip
    * matches Input's real restart binding, so the visible shortcut and action path agree.
@@ -1897,7 +2218,10 @@ export class Screens {
     const m = this.translator.messages;
     const body = this.nResultBody;
     body.textContent = '';
+    body.lang = 'en';
     body.dataset['state'] = 'failure';
+    delete body.dataset['runMode'];
+    delete body.dataset['survivalResult'];
     this.views.get('results')?.setAttribute('aria-label', m.a11y.hullBreach);
 
     const head = el('header', 'lv-res-head');

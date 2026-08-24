@@ -105,13 +105,13 @@ const ASTEROID_FRAG = /* glsl */ `
   }
 `;
 
-interface AsteroidGeometry {
+export interface AsteroidGeometry {
   geometry: THREE.BufferGeometry;
   /** Radius of the generating sphere after displacement, for collision. */
   boundRadius: number;
 }
 
-function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
+export function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
   // Welded BEFORE displacement. IcosahedronGeometry is non-indexed, so computeVertexNormals can
   // only ever produce per-face normals — measured at 320 of 320 faces with all three vertex
   // normals identical. That gives hard creases and a polygonal silhouette that no amount of
@@ -175,6 +175,25 @@ function buildAsteroidGeometry(rng: Rng, detail: number): AsteroidGeometry {
   geometry.computeBoundingSphere();
 
   return { geometry, boundRadius: maxR };
+}
+
+/**
+ * Builds the shared procedural rock material used by both the course field and bounded dynamic
+ * hazards. Keeping this factory here prevents survival-mode meteors from drifting into a second,
+ * visually incompatible shader while still giving each field ownership of its uniform state.
+ */
+export function createAsteroidMaterial(lighting: LightingUniforms): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: withLighting(lighting, {
+      uCameraPos: { value: new THREE.Vector3() },
+      uRock: { value: new THREE.Color(PALETTE.rockLit) },
+      uMineral: { value: new THREE.Color(PALETTE.rockMineral).multiplyScalar(0.35) },
+      uDetailScale: { value: 0.06 },
+    }),
+    vertexShader: ASTEROID_VERT,
+    fragmentShader: ASTEROID_FRAG,
+    vertexColors: true,
+  });
 }
 
 export interface AsteroidInstance {
@@ -332,17 +351,7 @@ export class AsteroidField {
       radius,
     }));
 
-    this.material = new THREE.ShaderMaterial({
-      uniforms: withLighting(options.lighting, {
-        uCameraPos: { value: new THREE.Vector3() },
-        uRock: { value: new THREE.Color(PALETTE.rockLit) },
-        uMineral: { value: new THREE.Color(PALETTE.rockMineral).multiplyScalar(0.35) },
-        uDetailScale: { value: 0.06 },
-      }),
-      vertexShader: ASTEROID_VERT,
-      fragmentShader: ASTEROID_FRAG,
-      vertexColors: true,
-    });
+    this.material = createAsteroidMaterial(options.lighting);
 
     // Sixteen silhouettes rather than eight: a field of a thousand rocks makes any repetition
     // obvious, and silhouette is the thing the eye actually matches on.

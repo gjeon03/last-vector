@@ -12,6 +12,7 @@
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
 import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
+import { SURVIVAL_RUN_MODE_ID } from '../core/GameModes.ts';
 import type { Messages, Translator } from '../i18n/index.ts';
 
 /* ------------------------------------------------------------------ utilities */
@@ -323,8 +324,13 @@ export class Hud {
   private readonly nHullFill: HTMLElement;
   private readonly nHullRow: HTMLElement;
   private readonly nGateCur: RollingNumber;
+  private readonly nSurvivalActive: HTMLElement;
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
+  private readonly nRightLabel: HTMLElement;
+  private readonly nSplitLabel: HTMLElement;
+  private readonly nTotalLabel: HTMLElement;
+  private readonly nBestLabel: HTMLElement;
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -336,6 +342,8 @@ export class Hud {
   private readonly nRail: HTMLElement;
   private readonly nRailFill: HTMLElement;
   private readonly nRailTicks: HTMLElement;
+  private readonly nRailDeparture: HTMLElement;
+  private readonly nRailDestination: HTMLElement;
   private readonly nGateLabel: HTMLElement;
   private readonly nGateLabelDist: HTMLElement;
   private readonly nGateLabelUnit: HTMLElement;
@@ -409,6 +417,13 @@ export class Hud {
   private pRailTicks = -1;
   private pGateCur = -1;
   private pDestination = '';
+  private pRunMode = '';
+  private pSurvivalActive = -1;
+  private pSurvivalCap = -1;
+  private pSurvivalIntensity = -1;
+  private pSurvivalTier = -1;
+  private pSurvivalDodged = -1;
+  private pSurvivalSecond = -1;
   private pAlpha = -1;
   private pCalloutAriaHidden: boolean | undefined = undefined;
   private pRadioAriaHidden: boolean | undefined = undefined;
@@ -562,22 +577,28 @@ export class Hud {
     const gateCount = el('div', 'lv-gatecount');
     this.nGateCur = new RollingNumber(2, 'lv-roll lv-roll--gate');
     this.nGateCur.el.lang = 'en';
+    this.nSurvivalActive = el('div', 'lv-roll lv-roll--gate', '000');
+    this.nSurvivalActive.lang = 'en';
+    this.nSurvivalActive.hidden = true;
     this.nGateTot = el('span', 'lv-gatecount-t', '00');
     this.nGateTot.lang = 'en';
     const gateSeparator = el('span', 'lv-gatecount-s', '/');
     gateSeparator.lang = 'en';
-    gateCount.append(this.nGateCur.el, gateSeparator, this.nGateTot);
+    gateCount.append(this.nGateCur.el, this.nSurvivalActive, gateSeparator, this.nGateTot);
     this.nGateName = el('div', 'lv-gatename', '');
 
     const times = el('dl', 'lv-times');
     this.nSplit = this.buildTime(times, this.messages.hud.segment, 'is-split');
+    this.nSplitLabel = this.nSplit.previousElementSibling as HTMLElement;
     this.nTotal = this.buildTime(times, this.messages.hud.elapsed, 'is-total');
+    this.nTotalLabel = this.nTotal.previousElementSibling as HTMLElement;
     this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
+    this.nBestLabel = this.nBest.previousElementSibling as HTMLElement;
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    const nextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
-    nextMarkerLabel.lang = 'en';
-    right.append(nextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
+    this.nRightLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    this.nRightLabel.lang = 'en';
+    right.append(this.nRightLabel, gateCount, this.nGateName, times, this.nSplitFeed);
     frame.appendChild(right);
 
     /* ---- centre-upper callout ---- */
@@ -612,11 +633,11 @@ export class Hud {
     this.nRailTicks = el('div', 'lv-rail-ticks');
     railTrack.append(this.nRailFill, this.nRailTicks);
     const railKeys = el('div', 'lv-rail-keys');
-    const railDestination = el('span', 'lv-rail-dest', this.messages.hud.terminus);
-    railDestination.lang = 'en';
-    const railDeparture = el('span', '', this.messages.hud.departure);
-    railDeparture.lang = 'en';
-    railKeys.append(railDeparture, railDestination);
+    this.nRailDestination = el('span', 'lv-rail-dest', this.messages.hud.terminus);
+    this.nRailDestination.lang = 'en';
+    this.nRailDeparture = el('span', '', this.messages.hud.departure);
+    this.nRailDeparture.lang = 'en';
+    railKeys.append(this.nRailDeparture, this.nRailDestination);
     this.nRail.append(railKeys, railTrack);
     frame.appendChild(this.nRail);
 
@@ -766,8 +787,7 @@ export class Hud {
   }
 
   setDestination(name: string): void {
-    const dest = this.nRail.querySelector('.lv-rail-dest');
-    if (dest) dest.textContent = name;
+    this.nRailDestination.textContent = name;
   }
 
   radio(speaker: string, text: string, durationBasisLength = text.length): void {
@@ -836,12 +856,94 @@ export class Hud {
 
   /* ---------------------------------------------------------------- sections */
 
-  private updateText(t: Telemetry, dt: number): void {
-    if (t.sectorName !== this.pSector) {
-      this.pSector = t.sectorName;
-      this.nSector.textContent = t.sectorName;
+  /**
+   * A run mode is selected before launch, but keeping this transition explicit makes the HUD
+   * safe for the harness and for a future in-place restart. It is also the only place that
+   * mutates the structure/labels of the right cluster: steady-state survival updates only write
+   * values whose quantized representation actually changed.
+   */
+  private syncRunMode(t: Telemetry): boolean {
+    const survival = t.runMode === SURVIVAL_RUN_MODE_ID && t.survival !== undefined;
+    const mode = survival ? SURVIVAL_RUN_MODE_ID : 'time-trial';
+    if (mode === this.pRunMode) return survival;
+
+    this.pRunMode = mode;
+    this.el.dataset['mode'] = mode;
+    this.nGateCur.el.hidden = survival;
+    this.nSurvivalActive.hidden = !survival;
+    this.nGateLabel.hidden = survival;
+    this.nSplitFeed.hidden = survival;
+    if (survival) this.nSplitFeed.setAttribute('aria-hidden', 'true');
+    else this.nSplitFeed.removeAttribute('aria-hidden');
+
+    this.nRightLabel.textContent = survival
+      ? this.messages.survival.activeThreat
+      : this.messages.hud.nextMarker;
+    this.nSplitLabel.textContent = survival
+      ? this.messages.survival.intensity
+      : this.messages.hud.segment;
+    this.nTotalLabel.textContent = survival
+      ? this.messages.survival.survived
+      : this.messages.hud.elapsed;
+    this.nBestLabel.textContent = survival
+      ? this.messages.survival.best
+      : this.messages.hud.best;
+    this.nRailDeparture.textContent = survival
+      ? this.messages.survival.endure
+      : this.messages.hud.departure;
+    this.nRailDestination.textContent = survival
+      ? this.messages.survival.pressure
+      : t.destinationName;
+
+    if (survival) {
+      for (let i = this.splitNodes.length - 1; i >= 0; i--) this.splitNodes[i]!.remove();
+      this.splitNodes.length = 0;
+      this.splitTtl.length = 0;
+      this.nSplitFeed.replaceChildren();
+      this.nSplitFeed.dataset['delta'] = '0';
+      this.nRailTicks.replaceChildren();
+      this.pSplitCount = 0;
+      this.pBestSplitCount = -1;
+      this.pSplitTotal = -1;
+      this.pRailTicks = -1;
+    } else {
+      delete this.el.dataset['survivalActive'];
+      delete this.el.dataset['survivalCap'];
+      delete this.el.dataset['survivalIntensity'];
+      delete this.el.dataset['survivalTier'];
+      delete this.el.dataset['survivalDodged'];
+      delete this.el.dataset['survivalSeconds'];
+      this.pDestination = '';
     }
-    if (t.destinationName !== this.pDestination) {
+
+    /* Shared nodes have different meanings in the two projections. Invalidate their guards so
+       an equal-looking value (for example 00:00.00) is still written after a mode transition. */
+    this.pGateCur = -1;
+    this.pGateTot = -1;
+    this.pGateName = '';
+    this.pGateNameType = '';
+    this.pSplit = '';
+    this.pTotal = '';
+    this.pBest = '';
+    this.pRail = -1;
+    this.pCleared = -1;
+    this.pSurvivalActive = -1;
+    this.pSurvivalCap = -1;
+    this.pSurvivalIntensity = -1;
+    this.pSurvivalTier = -1;
+    this.pSurvivalDodged = -1;
+    this.pSurvivalSecond = -1;
+    return survival;
+  }
+
+  private updateText(t: Telemetry, dt: number): void {
+    const survivalMode = this.syncRunMode(t);
+    const sector = survivalMode ? this.messages.survival.arenaName : t.sectorName;
+    if (sector !== this.pSector) {
+      this.pSector = sector;
+      this.nSector.textContent = sector;
+    }
+    if (!survivalMode && t.destinationName !== this.pDestination) {
       this.pDestination = t.destinationName;
       this.setDestination(t.destinationName);
     }
@@ -894,6 +996,11 @@ export class Hud {
       //
       // If you re-tune: take a fresh lap, and record which commit the lap came from.
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
+    }
+
+    if (survivalMode) {
+      this.updateSurvivalText(t, dt);
+      return;
     }
 
     /* gate counter — splits.length is the unambiguous "cleared" count */
@@ -963,6 +1070,70 @@ export class Hud {
     const prog =
       t.courseTotal > 0 ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1) : cleared / total;
     this.eRail.target = prog;
+    const railV = this.eRail.step(dt);
+    const railQ = Math.round(railV * 400);
+    if (railQ !== this.pRail) {
+      this.pRail = railQ;
+      this.nRailFill.style.transform = `scaleX(${(railQ / 400).toFixed(4)})`;
+    }
+  }
+
+  private updateSurvivalText(t: Telemetry, dt: number): void {
+    const survival = t.survival;
+    if (!survival) return;
+
+    const cap = clamp(Math.round(survival.activeCap), 1, 999);
+    const active = clamp(Math.round(survival.activeMeteors), 0, cap);
+    if (active !== this.pSurvivalActive) {
+      this.pSurvivalActive = active;
+      this.nSurvivalActive.textContent = PAD3(active);
+      this.el.dataset['survivalActive'] = String(active);
+    }
+    if (cap !== this.pSurvivalCap) {
+      this.pSurvivalCap = cap;
+      this.nGateTot.textContent = PAD3(cap);
+      this.el.dataset['survivalCap'] = String(cap);
+    }
+
+    const intensity = Math.round(clamp(survival.difficulty, 0, 1) * 100);
+    if (intensity !== this.pSurvivalIntensity) {
+      this.pSurvivalIntensity = intensity;
+      const intensityText = `${PAD3(intensity)}%`;
+      this.pSplit = intensityText;
+      this.nSplit.textContent = intensityText;
+      this.el.dataset['survivalIntensity'] = String(intensity);
+    }
+    const tier = Math.max(0, Math.round(survival.difficultyTier));
+    if (tier !== this.pSurvivalTier) {
+      this.pSurvivalTier = tier;
+      this.el.dataset['survivalTier'] = String(tier);
+    }
+
+    const dodged = Math.max(0, Math.round(survival.meteorsDodged));
+    if (dodged !== this.pSurvivalDodged) {
+      this.pSurvivalDodged = dodged;
+      this.nGateName.textContent = `${this.messages.survival.dodged} ${PAD3(dodged)}`;
+      this.nGateName.lang = 'en';
+      this.el.dataset['survivalDodged'] = String(dodged);
+    }
+
+    const totalStr = formatTime(t.elapsed);
+    if (totalStr !== this.pTotal) {
+      this.pTotal = totalStr;
+      this.nTotal.textContent = totalStr;
+    }
+    const elapsedSecond = Math.max(0, Math.floor(t.elapsed));
+    if (elapsedSecond !== this.pSurvivalSecond) {
+      this.pSurvivalSecond = elapsedSecond;
+      this.el.dataset['survivalSeconds'] = String(elapsedSecond);
+    }
+    const bestStr = formatTime(t.bestTime);
+    if (bestStr !== this.pBest) {
+      this.pBest = bestStr;
+      this.nBest.textContent = bestStr;
+    }
+
+    this.eRail.target = clamp(survival.difficulty, 0, 1);
     const railV = this.eRail.step(dt);
     const railQ = Math.round(railV * 400);
     if (railQ !== this.pRail) {
@@ -1173,6 +1344,11 @@ export class Hud {
   }
 
   private updateSplits(t: Telemetry, dt: number): void {
+    /* Survival deliberately has no split semantics. The feed is cleared once in syncRunMode;
+       returning here keeps the hot path allocation-free even if a legacy producer leaves a
+       stale split array on otherwise valid survival telemetry. */
+    if (this.pRunMode === SURVIVAL_RUN_MODE_ID) return;
+
     if (t.bestSplits.length !== this.pBestSplitCount || t.gate.total !== this.pSplitTotal) {
       this.pBestSplitCount = t.bestSplits.length;
       this.pSplitTotal = t.gate.total;
@@ -1322,6 +1498,20 @@ export class Hud {
     }
     vs.slipX = this.eSlipX.step(dt);
     vs.slipY = this.eSlipY.step(dt);
+
+    if (this.pRunMode === SURVIVAL_RUN_MODE_ID) {
+      vs.proximity = this.eProx.value;
+      vs.bore = 0;
+      ctx.globalAlpha = alpha;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      this.drawRollArc(ctx, w, h, vs);
+      this.drawProximity(ctx, w, h, vs);
+      this.drawFlightMarker(ctx, w, h, vs);
+      this.drawPipper(ctx, w, h, vs);
+      ctx.globalAlpha = 1;
+      return;
+    }
 
     /* --- gate director --- */
     const gate = t.gate;

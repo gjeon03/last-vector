@@ -72,7 +72,7 @@ async function runCampaign({ report, session, options }) {
         } : null,
       };
     });
-    verify(evidence.version === '1.8.0', 'Campaign harness version changed.', evidence);
+    verify(evidence.version === '1.9.0', 'Campaign harness version changed.', evidence);
     verify(evidence.course?.courseId === 'cairn-drift' && evidence.course?.gateCount === 9,
       'Disabled mode did not boot the historical nine-gate CAIRN route.', evidence);
     verify(evidence.course.recordId === `cairn-drift-${evidence.course.seed}`,

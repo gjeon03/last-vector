@@ -330,8 +330,15 @@ export class Ship {
 
   /** Applies a collision response and returns the severity, 0..1. */
 
-  applyImpact(normal: THREE.Vector3, penetration: number): number {
-    const closing = Math.max(0, -this.velocity.dot(normal));
+  applyImpact(
+    normal: THREE.Vector3,
+    penetration: number,
+    colliderVelocity?: THREE.Vector3,
+  ): number {
+    const closing = Math.max(
+      0,
+      -(this.velocity.dot(normal) - (colliderVelocity?.dot(normal) ?? 0)),
+    );
     const severity = clamp01(closing / FLIGHT_THRESHOLDS.maxImpactClosingSpeed);
 
     // Slide along the surface rather than stopping dead: glancing a rock should cost time and

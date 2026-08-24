@@ -6,6 +6,7 @@ import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
 import { COURSE_ORDER, courseRecordId, getCourseDefinition } from './core/Courses.ts';
 import { resolveCourseSelection } from './core/CourseSelection.ts';
+import { resolveRunMode } from './core/GameModes.ts';
 import { ProgressStore } from './core/Progress.ts';
 import {
   consumeLocaleHandoff,
@@ -121,6 +122,7 @@ async function boot(): Promise<void> {
   const seedParam = search.get('seed');
   const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
   const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
+  const runModeResolution = resolveRunMode(search.get('mode'));
   const courseResolution = resolveCourseSelection(search.get('course'), progressStore.snapshot());
   const courseDefinition = getCourseDefinition(courseResolution.courseId);
 
@@ -136,6 +138,7 @@ async function boot(): Promise<void> {
       localeStore,
       fonts,
       progressStore,
+      runMode: runModeResolution.modeId,
       courseDefinition,
       courseResolution,
       ...(seed === undefined ? {} : { seed }),
@@ -230,13 +233,17 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.8.0',
+    version: '1.9.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
+    runMode: () => game.getRunMode(),
+    survivalDebug: () => game.getSurvivalDebug(),
+    setSurvivalElapsed: (seconds) => game.setSurvivalElapsed(seconds),
+    setSurvivalCameraMode: (mode) => game.setSurvivalCameraMode(mode),
     course: () => game.getCourseState(),
     catalog: () => ({
       order: [...COURSE_ORDER],

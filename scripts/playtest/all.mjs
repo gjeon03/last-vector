@@ -21,12 +21,16 @@ const suites = [
   // exterior ship by design.
   { name: 'boost-vfx-probe', script: 'boost-vfx-probe.mjs' },
   { name: 'boost-vfx-probe-hidpi', script: 'boost-vfx-probe.mjs', args: ['--device-scale-factor', '2'] },
+  { name: 'survival-cadence', script: 'survival-cadence.mjs' },
+  { name: 'survival-perf-probe', script: 'survival-perf-probe.mjs' },
+  { name: 'survival-perf-probe-hidpi', script: 'survival-perf-probe.mjs', args: ['--device-scale-factor', '2'] },
   { name: 'i18n-contract', script: 'i18n-contract.mjs' },
   { name: 'campaign-contract', script: 'campaign-contract.mjs' },
   { name: 'localization', script: 'localization.mjs' },
   { name: 'localization-hidpi', script: 'localization.mjs', args: ['--device-scale-factor', '2'] },
   { name: 'playtest', script: 'playtest.mjs' },
   { name: 'campaign', script: 'campaign.mjs' },
+  { name: 'survival', script: 'survival.mjs' },
   { name: 'screenshot-matrix', script: 'screenshot-matrix.mjs' },
   // Nobody has heard this build, so the offline audio measurement IS the audio quality gate —
   // and a gate that is not run does not gate. --require-clean because everything this suite

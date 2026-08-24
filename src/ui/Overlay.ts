@@ -7,7 +7,14 @@
 
 import './styles.css';
 
-import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
+import type {
+  HudHost,
+  Phase,
+  RunResult,
+  Settings,
+  SurvivalRunResult,
+  Telemetry,
+} from '../core/contracts.ts';
 import { FONT, UI } from '../core/art.ts';
 import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
@@ -136,6 +143,8 @@ export class Overlay {
         host.showRouteSelect();
       },
       pause: () => host.pause(),
+      selectRunMode: host.selectRunMode ? (mode) => host.selectRunMode!(mode) : undefined,
+      getRunMode: host.getRunMode ? () => host.getRunMode!() : undefined,
       requestLocale: (locale) => host.requestLocale(locale),
       setSetting: (key, value) => host.setSetting(key, value),
       getSettings: () => host.getSettings(),
@@ -200,6 +209,10 @@ export class Overlay {
 
   showResult(result: RunResult): void {
     this.screens.showResult(result);
+  }
+
+  showSurvivalResult(result: SurvivalRunResult): void {
+    this.screens.showSurvivalResult(result);
   }
 
   showFailure(elapsed: number): void {
