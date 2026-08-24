@@ -26,6 +26,7 @@ export type Phase =
 export type Locale = 'ko' | 'en';
 export type LocaleFontStatus = 'not-required' | 'ready' | 'fallback' | 'failed';
 export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
+export type GateMissCause = 'aperture' | 'shear';
 
 export type GateNameMessage =
   | { type: 'gate-name.terminus-approach' }
@@ -38,21 +39,27 @@ export type CalloutTitleMessage =
   | { type: 'callout-title.hull-impact' }
   | { type: 'callout-title.boost-depleted' }
   | { type: 'callout-title.gate-cleared'; accuracy: GateAccuracy }
-  | { type: 'callout-title.gate-missed' };
+  | { type: 'callout-title.gate-missed'; blockedBy?: GateMissCause };
 
 export type CalloutSubMessage =
   | { type: 'callout-sub.keyboard-flight-available' }
   | { type: 'callout-sub.camera-active'; mode: CameraMode }
   | { type: 'callout-sub.boost-recharging' }
   | { type: 'callout-sub.gate-progress'; remaining: number; courseId?: CourseId }
-  | { type: 'callout-sub.gate-realign' };
+  | { type: 'callout-sub.gate-realign' }
+  | { type: 'callout-sub.gate-shear-window' };
 
 export type LogMessage =
   | { type: 'log.pointer-lock-refused'; reason: string }
   | { type: 'log.hull-contact'; percent: number }
   | { type: 'log.boost-depleted' }
   | { type: 'log.gate-cleared'; gate: number; seconds: number; courseId?: CourseId }
-  | { type: 'log.gate-missed'; gate: number; courseId?: CourseId };
+  | {
+      type: 'log.gate-missed';
+      gate: number;
+      courseId?: CourseId;
+      blockedBy?: GateMissCause;
+    };
 
 export interface ScreenAnchor {
   /** Normalised device coords, -1..1, x right / y up. Valid only when `onScreen`. */

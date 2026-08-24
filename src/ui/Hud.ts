@@ -393,6 +393,9 @@ export class Hud {
   private pCalloutTone = '';
   private pCalloutFade = -1;
   private pSplitCount = -1;
+  private pBestSplitCount = -1;
+  private pSplitTotal = -1;
+  private splitComparable = false;
   private pCleared = -1;
   private pRail = -1;
   private pLabelOn = false;
@@ -1160,6 +1163,15 @@ export class Hud {
   }
 
   private updateSplits(t: Telemetry, dt: number): void {
+    if (t.bestSplits.length !== this.pBestSplitCount || t.gate.total !== this.pSplitTotal) {
+      this.pBestSplitCount = t.bestSplits.length;
+      this.pSplitTotal = t.gate.total;
+      this.splitComparable =
+        t.gate.total > 0 &&
+        t.bestSplits.length === t.gate.total &&
+        t.bestSplits.every((split) => Number.isFinite(split) && split >= 0);
+      this.nSplitFeed.dataset['delta'] = this.splitComparable ? '1' : '0';
+    }
     if (this.pSplitCount === -1) this.pSplitCount = t.splits.length;
     if (t.splits.length > this.pSplitCount) {
       for (let i = this.pSplitCount; i < t.splits.length; i++) {
@@ -1176,6 +1188,21 @@ export class Hud {
         splitTime.lang = 'en';
         splitDuration.lang = 'en';
         node.append(splitIndex, splitTime, splitDuration);
+        if (this.splitComparable) {
+          const bestPrev = i > 0 ? t.bestSplits[i - 1]! : 0;
+          const bestSeg = t.bestSplits[i]! - bestPrev;
+          if (Number.isFinite(bestSeg) && bestSeg >= 0) {
+            const delta = seg - bestSeg;
+            const splitDelta = el('span', 'lv-splitfeed-dlt');
+            this.writeDynamicText(
+              splitDelta,
+              this.messages.results.splitDelta(formatDelta(delta)),
+            );
+            splitDelta.dataset['tone'] =
+              Math.round(delta * 100) === 0 ? 'flat' : delta < 0 ? 'good' : 'bad';
+            node.appendChild(splitDelta);
+          }
+        }
         this.nSplitFeed.appendChild(node);
         retrigger(node, 'is-in');
         this.splitNodes.push(node);

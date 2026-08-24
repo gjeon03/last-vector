@@ -29,7 +29,9 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       if (message.accuracy === 'clean') return messages.events.gateClean;
       return messages.events.gateCleared;
     case 'callout-title.gate-missed':
-      return messages.events.gateMissed;
+      return message.blockedBy === 'shear'
+        ? messages.events.gateShearBlocked
+        : messages.events.gateMissed;
     case 'callout-sub.keyboard-flight-available':
       return messages.events.keyboardFlightAvailable;
     case 'callout-sub.camera-active':
@@ -45,6 +47,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       return messages.events.gateProgress(message.remaining);
     case 'callout-sub.gate-realign':
       return messages.events.gateRealign;
+    case 'callout-sub.gate-shear-window':
+      return messages.events.gateShearWindow;
     case 'log.pointer-lock-refused':
       return messages.events.pointerLockRefused(message.reason);
     case 'log.hull-contact':
@@ -58,6 +62,9 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       return messages.events.gateClearedLog(message.gate, message.seconds);
     case 'log.gate-missed':
       if (message.courseId) {
+        if (message.blockedBy === 'shear') {
+          return messages.campaign.routes[message.courseId].gateShearBlockedLog(message.gate);
+        }
         return messages.campaign.routes[message.courseId].gateMissedLog(message.gate);
       }
       return messages.events.gateMissedLog(message.gate);

@@ -78,6 +78,7 @@ export interface CampaignRouteMessages {
   gateProgress: (remaining: number) => string;
   gateClearedLog: (gate: number, seconds: number) => string;
   gateMissedLog: (gate: number) => string;
+  gateShearBlockedLog: (gate: number) => string;
   radio1: string;
   radio2: string;
   radio3: string;
@@ -102,6 +103,7 @@ export interface CampaignMessages {
   selected: string;
   complete: string;
   incomplete: string;
+  nextObjective: string;
   noRank: string;
   nextRoute: string;
   routeSelect: string;
@@ -213,6 +215,8 @@ export interface EventMessages {
   gateCleared: string;
   gateMissed: string;
   gateRealign: string;
+  gateShearBlocked: string;
+  gateShearWindow: string;
   radio1: string;
   radio2: string;
   radio3: string;
@@ -235,6 +239,7 @@ export interface ResultMessages {
   markers: string;
   marker: string;
   topSpeed: string;
+  widestMarker: string;
   hull: string;
   clean: string;
   damaged: string;

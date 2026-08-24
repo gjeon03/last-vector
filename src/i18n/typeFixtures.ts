@@ -7,7 +7,12 @@ export const typeFixtures = [
   translator.messages.campaign.routes['cairn-drift'].objectives.precision,
   translator.messages.hud.boostUsable(3.5),
   translator.messages.events.gateClearedLog(7, 12.34),
+  translator.messages.campaign.routes['needle-grave'].gateShearBlockedLog(3),
   translator.messages.results.bestComparison('+1.23', '01:02.34'),
+  () => {
+    // @ts-expect-error gateShearBlockedLog requires a gate number.
+    return translator.messages.campaign.routes['needle-grave'].gateShearBlockedLog();
+  },
   () => {
     // @ts-expect-error campaign copy is keyed only by authored course IDs.
     return translator.messages.campaign.routes['helios-run'];

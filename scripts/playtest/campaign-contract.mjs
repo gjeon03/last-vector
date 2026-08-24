@@ -1,9 +1,11 @@
 import {
   COURSE_ORDER,
+  PRECISION_MAX_OFFSET,
   courseRecordId,
   getCourseDefinition,
   getNextCourse,
 } from '../../src/core/Courses.ts';
+import { formatPrecisionOffsetPercent } from '../../src/ui/precision.ts';
 import { buildCourseUrl, resolveCourseSelection } from '../../src/core/CourseSelection.ts';
 import { PROGRESS_KEY, ProgressStore, isCourseUnlocked } from '../../src/core/Progress.ts';
 import { hasBestRunPrefix } from '../../src/core/Settings.ts';
@@ -88,6 +90,24 @@ await report.check({
   verify(JSON.stringify(needle.shear?.gates) === JSON.stringify([2, 3, 4, 5]),
     'NEEDLE SHEAR indices changed.', { gates: needle.shear?.gates ?? null });
   verify(needle.text.canonicalDestination === 'NADIR RELAY', 'NEEDLE destination identity changed.');
+  verify(needle.shear.hubRadiusFraction < PRECISION_MAX_OFFSET
+    && PRECISION_MAX_OFFSET < 1 && needle.shear.halfWidthRadians < Math.PI,
+  'NEEDLE has no authored open band inside the shared precision target.', {
+    hubRadiusFraction: needle.shear.hubRadiusFraction,
+    precisionMaxOffset: PRECISION_MAX_OFFSET,
+    halfWidthRadians: needle.shear.halfWidthRadians,
+  });
+  verify(
+    formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET - 0.0001) === '39.9%'
+      && formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET) === '40.0%'
+      && formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET + 0.0001) === '40.1%',
+    'Precision result formatting is ambiguous at the strict mastery boundary.',
+    {
+      pass: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET - 0.0001),
+      boundary: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET),
+      fail: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET + 0.0001),
+    },
+  );
   verify(authoredNeedleLength >= 24_000 && authoredNeedleLength <= 30_000,
     'NEEDLE authored distances are outside the safe construction envelope.', { authoredNeedleLength });
   return {
@@ -237,12 +257,18 @@ await report.check({
   });
   const rejected = store.selectCourse('needle-grave');
   verify(!rejected.accepted, 'Locked NEEDLE selection was accepted.', rejected);
-  const first = store.recordSuccessfulFinish('cairn-drift', runResult({ rank: 'D', maxGateOffset: 0.4 }));
+  const first = store.recordSuccessfulFinish('cairn-drift', runResult({
+    rank: 'D',
+    maxGateOffset: PRECISION_MAX_OFFSET,
+  }));
   verify(first.newlyUnlocked === 'needle-grave' && first.persistence.reloadSafe,
     'First clear did not unlock with one surviving storage target.', first);
   verify(first.progress.courses['cairn-drift']?.precisionClear === false,
     'Precision boundary 0.4 must be excluded.', first.progress);
-  const second = store.recordSuccessfulFinish('cairn-drift', runResult({ rank: 'A', maxGateOffset: 0.399 }));
+  const second = store.recordSuccessfulFinish('cairn-drift', runResult({
+    rank: 'A',
+    maxGateOffset: PRECISION_MAX_OFFSET - 0.001,
+  }));
   verify(second.newlyUnlocked === null, 'Unlock badge repeated after the first clear.', second);
   verify(second.progress.courses['cairn-drift']?.highestRank === 'A'
     && second.progress.courses['cairn-drift']?.precisionClear === true,

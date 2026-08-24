@@ -147,8 +147,15 @@ const GATE_ACCURACY_MESSAGES: Readonly<Record<GateAccuracy, CalloutTitleMessage>
 const GATE_MISSED_MESSAGE: CalloutTitleMessage = Object.freeze({
   type: 'callout-title.gate-missed',
 });
+const GATE_SHEAR_BLOCKED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.gate-missed',
+  blockedBy: 'shear',
+});
 const GATE_REALIGN_MESSAGE: CalloutSubMessage = Object.freeze({
   type: 'callout-sub.gate-realign',
+});
+const GATE_SHEAR_WINDOW_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.gate-shear-window',
 });
 
 interface CalloutSpec {
@@ -2053,12 +2060,15 @@ export class Game {
       this.radio(event.index + 1);
     };
 
-    this.course.onMiss = (gate) => {
-      this.audio.play('gateMiss');
+    this.course.onMiss = (gate, event) => {
+      const shearBlocked = event.blockedBy === 'shear';
+      // Keep the proven miss voice, but strike it at full intensity for a shutter block. The
+      // differentiated callout carries the semantic truth without adding a new procedural graph.
+      this.audio.play('gateMiss', shearBlocked ? 1 : 0.5);
       this.pushCallout({
-        titleMessage: GATE_MISSED_MESSAGE,
+        titleMessage: shearBlocked ? GATE_SHEAR_BLOCKED_MESSAGE : GATE_MISSED_MESSAGE,
         sub: undefined,
-        subMessage: GATE_REALIGN_MESSAGE,
+        subMessage: shearBlocked ? GATE_SHEAR_WINDOW_MESSAGE : GATE_REALIGN_MESSAGE,
         tone: 'warn',
         ttl: 1.6,
       });
@@ -2067,6 +2077,7 @@ export class Game {
           type: 'log.gate-missed',
           gate: gate.index + 1,
           courseId: this.courseDefinition.id,
+          blockedBy: event.blockedBy ?? undefined,
         },
         tone: 'warn',
       });
@@ -2849,6 +2860,27 @@ export class Game {
       cleared: event.cleared,
       blockedBy: event.blockedBy,
     }));
+  }
+
+  /**
+   * Deterministic test seam for the one failure that cannot be staged by a straight seek: the
+   * course curve and authored gate plane are intentionally not interchangeable. This crosses the
+   * currently armed SHEAR gate through its always-blocked hub, so feedback is exercised through
+   * the same Course.update/onMiss path as real flight without exposing arbitrary world mutation.
+   */
+  stageShearBlock(): ReturnType<Game['getCrossingHistory']>[number] | null {
+    if (this.phase !== 'flying') return null;
+    const gate = this.course.nextGate;
+    if (!gate || !this.course.shear || this.course.shear.phaseAt(gate.index, this.elapsed) === null) {
+      return null;
+    }
+    this.tmpA.copy(gate.position).addScaledVector(gate.normal, -2);
+    this.tmpB.copy(gate.position).addScaledVector(gate.normal, 2);
+    this.course.update(this.tmpA, this.ship.speed, this.elapsed);
+    this.course.update(this.tmpB, this.ship.speed, this.elapsed);
+    const crossings = this.getCrossingHistory();
+    const crossing = crossings[crossings.length - 1];
+    return crossing?.blockedBy === 'shear' ? crossing : null;
   }
 
   getShearState(): ReturnType<Course['getShearDebug']> {

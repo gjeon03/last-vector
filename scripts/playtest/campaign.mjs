@@ -14,11 +14,15 @@ const REQUIRED_METHODS = [
   'progress',
   'shear',
   'crossings',
+  'stageShearBlock',
   'installProgress',
   'routeUrl',
   'startRun',
+  'setDriven',
+  'setInput',
   'setAutopilot',
   'setSettings',
+  'seekCourse',
   'step',
   'phase',
   'result',
@@ -38,7 +42,7 @@ async function runCampaign({ report, session, options }) {
 
   await report.check({
     id: 'CAMPAIGN.harness-default',
-    name: 'Harness v1.7 exposes the default CAIRN campaign state',
+    name: 'Harness v1.8 exposes the default CAIRN campaign state',
     assertion: 'The no-course boot is CAIRN with its historical record ID, nine gates, a locked NEEDLE catalog entry, and no navigation side effect from routeUrl().',
   }, async () => {
     await callHarness(page, 'ready', [], options.timeoutMs);
@@ -50,7 +54,7 @@ async function runCampaign({ report, session, options }) {
       progress: window.__LV?.progress() ?? null,
       routeUrl: window.__LV?.routeUrl('needle-grave') ?? null,
     }));
-    verify(evidence.version === '1.7.0', 'Campaign harness version is not 1.7.0.', evidence);
+    verify(evidence.version === '1.8.0', 'Campaign harness version is not 1.8.0.', evidence);
     verify(evidence.course?.courseId === 'cairn-drift' && evidence.course?.gateCount === 9,
       'Default boot is not the nine-gate CAIRN route.', evidence);
     verify(evidence.course.recordId === `cairn-drift-${evidence.course.seed}`,
@@ -194,6 +198,53 @@ async function runCampaign({ report, session, options }) {
     return samples;
   });
 
+  await report.check({
+    id: 'CAMPAIGN.shear-block-feedback',
+    name: 'A closed SHEAR crossing explains the actual failure',
+    assertion: 'A deterministic hub crossing stays recoverable, records blockedBy=shear, and presents Korean SHEAR-specific callout and log descriptors instead of the ordinary aperture-miss copy.',
+  }, async () => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.locator('[data-locale="ko"]').click();
+    await page.waitForFunction(() => document.documentElement.lang === 'ko');
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'seekCourse', [0.35]);
+    const staged = await callHarness(page, 'stageShearBlock');
+    await callHarness(page, 'step', [1, 1 / 60], 120_000);
+    const evidence = await page.evaluate(() => {
+      const telemetry = window.__LV?.telemetry() ?? null;
+      const crossings = window.__LV?.crossings() ?? [];
+      const callout = telemetry?.callout ?? null;
+      const log = telemetry?.log?.[telemetry.log.length - 1] ?? null;
+      return {
+        phase: window.__LV?.phase() ?? null,
+        nextGate: telemetry?.gate?.index ?? null,
+        crossing: crossings[crossings.length - 1] ?? null,
+        callout,
+        log,
+        calloutText: document.querySelector('.lv-callout')?.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+        logText: document.querySelector('.lv-log-line:last-child')?.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+      };
+    });
+    verify(staged?.index === 2 && staged?.blockedBy === 'shear' && staged?.cleared === false,
+      'The deterministic crossing did not hit the first SHEAR hub.', evidence);
+    verify(evidence.crossing?.index === 2 && evidence.crossing?.blockedBy === 'shear'
+      && evidence.nextGate === 2 && evidence.phase === 'flying',
+    'A SHEAR block was not recoverable at the same armed gate.', evidence);
+    verify(evidence.callout?.titleMessage?.type === 'callout-title.gate-missed'
+      && evidence.callout?.titleMessage?.blockedBy === 'shear'
+      && evidence.callout?.subMessage?.type === 'callout-sub.gate-shear-window',
+    'The user-facing callout discarded the SHEAR cause.', evidence);
+    verify(evidence.log?.message?.type === 'log.gate-missed'
+      && evidence.log?.message?.blockedBy === 'shear'
+      && evidence.calloutText.includes('SHEAR 차단')
+      && evidence.calloutText.includes('열린 구역')
+      && evidence.logText.includes('SHEAR 차단'),
+    'Localized SHEAR feedback was not visible in the HUD.', evidence);
+    await reloadHarness(page, options.timeoutMs);
+    return evidence;
+  });
+
   let sixtyHz = null;
   await report.check({
     id: 'CAMPAIGN.shear-fixed-step',
@@ -260,6 +311,101 @@ async function runCampaign({ report, session, options }) {
       'Result lacks a valid normalized maximum gate offset.', evidence);
     return evidence;
   });
+
+  await report.check({
+    id: 'CAMPAIGN.result-mastery-feedback',
+    name: 'Results explain precision and recommend one next mastery target',
+    assertion: 'The completed NEEDLE run shows its measured widest marker against the strict <40% rule and emphasizes only the remaining precision objective.',
+  }, async () => {
+    const evidence = await page.evaluate(() => {
+      const result = window.__LV?.result() ?? null;
+      const stat = document.querySelector('[data-stat="max-gate-offset"]');
+      const focused = [...document.querySelectorAll('[data-objective-list="results"] [data-objective][data-focus="1"]')];
+      return {
+        result,
+        stat: stat ? {
+          text: stat.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+          tone: stat.getAttribute('data-tone'),
+        } : null,
+        focused: focused.map((node) => ({
+          objective: node.getAttribute('data-objective'),
+          complete: node.getAttribute('data-complete'),
+          text: node.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+        })),
+      };
+    });
+    verify(finiteNumber(evidence.result?.maxGateOffset), 'Finished run has no precision evidence.', evidence);
+    const expectedPercent = (Math.ceil(evidence.result.maxGateOffset * 1_000) / 10).toFixed(1);
+    verify(evidence.stat?.text.includes(`${expectedPercent}%`) && evidence.stat.text.includes('<40.0%')
+      && evidence.stat.tone === 'warn',
+    'Results do not explain the measured precision miss against the strict target.', evidence);
+    verify(evidence.focused.length === 1 && evidence.focused[0].objective === 'precision'
+      && evidence.focused[0].complete === '0' && evidence.focused[0].text.includes('다음 목표'),
+    'Results did not emphasize exactly the nearest incomplete mastery target.', evidence);
+    return evidence;
+  });
+
+  await report.check({
+    id: 'CAMPAIGN.live-pb-delta',
+    name: 'A repeat run reports a compatible per-gate PB delta',
+    assertion: 'The next NEEDLE run loads the completed six-split PB and adds one correctly signed, toned delta only when the matching gate split appears.',
+  }, async () => {
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [{ throttle: 0, brake: true }]);
+    await callHarness(page, 'step', [60, 1 / 60], 120_000);
+    await callHarness(page, 'setInput', [null]);
+    await callHarness(page, 'setAutopilot', [true]);
+    let telemetry = await callHarness(page, 'telemetry');
+    for (let chunk = 0; chunk < 80 && telemetry.splits.length === 0; chunk++) {
+      await callHarness(page, 'step', [30, 1 / 60], 120_000);
+      telemetry = await callHarness(page, 'telemetry');
+    }
+    const evidence = await page.evaluate(() => {
+      const telemetry = window.__LV?.telemetry() ?? null;
+      const row = document.querySelector('.lv-splitfeed-row:last-child');
+      const delta = row?.querySelector('.lv-splitfeed-dlt');
+      return {
+        telemetry,
+        feedComparable: document.querySelector('.lv-splitfeed')?.getAttribute('data-delta'),
+        rowText: row?.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+        delta: delta ? {
+          text: delta.textContent?.replace(/\s+/gu, ' ').trim() ?? '',
+          tone: delta.getAttribute('data-tone'),
+        } : null,
+      };
+    });
+    verify(evidence.telemetry?.splits?.length === 1
+      && evidence.telemetry?.bestSplits?.length === evidence.telemetry?.gate?.total,
+    'Repeat run did not load a compatible full-route PB before the first split.', evidence);
+    const currentLeg = evidence.telemetry.splits[0];
+    const bestLeg = evidence.telemetry.bestSplits[0];
+    const expectedDelta = currentLeg - bestLeg;
+    const expectedText = formatDeltaEvidence(expectedDelta);
+    const expectedTone = Math.round(expectedDelta * 100) === 0
+      ? 'flat'
+      : expectedDelta < 0 ? 'good' : 'bad';
+    verify(evidence.feedComparable === '1' && evidence.delta?.text.includes(expectedText)
+      && evidence.delta?.text.includes('최고기록 대비') && evidence.delta?.tone === expectedTone,
+    'Live split delta differs from the same-leg PB evidence.', {
+      ...evidence,
+      currentLeg,
+      bestLeg,
+      expectedDelta,
+      expectedText,
+      expectedTone,
+    });
+    await callHarness(page, 'setAutopilot', [false]);
+    await callHarness(page, 'setInput', [null]);
+    return evidence;
+  });
+}
+
+function formatDeltaEvidence(seconds) {
+  const rounded = Math.round(seconds * 100) / 100;
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '±';
+  return `${sign}${Math.abs(rounded).toFixed(2)}`;
 }
 
 function verifyShearMatch(left, right, tolerance, message) {

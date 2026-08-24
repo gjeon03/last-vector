@@ -306,6 +306,11 @@ export interface HarnessApi {
   shear(): HarnessShearState | null;
   /** Aperture-plane outcomes; unlike gateHistory(), this includes misses. */
   crossings(): HarnessCourseCrossing[];
+  /**
+   * Test-only: cross the currently armed SHEAR gate through its blocked hub using the production
+   * Course.update -> onMiss path. The caller must first stage a SHEAR gate with seekCourse().
+   */
+  stageShearBlock(): HarnessCourseCrossing | null;
   /** Test-only validated progress installation. Raw storage stays encapsulated. */
   installProgress(value: unknown): ProgressWriteOutcome;
   /** Build navigation data only. This never changes location or simulation state. */

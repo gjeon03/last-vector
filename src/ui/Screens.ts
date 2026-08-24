@@ -8,7 +8,7 @@
  */
 
 import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
-import type { CourseId } from '../core/Courses.ts';
+import { PRECISION_MAX_OFFSET, type CourseId } from '../core/Courses.ts';
 import type { Translator } from '../i18n/index.ts';
 import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
@@ -20,6 +20,7 @@ import {
   formatTime,
   retrigger,
 } from './Hud.ts';
+import { formatPrecisionOffsetPercent } from './precision.ts';
 
 export type ScreenView =
   | 'none'
@@ -624,20 +625,36 @@ export class Screens {
     for (let i = 0; i < lists.length; i++) this.writeObjectiveList(lists[i]!, route);
   }
 
-  private writeObjectiveList(list: HTMLElement, route: CampaignCourseView): void {
+  private writeObjectiveList(
+    list: HTMLElement,
+    route: CampaignCourseView,
+    result?: RunResult,
+  ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
     const rows = [
-      ['first-clear', copy.firstClear, route.objectives.firstClear, ''] as const,
-      ['highest-rank', copy.highestRank, route.highestRank !== null, route.highestRank ?? m.campaign.noRank] as const,
-      ['clean-clear', copy.cleanClear, route.objectives.cleanClear, ''] as const,
-      ['precision', copy.precision, route.objectives.precision, ''] as const,
+      { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
+      { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
+      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
+      {
+        id: 'highest-rank',
+        label: copy.highestRank,
+        complete: route.highestRank !== null,
+        value: route.highestRank ?? m.campaign.noRank,
+        target: false,
+      },
     ];
+    const focusId = result
+      ? rows.find((row) => row.target && !row.complete)?.id ?? null
+      : null;
     list.textContent = '';
-    for (const [id, label, complete, value] of rows) {
+    if (result) list.dataset['mastered'] = focusId === null ? '1' : '0';
+    else delete list.dataset['mastered'];
+    for (const { id, label, complete, value } of rows) {
       const row = el('li', 'lv-objective');
       row.dataset['objective'] = id;
       row.dataset['complete'] = complete ? '1' : '0';
+      if (id === focusId) row.dataset['focus'] = '1';
       const state = el('span', 'lv-objective-state', complete ? '◆' : '◇');
       state.setAttribute('aria-hidden', 'true');
       const name = writeEnglishTokens(
@@ -645,13 +662,16 @@ export class Screens {
         label,
         ['CAIRN DRIFT', 'NEEDLE GRAVE'],
       );
-      const result = el(
+      if (id === focusId) {
+        name.appendChild(el('span', 'lv-objective-next', m.campaign.nextObjective));
+      }
+      const valueNode = el(
         'span',
         'lv-objective-value',
         value || (complete ? m.campaign.complete : m.campaign.incomplete),
       );
-      if (value) result.lang = 'en';
-      row.append(state, name, result);
+      if (value) valueNode.lang = 'en';
+      row.append(state, name, valueNode);
       list.appendChild(row);
     }
   }
@@ -1588,8 +1608,15 @@ export class Screens {
     left.appendChild(timeBlock);
 
     const stats = el('dl', 'lv-res-stats');
-    const addStat = (k: string, v: string, tone?: string, englishTokens: readonly string[] = []): void => {
+    const addStat = (
+      k: string,
+      v: string,
+      tone?: string,
+      englishTokens: readonly string[] = [],
+      id?: string,
+    ): void => {
       const cell = el('div', 'lv-res-stat');
+      if (id) cell.dataset['stat'] = id;
       const value = writeEnglishTokens(el('dd', 'lv-res-statv'), v, englishTokens);
       cell.append(el('dt', 'lv-res-statk', k), value);
       if (tone) cell.dataset['tone'] = tone;
@@ -1602,6 +1629,19 @@ export class Screens {
       r.cleanRun ? m.results.clean : m.results.damaged,
       r.cleanRun ? 'good' : 'warn',
     );
+    if (
+      r.gatesCleared > 0 &&
+      typeof r.maxGateOffset === 'number' &&
+      Number.isFinite(r.maxGateOffset)
+    ) {
+      addStat(
+        m.results.widestMarker,
+        `${formatPrecisionOffsetPercent(r.maxGateOffset)} / <${(PRECISION_MAX_OFFSET * 100).toFixed(1)}%`,
+        r.maxGateOffset < PRECISION_MAX_OFFSET ? 'good' : 'warn',
+        [],
+        'max-gate-offset',
+      );
+    }
     left.appendChild(stats);
 
     const objectives = el('section', 'lv-objectives lv-objectives--result');
@@ -1609,7 +1649,7 @@ export class Screens {
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'results';
     objectives.appendChild(objectiveList);
-    this.writeObjectiveList(objectiveList, campaignCourse);
+    this.writeObjectiveList(objectiveList, campaignCourse, r);
     left.appendChild(objectives);
 
     /*

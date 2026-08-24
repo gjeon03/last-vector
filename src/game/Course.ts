@@ -83,7 +83,7 @@ export class Course {
   private readonly crossingPlane = new THREE.Vector2();
 
   onPass: ((event: CoursePassEvent) => void) | null = null;
-  onMiss: ((gate: Gate) => void) | null = null;
+  onMiss: ((gate: Gate, event: CourseCrossingEvent) => void) | null = null;
   onCrossing: ((event: CourseCrossingEvent) => void) | null = null;
 
   constructor(definition: CourseDefinition, seed: number, lighting: LightingUniforms) {
@@ -361,7 +361,7 @@ export class Course {
       this.onCrossing?.(crossingEvent);
       // Outside the aperture or inside its SHEAR shutter: the gate stays armed and recoverable.
       gate.setState('missed');
-      this.onMiss?.(gate);
+      this.onMiss?.(gate, crossingEvent);
       // Re-arm on the next frame so the visual flash lands before the colour returns.
       window.setTimeout(() => {
         if (this.gates[this.nextIndex] === gate) gate.setState('armed');

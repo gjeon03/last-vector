@@ -5,6 +5,12 @@ export type CourseId = 'cairn-drift' | 'needle-grave';
 export type RankLetter = 'S' | 'A' | 'B' | 'C' | 'D';
 export type ObjectiveId = 'first-clear' | 'highest-rank' | 'clean-clear' | 'precision';
 
+/**
+ * Largest normalized gate offset allowed by the route-wide precision mastery objective.
+ * One exported owner keeps progress evaluation and the result explanation from drifting.
+ */
+export const PRECISION_MAX_OFFSET = 0.4;
+
 export interface CourseLeg {
   readonly turn: number;
   readonly climb: number;

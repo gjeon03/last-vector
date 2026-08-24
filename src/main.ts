@@ -227,7 +227,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.7.0',
+    version: '1.8.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -256,6 +256,7 @@ function installHarness(game: Game): void {
     progress: () => game.getCampaignProgress(),
     shear: () => game.getShearState(),
     crossings: () => game.getCrossingHistory(),
+    stageShearBlock: () => game.stageShearBlock(),
     installProgress: (value) => progressStore.install(value),
     routeUrl: (courseId) => game.getRouteUrl(courseId),
     damageHull: (amount) => game.damageHull(amount),

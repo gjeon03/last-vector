@@ -1,6 +1,6 @@
 import type { RunResult } from './contracts.ts';
 import type { CourseId, RankLetter } from './Courses.ts';
-import { isCourseId } from './Courses.ts';
+import { isCourseId, PRECISION_MAX_OFFSET } from './Courses.ts';
 import { hasBestRunPrefix } from './Settings.ts';
 
 export const PROGRESS_KEY = 'last-vector.progress.v1';
@@ -257,7 +257,7 @@ export class ProgressStore {
     const precise =
       typeof result.maxGateOffset === 'number' &&
       Number.isFinite(result.maxGateOffset) &&
-      result.maxGateOffset < 0.4;
+      result.maxGateOffset < PRECISION_MAX_OFFSET;
     this.current.courses[courseId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),

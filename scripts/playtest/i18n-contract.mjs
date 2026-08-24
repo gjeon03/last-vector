@@ -41,9 +41,11 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.cairn-drift.gateProgress', 1],
   ['campaign.routes.cairn-drift.gateClearedLog', 2],
   ['campaign.routes.cairn-drift.gateMissedLog', 1],
+  ['campaign.routes.cairn-drift.gateShearBlockedLog', 1],
   ['campaign.routes.needle-grave.gateProgress', 1],
   ['campaign.routes.needle-grave.gateClearedLog', 2],
   ['campaign.routes.needle-grave.gateMissedLog', 1],
+  ['campaign.routes.needle-grave.gateShearBlockedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -278,6 +280,8 @@ await report.check(
       enNeedleClear: en.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
       koNeedleMiss: ko.campaign.routes['needle-grave'].gateMissedLog(4),
       enNeedleMiss: en.campaign.routes['needle-grave'].gateMissedLog(4),
+      koNeedleShear: ko.campaign.routes['needle-grave'].gateShearBlockedLog(3),
+      enNeedleShear: en.campaign.routes['needle-grave'].gateShearBlockedLog(3),
       koNeedleRadio: ko.campaign.routes['needle-grave'].radio1,
       enNeedleRadio: en.campaign.routes['needle-grave'].radio1,
     };
@@ -294,6 +298,8 @@ await report.check(
       enNeedleClear: 'needle 04 · 9.87s',
       koNeedleMiss: 'needle 04 빗나감',
       enNeedleMiss: 'needle 04 missed',
+      koNeedleShear: 'NEEDLE 03 · SHEAR 차단',
+      enNeedleShear: 'needle 03 · shear block',
       koNeedleRadio: 'Kestrel, NADIR 항로 개방. SHEAR 차폐판이 가동 중이다.',
       enNeedleRadio: 'Kestrel, the NADIR line is open. SHEAR shutters are live.',
     };
@@ -570,6 +576,7 @@ const descriptors = [
   { type: 'callout-title.gate-cleared', accuracy: 'clean' },
   { type: 'callout-title.gate-cleared', accuracy: 'cleared' },
   { type: 'callout-title.gate-missed' },
+  { type: 'callout-title.gate-missed', blockedBy: 'shear' },
   { type: 'callout-sub.keyboard-flight-available' },
   { type: 'callout-sub.camera-active', mode: 'cockpit' },
   { type: 'callout-sub.camera-active', mode: 'chase' },
@@ -578,11 +585,13 @@ const descriptors = [
   { type: 'callout-sub.gate-progress', remaining: 1 },
   { type: 'callout-sub.gate-progress', remaining: 0 },
   { type: 'callout-sub.gate-realign' },
+  { type: 'callout-sub.gate-shear-window' },
   { type: 'log.pointer-lock-refused', reason: '<img src=x onerror=globalThis.__LV_INJECTED=1>' },
   { type: 'log.hull-contact', percent: 37 },
   { type: 'log.boost-depleted' },
   { type: 'log.gate-cleared', gate: 7, seconds: 12.34 },
   { type: 'log.gate-missed', gate: 7 },
+  { type: 'log.gate-missed', gate: 3, courseId: 'needle-grave', blockedBy: 'shear' },
 ];
 
 await report.check(
@@ -647,11 +656,14 @@ await report.check(
       [{ type: 'callout-sub.gate-progress', remaining: 1 }, '1 CAIRN REMAINING'],
       [{ type: 'callout-sub.gate-progress', remaining: 0 }, 'TERMINUS AHEAD'],
       [{ type: 'callout-title.gate-missed' }, 'MISSED'],
+      [{ type: 'callout-title.gate-missed', blockedBy: 'shear' }, 'SHEAR BLOCK'],
       [{ type: 'callout-sub.gate-realign' }, 'REALIGN AND RE-ENTER'],
+      [{ type: 'callout-sub.gate-shear-window' }, 'HOLD FOR THE OPEN SECTOR'],
       [{ type: 'log.pointer-lock-refused', reason: 'unsafe reason' }, 'mouse capture refused \u00B7 unsafe reason'],
       [{ type: 'log.hull-contact', percent: 37 }, 'hull contact \u00B7 37%'],
       [{ type: 'log.gate-cleared', gate: 7, seconds: 12.34 }, 'cairn 07 \u00B7 12.34s'],
       [{ type: 'log.gate-missed', gate: 7 }, 'cairn 07 missed'],
+      [{ type: 'log.gate-missed', gate: 3, courseId: 'needle-grave', blockedBy: 'shear' }, 'needle 03 · shear block'],
     ];
     for (const [descriptor, expected] of fixtures) {
       const actual = translator.domain(descriptor);
