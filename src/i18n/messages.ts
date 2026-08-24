@@ -18,6 +18,8 @@ export interface LoaderMessages {
   webglRequiredTitle: string;
   webglRequiredDetail: string;
   launchFailedTitle: string;
+  runtimeFailureTitle: string;
+  runtimeFailureDetail: string;
   graphicsContextLostTitle: string;
   graphicsContextLostDetail: string;
 }
@@ -58,6 +60,54 @@ export interface ScreenMessages {
   restart: string;
   abortRun: string;
   configuration: string;
+}
+
+export type CampaignMessageCourseId = 'cairn-drift' | 'needle-grave';
+
+export interface CampaignRouteMessages {
+  /** Compact catalog label; canonical telemetry remains in the course definition. */
+  name: string;
+  /** Heading used by the title eyebrow and briefing. */
+  sectorName: string;
+  destination: string;
+  terminalMarker: string;
+  tagline: string;
+  briefingLine1: string;
+  briefingLine2: string;
+  briefingLine3: string;
+  gateProgress: (remaining: number) => string;
+  gateClearedLog: (gate: number, seconds: number) => string;
+  gateMissedLog: (gate: number) => string;
+  radio1: string;
+  radio2: string;
+  radio3: string;
+  radio4: string;
+  radio5: string;
+  lockReason: string;
+  unlockNotice: string;
+  objectives: {
+    firstClear: string;
+    highestRank: string;
+    cleanClear: string;
+    precision: string;
+  };
+}
+
+export interface CampaignMessages {
+  routeSelection: string;
+  routeObjectives: string;
+  locked: string;
+  available: string;
+  cleared: string;
+  selected: string;
+  complete: string;
+  incomplete: string;
+  noRank: string;
+  nextRoute: string;
+  routeSelect: string;
+  navigationFailed: string;
+  storageUnavailable: string;
+  routes: Record<CampaignMessageCourseId, CampaignRouteMessages>;
 }
 
 export interface ControlMessages {
@@ -146,6 +196,7 @@ export interface HudMessages {
 
 export interface EventMessages {
   terminusApproach: string;
+  nadirApproach: string;
   pointerLockUnavailable: string;
   keyboardFlightAvailable: string;
   cockpitView: string;
@@ -231,6 +282,7 @@ export interface Messages {
   meta: MetaMessages;
   loader: LoaderMessages;
   screens: ScreenMessages;
+  campaign: CampaignMessages;
   controls: ControlMessages;
   settings: SettingMessages;
   hud: HudMessages;

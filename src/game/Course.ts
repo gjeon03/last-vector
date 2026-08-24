@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { Gate } from '../render/Gate.ts';
+import { ShearGateField, type ShearDebugState } from '../render/ShearGate.ts';
 import type { LightingUniforms } from '../render/lighting.ts';
 import { Rng } from '../core/rng.ts';
-import { SCALE } from '../core/art.ts';
 import { clamp01 } from '../core/mathx.ts';
+import { courseRecordId, type CourseDefinition } from '../core/Courses.ts';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -27,78 +28,16 @@ export interface CoursePassEvent {
   offset: number;
 }
 
-interface Leg {
-  /** Radians of yaw applied across the leg. */
-  turn: number;
-  /** Radians of pitch applied across the leg. */
-  climb: number;
-  /** Multiplier on the nominal gate spacing. */
-  length: number;
-  /** Roll of the gate aperture about the flight axis, in radians. */
-  bank: number;
-  /**
-   * Half-width in metres of the debris-free channel along the leg's racing line.
-   *
-   * This is the lever that decides whether a leg asks anything of the pilot.
-   *
-   * CORRECTION, and the sentence that used to be here was the load-bearing one. It read "the fix
-   * is not more turn — it is less room. `length` now varies from 0.52 to 1.4". `git show f3aea92`
-   * proves every leg's turn, climb, length and bank is BYTE-IDENTICAL across that commit. Only
-   * `clearance` was added. The sentence described the pre-existing status quo as though it were
-   * the remedy — the same species of error as the round-1 headline regression, written into a new
-   * file, and it survived five rounds of review because a comment is not a claim anyone measures.
-   *
-   * What is true: at a 288 m minimum turn radius the tightest leg still needs a radius an order of
-   * magnitude larger, so leg geometry cannot demand the vehicle at this course scale, and the
-   * lengths were never changed to try. Clearance is the only lever that was actually pulled.
-   */
-  clearance: number;
-  label: string;
+export interface CourseCrossingEvent {
+  gate: Gate;
+  index: number;
+  time: number;
+  radialDistance: number;
+  speed: number;
+  offset: number;
+  cleared: boolean;
+  blockedBy: 'aperture' | 'shear' | null;
 }
-
-/**
- * Pacing.
- *
- * The first cut of this course demanded nothing. At a 288 m steady-state turn radius against
- * 6.2 km legs, a naive proportional controller reading nothing but the on-screen gate marker
- * flew all nine apertures dead centre on its first attempt and beat the built-in autopilot.
- * Every leg was inside the ship's capability by more than an order of magnitude, so the
- * authored differences between "hard right" and "the long run" were invisible in the hand.
- *
- * CORRECTION — this paragraph used to open "The fix is not more turn — it is less room." That is
- * false, and it is false about its own commit: `git show 59f4bc9` raised turn magnitude on six of
- * the nine legs (0.34 -> 0.52, 0.88 -> 1.02, -0.44 -> -0.5, -0.72 -> -0.92, 0.55 -> 0.78,
- * -0.24 -> -0.3) while also changing every length. The claim survived to round 7 because the
- * correction filed against it was written against a different commit (f3aea92, where the legs
- * genuinely are byte-identical) and left this sentence in place, fifteen lines below, unmarked.
- *
- * What is true: both turn and length were changed, and neither made the geometry demanding.
- * Measured in round 7, the tightest leg ('the shelf cut') needs a 3718 m radius against a ship
- * capable of 252 m at cruise and 795 m at boost — 6.8% of combined stick. Hazard cannot take up
- * the slack either: `Asteroids.ts` rejects any rock within the radius of every protected segment,
- * and the corridor's minimum half-width (145 m) exceeds the gate aperture radius (105 m), so the
- * aperture binds before a rock ever can. A pilot flying the authored line never meets one, which
- * is the single fact that explains the demand ceiling and which a previous edit deleted.
- *
- * Reference figures kept because they were measured and then lost from this file once already:
- * the reference-pilot overshoot is 110 m, and the pre-clearance baseline was stick p90 0.086 with
- * 5.1% of samples over quarter stick.
- */
-const LEGS: Leg[] = [
-  // Wide on purpose: the opening leg is where a first-time pilot learns that the stick has
-  // inertia behind it, and learning that against a rock is not teaching.
-  { turn: 0.1, climb: -0.04, length: 1.0, bank: 0.0, clearance: 320, label: 'open' },
-  { turn: -0.62, climb: 0.14, length: 0.95, bank: 0.5, clearance: 240, label: 'first bend' },
-  { turn: 0.52, climb: -0.4, length: 0.6, bank: -0.35, clearance: 150, label: 'the dive' },
-  { turn: 1.02, climb: 0.06, length: 0.78, bank: 0.85, clearance: 275, label: 'hard right' },
-  { turn: -0.5, climb: 0.34, length: 1.05, bank: -0.6, clearance: 210, label: 'climb out' },
-  { turn: -0.92, climb: -0.16, length: 0.56, bank: -0.9, clearance: 145, label: 'the shelf cut' },
-  // The long run is the rest bar: it is where the reserve refills and where a player can look
-  // up at the sky. Taking that away would make the course relentless rather than paced.
-  { turn: 0.2, climb: -0.14, length: 1.4, bank: 0.2, clearance: 300, label: 'the long run' },
-  { turn: 0.78, climb: 0.2, length: 0.52, bank: 0.7, clearance: 175, label: 'the pinch' },
-  { turn: -0.3, climb: -0.08, length: 1.0, bank: -0.2, clearance: 260, label: 'terminus approach' },
-];
 
 export class Course {
   readonly object = new THREE.Group();
@@ -125,24 +64,33 @@ export class Course {
    */
   readonly clearChannel: { a: THREE.Vector3; b: THREE.Vector3; radius: number }[] = [];
   readonly id: string;
+  readonly definition: CourseDefinition;
+  readonly shear: ShearGateField | null;
 
   /** Index of the gate the player must clear next; equals `gates.length` once all are done. */
   nextIndex = 0;
   readonly passes: CoursePassEvent[] = [];
+  readonly crossings: CourseCrossingEvent[] = [];
 
   private previousSigned = -1;
+  private previousTime = 0;
   private readonly previousPosition = new THREE.Vector3();
   private hasPrevious = false;
   private readonly scratchA = new THREE.Vector3();
   private readonly scratchB = new THREE.Vector3();
   private readonly crossing = new THREE.Vector3();
   private readonly poseMatrix = new THREE.Matrix4();
+  private readonly crossingPlane = new THREE.Vector2();
 
   onPass: ((event: CoursePassEvent) => void) | null = null;
   onMiss: ((gate: Gate) => void) | null = null;
+  onCrossing: ((event: CourseCrossingEvent) => void) | null = null;
 
-  constructor(seed: number, lighting: LightingUniforms) {
-    this.id = `cairn-drift-${seed}`;
+  constructor(definition: CourseDefinition, seed: number, lighting: LightingUniforms) {
+    this.definition = definition;
+    this.id = courseRecordId(definition, seed);
+    const geometry = definition.geometry;
+    const legs = geometry.legs;
     const rng = new Rng(seed);
 
     const controlPoints: THREE.Vector3[] = [];
@@ -153,14 +101,14 @@ export class Course {
     const forward = new THREE.Vector3(0, 0, -1);
 
     // A short lead-in so the player is already moving when the first gate appears.
-    controlPoints.push(cursor.clone().addScaledVector(forward, -1800));
+    controlPoints.push(cursor.clone().addScaledVector(forward, -geometry.leadInControlMetres));
     controlPoints.push(cursor.clone());
-    this.startPosition.copy(cursor).addScaledVector(forward, 1500);
+    this.startPosition.copy(cursor).addScaledVector(forward, geometry.startOffsetMetres);
     this.startQuaternion.copy(heading);
 
-    for (let i = 0; i < LEGS.length; i++) {
-      const leg = LEGS[i];
-      const distance = SCALE.gateSpacing * leg.length * rng.range(0.94, 1.06);
+    for (let i = 0; i < legs.length; i++) {
+      const leg = legs[i]!;
+      const distance = geometry.gateSpacing * leg.length * rng.range(0.94, 1.06);
       const turn = leg.turn * rng.range(0.9, 1.1);
       const climb = leg.climb * rng.range(0.88, 1.12);
 
@@ -187,20 +135,20 @@ export class Course {
     }
 
     // The run-out to the terminus inherits the last leg's channel.
-    this.legClearance.push(LEGS[LEGS.length - 1].clearance);
+    this.legClearance.push(legs[legs.length - 1]!.clearance);
 
     // Run-out past the final gate, where the terminus sits.
-    for (let s = 0; s < 4; s++) {
-      cursor.addScaledVector(forward, 900);
+    for (let s = 0; s < geometry.runOutSteps; s++) {
+      cursor.addScaledVector(forward, geometry.runOutStepMetres);
       controlPoints.push(cursor.clone());
     }
-    this.terminusPosition.copy(cursor).addScaledVector(forward, 3200);
+    this.terminusPosition.copy(cursor).addScaledVector(forward, geometry.terminusStandoff);
     this.terminusNormal.copy(forward).normalize();
 
     this.curve = new THREE.CatmullRomCurve3(controlPoints, false, 'centripetal', 0.5);
     this.totalLength = this.curve.getLength();
 
-    const sampleCount = 220;
+    const sampleCount = geometry.sampleCount;
     for (let i = 0; i <= sampleCount; i++) {
       this.spine.push(this.curve.getPointAt(i / sampleCount));
     }
@@ -248,7 +196,11 @@ export class Course {
     for (let i = 0; i < gateAnchors.length; i++) {
       const anchor = gateAnchors[i];
       // Final gate is wider: the approach is fast and the run should not end on a technicality.
-      const radius = i === gateAnchors.length - 1 ? SCALE.gateRadius * 1.3 : SCALE.gateRadius;
+      const final = i === gateAnchors.length - 1;
+      const authoredRadius = geometry.gateRadius * (legs[i]?.gateRadiusScale ?? 1);
+      const radius = final
+        ? authoredRadius * geometry.finalGateRadiusScale
+        : authoredRadius;
       const gate = new Gate({
         index: i,
         total: gateAnchors.length,
@@ -257,11 +209,24 @@ export class Course {
         radius,
         lighting,
         seed: seed + i * 7919,
+        bank: anchor.bank,
+        name: final
+          ? definition.text.canonicalFinalGate
+          : `${definition.text.canonicalGatePrefix} ${String(i + 1).padStart(2, '0')}`,
+        nameMessage: final
+          ? definition.id === 'cairn-drift'
+            ? { type: 'gate-name.terminus-approach' }
+            : { type: 'gate-name.nadir-approach' }
+          : undefined,
       });
-      gate.object.rotateZ(anchor.bank);
       this.gates.push(gate);
       this.object.add(gate.object);
     }
+
+    this.shear = definition.shear
+      ? new ShearGateField(this.gates, definition.shear, seed)
+      : null;
+    if (this.shear) this.object.add(this.shear.object);
 
     this.gates[0].setState('armed');
   }
@@ -302,8 +267,11 @@ export class Course {
   reset(): void {
     this.nextIndex = 0;
     this.passes.length = 0;
+    this.crossings.length = 0;
     this.hasPrevious = false;
     this.previousSigned = -1;
+    this.previousTime = 0;
+    this.shear?.update(0);
     for (const gate of this.gates) gate.setState('dormant');
     this.gates[0].setState('armed');
   }
@@ -325,6 +293,7 @@ export class Course {
     if (!this.hasPrevious) {
       this.previousSigned = signed;
       this.previousPosition.copy(position);
+      this.previousTime = time;
       this.hasPrevious = true;
       return;
     }
@@ -338,19 +307,38 @@ export class Course {
     if (crossedForward || crossedBackward) {
       const denominator = signed - this.previousSigned;
       const t = denominator === 0 ? 0 : -this.previousSigned / denominator;
-      this.crossing.lerpVectors(this.previousPosition, position, clamp01(t));
+      const crossingFraction = clamp01(t);
+      this.crossing.lerpVectors(this.previousPosition, position, crossingFraction);
+      const crossingTime = this.previousTime + (time - this.previousTime) * crossingFraction;
 
       const radial = gate.radialDistance(this.crossing, this.scratchA);
-      if (radial <= gate.radius) {
+      gate.worldToPlane(this.crossing, this.crossingPlane);
+      const blockedByShear = radial <= gate.radius && this.shear?.isBlocked(
+        gate,
+        this.crossingPlane.x,
+        this.crossingPlane.y,
+        crossingTime,
+      ) === true;
+      const offset = clamp01(radial / gate.radius);
+      if (radial <= gate.radius && !blockedByShear) {
+        const eventTime = this.shear ? crossingTime : time;
         const event: CoursePassEvent = {
           gate,
           index: gate.index,
-          time,
+          time: eventTime,
           radialDistance: radial,
           speed,
-          offset: clamp01(radial / gate.radius),
+          offset,
         };
         this.passes.push(event);
+        const crossingEvent: CourseCrossingEvent = {
+          ...event,
+          time: crossingTime,
+          cleared: true,
+          blockedBy: null,
+        };
+        this.crossings.push(crossingEvent);
+        this.onCrossing?.(crossingEvent);
         gate.setState('cleared');
         this.nextIndex++;
         this.gates[this.nextIndex]?.setState('armed');
@@ -359,7 +347,19 @@ export class Course {
         return;
       }
 
-      // Crossed the plane outside the aperture: the cairn stays armed and has to be re-flown.
+      const crossingEvent: CourseCrossingEvent = {
+        gate,
+        index: gate.index,
+        time: crossingTime,
+        radialDistance: radial,
+        speed,
+        offset,
+        cleared: false,
+        blockedBy: blockedByShear ? 'shear' : 'aperture',
+      };
+      this.crossings.push(crossingEvent);
+      this.onCrossing?.(crossingEvent);
+      // Outside the aperture or inside its SHEAR shutter: the gate stays armed and recoverable.
       gate.setState('missed');
       this.onMiss?.(gate);
       // Re-arm on the next frame so the visual flash lands before the colour returns.
@@ -370,6 +370,7 @@ export class Course {
 
     this.previousSigned = signed;
     this.previousPosition.copy(position);
+    this.previousTime = time;
   }
 
   /**
@@ -386,19 +387,30 @@ export class Course {
    * ahead on the curve while the ship is off the curve cuts the corner instead of rejoining it.
    * Left as pure pursuit, and the corridor is sized against its MEASURED overshoot instead.
    */
-  autopilotTarget(position: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  autopilotTarget(
+    position: THREE.Vector3,
+    out: THREE.Vector3,
+    time = 0,
+    speed = 0,
+  ): THREE.Vector3 {
     const gate = this.nextGate;
     if (!gate) return out.copy(this.terminusPosition);
 
     const distance = position.distanceTo(gate.position);
-    out.copy(gate.position);
+    const isShearGate = this.shear !== null && this.shear.phaseAt(gate.index, time) !== null;
+    if (isShearGate) {
+      const crossingTime = time + distance / Math.max(speed, 260);
+      this.shear!.aimPoint(gate, crossingTime, out);
+    } else {
+      out.copy(gate.position);
+    }
 
     // Approach along the gate normal so the crossing is square rather than oblique.
     const approach = Math.min(distance * 0.55, gate.radius * 6);
     out.addScaledVector(gate.normal, -approach * clamp01(1 - distance / 3000));
 
     const following = this.gates[gate.index + 1];
-    if (distance < gate.radius * 5) {
+    if (!isShearGate && distance < gate.radius * 5) {
       const beyond = following ? following.position : this.terminusPosition;
       out.lerp(beyond, clamp01(1 - distance / (gate.radius * 5)) * 0.45);
     }
@@ -419,15 +431,27 @@ export class Course {
     quaternion.setFromRotationMatrix(this.poseMatrix);
   }
 
-  update3d(dt: number, time: number, cameraPosition: THREE.Vector3, pixelScale: number): void {
+  update3d(
+    dt: number,
+    time: number,
+    runTime: number,
+    cameraPosition: THREE.Vector3,
+    pixelScale: number,
+  ): void {
     for (const gate of this.gates) {
       // Skip gates that are far behind the player; they are neither visible nor animating.
       if (gate.state === 'cleared' && gate.position.distanceToSquared(cameraPosition) > 36_000_000) continue;
       gate.update(dt, time, cameraPosition, pixelScale);
     }
+    this.shear?.update(runTime);
+  }
+
+  getShearDebug(time: number): ShearDebugState | null {
+    return this.shear?.getDebugState(time) ?? null;
   }
 
   dispose(): void {
+    this.shear?.dispose();
     for (const gate of this.gates) gate.dispose();
   }
 }

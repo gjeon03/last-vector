@@ -3,9 +3,15 @@ import { createTranslator } from './index.ts';
 const translator = createTranslator('en');
 
 export const typeFixtures = [
+  translator.messages.campaign.routes['needle-grave'].briefingLine2,
+  translator.messages.campaign.routes['cairn-drift'].objectives.precision,
   translator.messages.hud.boostUsable(3.5),
   translator.messages.events.gateClearedLog(7, 12.34),
   translator.messages.results.bestComparison('+1.23', '01:02.34'),
+  () => {
+    // @ts-expect-error campaign copy is keyed only by authored course IDs.
+    return translator.messages.campaign.routes['helios-run'];
+  },
   () => {
     // @ts-expect-error boostUsable requires a numeric duration.
     return translator.messages.hud.boostUsable();

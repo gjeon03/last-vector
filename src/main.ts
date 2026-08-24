@@ -4,7 +4,11 @@ import { UI } from './core/art.ts';
 import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
+import { COURSE_ORDER, courseRecordId, getCourseDefinition } from './core/Courses.ts';
+import { resolveCourseSelection } from './core/CourseSelection.ts';
+import { ProgressStore } from './core/Progress.ts';
 import {
+  consumeLocaleHandoff,
   createTranslator,
   LocaleStore,
   prepareLocaleFonts,
@@ -17,7 +21,10 @@ import {
  */
 
 const localeStore = new LocaleStore();
-const bootLocale = localeStore.reload();
+const localeHandoff = consumeLocaleHandoff();
+const bootLocale = localeHandoff ?? localeStore.reload();
+if (localeHandoff !== null) localeStore.adopt(localeHandoff);
+const progressStore = new ProgressStore();
 document.documentElement.lang = bootLocale;
 const bootTranslator = createTranslator(bootLocale);
 document.title = bootTranslator.messages.meta.documentTitle;
@@ -107,9 +114,12 @@ async function boot(): Promise<void> {
 
   // A seed can be pinned from the URL so a failing headless run is reproducible. The world
   // is generated once at construction, which is why this is a boot-time input, not a method.
-  const seedParam = new URLSearchParams(window.location.search).get('seed');
+  const search = new URLSearchParams(window.location.search);
+  const seedParam = search.get('seed');
   const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
   const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
+  const courseResolution = resolveCourseSelection(search.get('course'), progressStore.snapshot());
+  const courseDefinition = getCourseDefinition(courseResolution.courseId);
 
   let game: Game;
   try {
@@ -118,9 +128,15 @@ async function boot(): Promise<void> {
       settled: bootFontPreparation.settled,
       cancel: bootFontPreparation.cancel,
     };
-    game = new Game(seed === undefined
-      ? { root: root!, localeStore, fonts }
-      : { root: root!, localeStore, fonts, seed });
+    game = new Game({
+      root: root!,
+      localeStore,
+      fonts,
+      progressStore,
+      courseDefinition,
+      courseResolution,
+      ...(seed === undefined ? {} : { seed }),
+    });
   } catch (error) {
     bootFontPreparation.cancel();
     const translator = createTranslator(localeStore.get());
@@ -133,14 +149,23 @@ async function boot(): Promise<void> {
 
   // Install this before any awaited boot work. A context loss during shader/audio prewarm used to
   // happen before the handler existed, leaving ready() unresolved behind an immortal loader.
-  let graphicsFailed = false;
+  let fatalDuringBoot = false;
   game.onContextLost = () => {
-    graphicsFailed = true;
+    fatalDuringBoot = true;
     const locale = game.getLocaleState();
     const translator = createTranslator(locale.active ?? locale.selected);
     fail(
       translator.messages.loader.graphicsContextLostTitle,
       translator.messages.loader.graphicsContextLostDetail,
+    );
+  };
+  game.onRuntimeFailure = () => {
+    fatalDuringBoot = true;
+    const locale = game.getLocaleState();
+    const translator = createTranslator(locale.active ?? locale.selected);
+    fail(
+      translator.messages.loader.runtimeFailureTitle,
+      translator.messages.loader.runtimeFailureDetail,
     );
   };
 
@@ -179,9 +204,13 @@ async function boot(): Promise<void> {
 
   game.start();
   await game.ready();
-  if (graphicsFailed) return;
+  if (fatalDuringBoot) return;
   loader.setProgress(1, bootTranslator.messages.loader.ready);
   loader.done();
+
+  if (search.get('briefing') === '1' && courseResolution.source === 'url') {
+    game.toBriefing();
+  }
 
   installHarness(game);
 }
@@ -198,13 +227,37 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.6.0',
+    version: '1.7.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
     telemetry: () => game.getTelemetry(),
     phase: () => game.getPhase(),
     result: () => game.getResult(),
+    course: () => game.getCourseState(),
+    catalog: () => ({
+      order: [...COURSE_ORDER],
+      courses: COURSE_ORDER.map((id) => {
+        const definition = getCourseDefinition(id);
+        return {
+          id,
+          order: definition.order,
+          defaultSeed: definition.defaultSeed,
+          recordId: courseRecordId(definition, definition.defaultSeed),
+          unlocks: definition.unlocks ?? null,
+          gateCount: definition.geometry.legs.length,
+          sector: definition.text.canonicalSector,
+          destination: definition.text.canonicalDestination,
+          objectives: [...definition.objectives],
+          shearGates: [...(definition.shear?.gates ?? [])],
+        };
+      }),
+    }),
+    progress: () => game.getCampaignProgress(),
+    shear: () => game.getShearState(),
+    crossings: () => game.getCrossingHistory(),
+    installProgress: (value) => progressStore.install(value),
+    routeUrl: (courseId) => game.getRouteUrl(courseId),
     damageHull: (amount) => game.damageHull(amount),
     stageCollision: () => game.stageCollision(),
     setInput: (input: HarnessInput | null) => game.setHarnessInput(input),

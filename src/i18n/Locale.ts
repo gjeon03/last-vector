@@ -3,11 +3,44 @@ import type { Locale } from '../core/contracts.ts';
 export type { Locale } from '../core/contracts.ts';
 
 export const LOCALE_STORAGE_KEY = 'last-vector.locale.v1';
+export const LOCALE_HANDOFF_KEY = 'last-vector.locale-handoff.v1';
 export const DEFAULT_LOCALE: Locale = 'ko';
 
 export interface LocaleStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
+}
+
+/**
+ * Carries the run-locked locale across the single route-change reload.
+ *
+ * This is deliberately tab-scoped and one-shot: the durable locale preference can still be
+ * changed from another tab while a run is active, but that must not change the language between
+ * a result screen and the next route's briefing.
+ */
+export function writeLocaleHandoff(
+  locale: Locale,
+  storage: LocaleStorage | null = readGlobalSessionStorage(),
+): boolean {
+  try {
+    storage?.setItem(LOCALE_HANDOFF_KEY, locale);
+    return storage !== null;
+  } catch {
+    return false;
+  }
+}
+
+export function consumeLocaleHandoff(
+  storage: LocaleStorage | null = readGlobalSessionStorage(),
+): Locale | null {
+  try {
+    const value = storage?.getItem(LOCALE_HANDOFF_KEY) ?? null;
+    storage?.removeItem?.(LOCALE_HANDOFF_KEY);
+    return isLocale(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function isLocale(value: unknown): value is Locale {
@@ -37,6 +70,11 @@ export class LocaleStore {
     }
   }
 
+  /** Updates only this runtime instance; used by a one-shot tab handoff across a route reload. */
+  adopt(locale: Locale): void {
+    this.locale = locale;
+  }
+
   reload(): Locale {
     const stored = this.read();
     if (stored !== null) this.locale = stored;
@@ -56,6 +94,14 @@ export class LocaleStore {
 function readGlobalStorage(): LocaleStorage | null {
   try {
     return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readGlobalSessionStorage(): LocaleStorage | null {
+  try {
+    return globalThis.sessionStorage;
   } catch {
     return null;
   }

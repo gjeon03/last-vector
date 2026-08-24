@@ -5,7 +5,15 @@ import { en } from './en.ts';
 import { ko } from './ko.ts';
 import type { Messages } from './messages.ts';
 
-export { DEFAULT_LOCALE, LOCALE_STORAGE_KEY, LocaleStore, isLocale } from './Locale.ts';
+export {
+  consumeLocaleHandoff,
+  DEFAULT_LOCALE,
+  LOCALE_HANDOFF_KEY,
+  LOCALE_STORAGE_KEY,
+  LocaleStore,
+  isLocale,
+  writeLocaleHandoff,
+} from './Locale.ts';
 export type { Locale, LocaleStorage } from './Locale.ts';
 export type { DomainMessage } from './domain.ts';
 export { en } from './en.ts';

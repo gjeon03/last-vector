@@ -12,6 +12,8 @@
  * a reason to say so when you do.
  */
 
+import type { CourseId } from './Courses.ts';
+
 export type Phase =
   | 'boot'
   | 'title'
@@ -26,7 +28,8 @@ export type LocaleFontStatus = 'not-required' | 'ready' | 'fallback' | 'failed';
 export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
 
 export type GateNameMessage =
-  | { type: 'gate-name.terminus-approach' };
+  | { type: 'gate-name.terminus-approach' }
+  | { type: 'gate-name.nadir-approach' };
 
 export type CalloutTitleMessage =
   | { type: 'callout-title.pointer-lock-unavailable' }
@@ -41,15 +44,15 @@ export type CalloutSubMessage =
   | { type: 'callout-sub.keyboard-flight-available' }
   | { type: 'callout-sub.camera-active'; mode: CameraMode }
   | { type: 'callout-sub.boost-recharging' }
-  | { type: 'callout-sub.gate-progress'; remaining: number }
+  | { type: 'callout-sub.gate-progress'; remaining: number; courseId?: CourseId }
   | { type: 'callout-sub.gate-realign' };
 
 export type LogMessage =
   | { type: 'log.pointer-lock-refused'; reason: string }
   | { type: 'log.hull-contact'; percent: number }
   | { type: 'log.boost-depleted' }
-  | { type: 'log.gate-cleared'; gate: number; seconds: number }
-  | { type: 'log.gate-missed'; gate: number };
+  | { type: 'log.gate-cleared'; gate: number; seconds: number; courseId?: CourseId }
+  | { type: 'log.gate-missed'; gate: number; courseId?: CourseId };
 
 export interface ScreenAnchor {
   /** Normalised device coords, -1..1, x right / y up. Valid only when `onScreen`. */
@@ -175,6 +178,8 @@ export interface LogLine {
 }
 
 export interface RunResult {
+  /** Stable campaign identity; omitted only by older fixtures and external consumers. */
+  courseId?: CourseId;
   totalTime: number;
   splits: number[];
   bestTime: number | null;
@@ -192,6 +197,10 @@ export interface RunResult {
   cleanRun: boolean;
   rank: string;
   destinationName: string;
+  /** Largest gate offset in this run, normalized by each gate's authored radius. */
+  maxGateOffset?: number;
+  /** First route made available by this finish, if any. */
+  newlyUnlockedCourseId?: CourseId | null;
 }
 
 /** Everything the HUD layer is allowed to ask the game to do. */
@@ -229,6 +238,10 @@ export interface HudHost {
   pause(): void;
   resume(): void;
   quitToTitle(): void;
+  /** Persists an authorized route choice and reloads through the boot-owned world builder. */
+  selectRoute(courseId: CourseId): void;
+  /** Returns to the title route strip without changing the active boot-built route. */
+  showRouteSelect(): void;
   /** Requests a persisted locale change; the game accepts it only while the title is active. */
   requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;

@@ -18,6 +18,7 @@ const TOP_LEVEL_SECTIONS = [
   'meta',
   'loader',
   'screens',
+  'campaign',
   'controls',
   'settings',
   'hud',
@@ -37,6 +38,12 @@ const DYNAMIC_ARITIES = new Map([
   ['events.gateProgress', 1],
   ['events.gateClearedLog', 2],
   ['events.gateMissedLog', 1],
+  ['campaign.routes.cairn-drift.gateProgress', 1],
+  ['campaign.routes.cairn-drift.gateClearedLog', 2],
+  ['campaign.routes.cairn-drift.gateMissedLog', 1],
+  ['campaign.routes.needle-grave.gateProgress', 1],
+  ['campaign.routes.needle-grave.gateClearedLog', 2],
+  ['campaign.routes.needle-grave.gateMissedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -258,10 +265,48 @@ await report.check(
       'Korean bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
     verify(bestComparisonFixtures.en === '+1.23 vs BEST 01:02.34',
       'English bestComparison differs from the canonical exact fixture.', bestComparisonFixtures);
+    const campaignRouteFixtures = {
+      koCairnProgress: ko.campaign.routes['cairn-drift'].gateProgress(2),
+      enCairnProgress: en.campaign.routes['cairn-drift'].gateProgress(2),
+      koCairnClear: ko.campaign.routes['cairn-drift'].gateClearedLog(7, 12.34),
+      enCairnClear: en.campaign.routes['cairn-drift'].gateClearedLog(7, 12.34),
+      koCairnMiss: ko.campaign.routes['cairn-drift'].gateMissedLog(7),
+      enCairnMiss: en.campaign.routes['cairn-drift'].gateMissedLog(7),
+      koNeedleProgress: ko.campaign.routes['needle-grave'].gateProgress(2),
+      enNeedleProgress: en.campaign.routes['needle-grave'].gateProgress(2),
+      koNeedleClear: ko.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
+      enNeedleClear: en.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
+      koNeedleMiss: ko.campaign.routes['needle-grave'].gateMissedLog(4),
+      enNeedleMiss: en.campaign.routes['needle-grave'].gateMissedLog(4),
+      koNeedleRadio: ko.campaign.routes['needle-grave'].radio1,
+      enNeedleRadio: en.campaign.routes['needle-grave'].radio1,
+    };
+    const expectedCampaignRouteFixtures = {
+      koCairnProgress: 'CAIRN 2기 남음',
+      enCairnProgress: '2 CAIRNS REMAINING',
+      koCairnClear: 'cairn 07 · 12.34초',
+      enCairnClear: 'cairn 07 · 12.34s',
+      koCairnMiss: 'cairn 07 빗나감',
+      enCairnMiss: 'cairn 07 missed',
+      koNeedleProgress: 'NEEDLE 2기 남음',
+      enNeedleProgress: '2 NEEDLES REMAINING',
+      koNeedleClear: 'needle 04 · 9.87초',
+      enNeedleClear: 'needle 04 · 9.87s',
+      koNeedleMiss: 'needle 04 빗나감',
+      enNeedleMiss: 'needle 04 missed',
+      koNeedleRadio: 'Kestrel, NADIR 항로 개방. SHEAR 차폐판이 가동 중이다.',
+      enNeedleRadio: 'Kestrel, the NADIR line is open. SHEAR shutters are live.',
+    };
+    verify(JSON.stringify(campaignRouteFixtures) === JSON.stringify(expectedCampaignRouteFixtures),
+      'Route-specific campaign functions or radio copy differ from the canonical fixtures.', {
+        expected: expectedCampaignRouteFixtures,
+        actual: campaignRouteFixtures,
+      });
     return {
       leafCount: leaves.length,
       dynamicArities: Object.fromEntries(DYNAMIC_ARITIES),
       bestComparisonFixtures,
+      campaignRouteFixtures,
     };
   },
 );
@@ -514,6 +559,7 @@ await report.check(
 
 const descriptors = [
   { type: 'gate-name.terminus-approach' },
+  { type: 'gate-name.nadir-approach' },
   { type: 'callout-title.pointer-lock-unavailable' },
   { type: 'callout-title.camera-view', mode: 'cockpit' },
   { type: 'callout-title.camera-view', mode: 'chase' },
@@ -582,6 +628,7 @@ await report.check(
     const translator = createTranslator('en');
     const fixtures = [
       [{ type: 'gate-name.terminus-approach' }, 'TERMINUS APPROACH'],
+      [{ type: 'gate-name.nadir-approach' }, 'NADIR APPROACH'],
       [{ type: 'callout-title.pointer-lock-unavailable' }, 'MOUSE CAPTURE UNAVAILABLE'],
       [{ type: 'callout-sub.keyboard-flight-available' }, 'W A S D / ARROWS STILL FLY'],
       [{ type: 'callout-title.camera-view', mode: 'cockpit' }, 'COCKPIT VIEW'],

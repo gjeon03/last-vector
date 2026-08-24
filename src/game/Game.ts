@@ -30,17 +30,25 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
+import type { CampaignViewModel } from '../ui/Screens.ts';
 import {
   createTranslator,
   LocaleStore,
   prepareLocaleFonts,
+  writeLocaleHandoff,
   type LocaleFontPreparation,
   type LocaleFontResult,
   type Translator,
 } from '../i18n/index.ts';
-import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
+import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
-import { hashSeed } from '../core/rng.ts';
+import {
+  CAIRN_DRIFT,
+  calculateCourseRank,
+  type CourseDefinition,
+} from '../core/Courses.ts';
+import { buildCourseUrl, type CourseResolution } from '../core/CourseSelection.ts';
+import { ProgressStore } from '../core/Progress.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -81,13 +89,26 @@ import type {
 
 type RadioKey = 'radio1' | 'radio2' | 'radio3' | 'radio4' | 'radio5';
 
-const RADIO_LINES: readonly { at: number; speaker: string; key: RadioKey }[] = [
-  { at: 0, speaker: 'DRIFT CONTROL', key: 'radio1' },
-  { at: 2, speaker: 'DRIFT CONTROL', key: 'radio2' },
-  { at: 4, speaker: 'VESPER TERMINUS', key: 'radio3' },
-  { at: 6, speaker: 'VESPER TERMINUS', key: 'radio4' },
-  { at: 8, speaker: 'VESPER TERMINUS', key: 'radio5' },
-];
+const RADIO_LINES: Readonly<Record<CourseDefinition['id'], readonly {
+  at: number;
+  speaker: string;
+  key: RadioKey;
+}[]>> = {
+  'cairn-drift': [
+    { at: 0, speaker: 'DRIFT CONTROL', key: 'radio1' },
+    { at: 2, speaker: 'DRIFT CONTROL', key: 'radio2' },
+    { at: 4, speaker: 'VESPER TERMINUS', key: 'radio3' },
+    { at: 6, speaker: 'VESPER TERMINUS', key: 'radio4' },
+    { at: 8, speaker: 'VESPER TERMINUS', key: 'radio5' },
+  ],
+  'needle-grave': [
+    { at: 0, speaker: 'NEEDLE CONTROL', key: 'radio1' },
+    { at: 2, speaker: 'NEEDLE CONTROL', key: 'radio2' },
+    { at: 3, speaker: 'NADIR RELAY', key: 'radio3' },
+    { at: 4, speaker: 'NADIR RELAY', key: 'radio4' },
+    { at: 5, speaker: 'NADIR RELAY', key: 'radio5' },
+  ],
+};
 
 /** Public telemetry keeps canonical English regardless of the active run locale. */
 const LEGACY_ENGLISH = createTranslator('en');
@@ -203,6 +224,9 @@ interface Vantage {
 
 export interface GameOptions {
   root: HTMLElement;
+  courseDefinition?: CourseDefinition;
+  courseResolution?: CourseResolution;
+  progressStore?: ProgressStore;
   localeStore?: LocaleStore;
   fonts?: {
     result: LocaleFontResult;
@@ -237,7 +261,12 @@ export class Game {
   // ACHRA sits ahead, high and to port of the opening heading. Putting the key light in
   // front of the player is what buys backlit rock silhouettes, visible shafts and a rim on
   // every gate; with the star behind the camera the whole sector renders flat and frontal.
-  private readonly lighting = createLightingUniforms(new THREE.Vector3(-0.58, 0.3, -0.76));
+  private readonly lighting: ReturnType<typeof createLightingUniforms>;
+  private readonly courseDefinition: CourseDefinition;
+  private readonly courseResolution: CourseResolution;
+  private readonly progressStore: ProgressStore;
+  private newlyUnlockedCourseId: CourseDefinition['id'] | null = null;
+  private campaignNavigationError: CampaignViewModel['navigationError'] = null;
   private readonly starfield: Starfield;
   private readonly star: Star;
   private readonly planet: Planet;
@@ -381,6 +410,15 @@ export class Game {
 
   constructor(options: GameOptions) {
     this.root = options.root;
+    this.courseDefinition = options.courseDefinition ?? CAIRN_DRIFT;
+    this.courseResolution = options.courseResolution ?? {
+      courseId: this.courseDefinition.id,
+      source: 'default',
+      diagnostic: null,
+    };
+    this.progressStore = options.progressStore ?? new ProgressStore();
+    const sun = this.courseDefinition.world.sunDirection;
+    this.lighting = createLightingUniforms(new THREE.Vector3(sun[0], sun[1], sun[2]));
     this.localeStore = options.localeStore ?? new LocaleStore();
     this.selectedLocale = this.localeStore.get();
     this.activeTranslator = createTranslator(this.selectedLocale);
@@ -398,7 +436,7 @@ export class Game {
       this.observeFontPreparation(preparation, this.fontGeneration);
     }
 
-    const seed = options.seed ?? hashSeed('cairn-drift-01');
+    const seed = options.seed ?? this.courseDefinition.defaultSeed;
     this.seed = seed;
 
     this.canvas = document.createElement('canvas');
@@ -446,17 +484,22 @@ export class Game {
     this.star = new Star(60, Math.atan(SCALE.starRadius / SCALE.starDistance), sunDir);
     this.farScene.add(this.star.object);
 
+    const planetDirection = this.courseDefinition.world.planetDirection;
     this.planet = new Planet({
       distance: 40,
       angularRadius: Math.atan(SCALE.planetRadius / SCALE.planetDistance),
-      direction: new THREE.Vector3(0.68, -0.2, -0.7).normalize(),
+      direction: new THREE.Vector3(
+        planetDirection[0],
+        planetDirection[1],
+        planetDirection[2],
+      ).normalize(),
       sunDirection: sunDir,
-      rings: true,
+      rings: this.courseDefinition.world.planetRings,
     });
     this.farScene.add(this.planet.object);
 
     // --- near scene -----------------------------------------------------------------
-    this.course = new Course(seed, this.lighting);
+    this.course = new Course(this.courseDefinition, seed, this.lighting);
     this.mainScene.add(this.course.object);
 
     this.terminus = new Terminus({
@@ -464,6 +507,8 @@ export class Game {
       normal: this.course.terminusNormal,
       lighting: this.lighting,
       seed: seed ^ 0x7f31,
+      apertureRadius: this.courseDefinition.destination.apertureRadius,
+      palette: this.courseDefinition.destination,
     });
     this.mainScene.add(this.terminus.object);
 
@@ -471,18 +516,18 @@ export class Game {
       count: maxProfile.asteroidCount,
       lighting: this.lighting,
       spine: this.course.spine,
-      spread: SCALE.asteroidFieldRadius * 0.55,
+      spread: SCALE.asteroidFieldRadius * this.courseDefinition.field.spreadFraction,
       // Absolute metres, deliberately not a multiple of the aperture: shrinking the gate
       // for difficulty must not silently shrink the flyable channel as well.
       // The debris shell used to start 300 m from the spine, which put the inner wall of the
       // field outside the racing line everywhere. The channel is now cut per leg instead.
-      corridor: 84,
-      minRadius: 9,
-      maxRadius: 160,
-      hazardCount: 460,
+      corridor: this.courseDefinition.field.corridor,
+      minRadius: this.courseDefinition.field.minRadius,
+      maxRadius: this.courseDefinition.field.maxRadius,
+      hazardCount: this.courseDefinition.field.hazardCount,
       // Narrow: rock packed against the channel wall reads as a corridor. Spread wide it just
       // raises the field density and the line stays visually open.
-      hazardBand: 120,
+      hazardBand: this.courseDefinition.field.hazardBand,
       // The flown volume: the curved spine the ship follows AND the chords a fast pilot cuts
       // to, each at its own leg's clearance. Built by Course, which is what knows the legs.
       keepClearSegments: this.course.clearChannel,
@@ -490,10 +535,13 @@ export class Game {
         // The spawn point, generously: the very first thing a player sees must not be a
         // collision. And every aperture, so threading a cairn is never blocked by a boulder
         // that happens to have landed in the hole.
-        { center: this.course.startPosition.clone(), radius: 1100 },
+        {
+          center: this.course.startPosition.clone(),
+          radius: this.courseDefinition.field.startKeepClearRadius,
+        },
         ...this.course.gates.map((gate) => ({
           center: gate.position.clone(),
-          radius: gate.radius * 2.4,
+          radius: gate.radius * this.courseDefinition.field.gateKeepClearScale,
         })),
       ],
       seed: seed ^ 0x2f19,
@@ -504,7 +552,7 @@ export class Game {
       lighting: this.lighting,
       spine: this.course.spine,
       seed: seed ^ 0x1a77,
-      count: 7,
+      count: this.courseDefinition.world.derelictCount,
     });
     this.mainScene.add(this.derelicts.object);
 
@@ -513,7 +561,8 @@ export class Game {
     // Anchored to the course's own frame rather than to world axes, so it reliably sits off
     // the player's starboard side through the middle legs instead of wherever the route
     // happened to be pointing.
-    const spanIndex = Math.floor(this.course.spine.length * 0.5);
+    const shelf = this.courseDefinition.world.shelf;
+    const spanIndex = Math.floor(this.course.spine.length * shelf.routeFraction);
     const spanAnchor = this.course.spine[spanIndex];
     const spanAhead = this.course.spine[Math.min(this.course.spine.length - 1, spanIndex + 6)];
     const spanForward = new THREE.Vector3().subVectors(spanAhead, spanAnchor).normalize();
@@ -522,9 +571,9 @@ export class Game {
       lighting: this.lighting,
       position: spanAnchor
         .clone()
-        .addScaledVector(spanRight, 5200)
-        .addScaledVector(spanForward, 2600)
-        .add(new THREE.Vector3(0, -900, 0)),
+        .addScaledVector(spanRight, shelf.rightOffset)
+        .addScaledVector(spanForward, shelf.forwardOffset)
+        .add(new THREE.Vector3(0, shelf.verticalOffset, 0)),
       seed: seed ^ 0x5bd1,
     });
     this.mainScene.add(this.shelfSpan.object);
@@ -628,6 +677,7 @@ export class Game {
        on the keyboard path only. */
 
     this.overlay = this.createOverlay(this.activeTranslator);
+    this.overlay.syncCampaign(this.campaignViewModel());
 
     this.telemetry = this.createTelemetry();
     this.grade = {
@@ -690,6 +740,8 @@ export class Game {
       pause: () => this.pause(),
       resume: () => this.resume(),
       quitToTitle: () => this.toTitle(),
+      selectRoute: (courseId) => this.selectRoute(courseId),
+      showRouteSelect: () => this.showRouteSelect(),
       requestLocale: (locale) => this.applyLocale(locale),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
       getSettings: () => this.settings.value,
@@ -705,12 +757,71 @@ export class Game {
 
     this.overlay.dispose();
     this.overlay = this.createOverlay(translator);
+    this.overlay.syncCampaign(this.campaignViewModel());
     // Hydrate directly: Game.setPhase has a same-phase guard and would leave every new view closed.
     this.overlay.setPhase(phase);
     this.overlay.setCountdown(countdown);
     this.overlay.setPointerLocked(pointerLocked);
     this.overlay.update(telemetry, 0);
     this.overlay.restoreFocusToken(focus);
+  }
+
+  private selectRoute(courseId: CourseDefinition['id']): void {
+    if (courseId === this.courseDefinition.id) {
+      this.showRouteSelect();
+      return;
+    }
+
+    const selected = this.progressStore.selectCourse(courseId);
+    if (!selected.accepted) return;
+    if (!selected.persistence.reloadSafe) {
+      this.campaignNavigationError = 'storage-unavailable';
+      this.overlay.syncCampaign(this.campaignViewModel());
+      return;
+    }
+
+    const locale = this.activeRunLocale ?? this.selectedLocale;
+    writeLocaleHandoff(locale);
+    const target = new URL(buildCourseUrl(window.location.href, courseId));
+    if (this.phase === 'finished') target.searchParams.set('briefing', '1');
+    else target.searchParams.delete('briefing');
+    try {
+      window.location.assign(target.href);
+    } catch {
+      this.campaignNavigationError = 'navigation-failed';
+      this.overlay.syncCampaign(this.campaignViewModel());
+    }
+  }
+
+  private showRouteSelect(): void {
+    this.toTitle();
+    this.overlay.syncCampaign(this.campaignViewModel());
+  }
+
+  private campaignViewModel(): CampaignViewModel {
+    const progress = this.progressStore.snapshot();
+    return {
+      activeCourseId: this.courseDefinition.id,
+      newlyUnlockedCourseId: this.newlyUnlockedCourseId,
+      navigationError: this.campaignNavigationError,
+      routes: (['cairn-drift', 'needle-grave'] as const).map((id) => {
+        const course = progress.courses[id];
+        return {
+          id,
+          state: !this.progressStore.isUnlocked(id)
+            ? 'locked' as const
+            : course?.cleared
+              ? 'cleared' as const
+              : 'available' as const,
+          highestRank: course?.highestRank ?? null,
+          objectives: {
+            firstClear: course?.cleared === true,
+            cleanClear: course?.cleanClear === true,
+            precision: course?.precisionClear === true,
+          },
+        };
+      }),
+    };
   }
 
   private applyLocale(locale: Locale): void {
@@ -833,8 +944,8 @@ export class Game {
       bestTime: readBestTime(this.course.id),
       bestSplits: readBestSplits(this.course.id),
       courseLength: this.course.totalLength,
-      sectorName: FICTION.sectorName,
-      destinationName: FICTION.destinationName,
+      sectorName: this.courseDefinition.text.canonicalSector,
+      destinationName: this.courseDefinition.text.canonicalDestination,
       callout: null,
       log: this.logLines,
       proximity: 0,
@@ -844,28 +955,12 @@ export class Game {
   }
 
   private buildVantages(): void {
-    this.vantages.push(
-      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 3.0 },
-      // Pulled back and re-aimed. At a 15 m standoff on a 42 degree lens the airframe overran the
-      // frame: the art review measured the subject severed at x=1599 with the tail under the
-      // NEXT MARKER cluster, and the 2.4 bias — fitted while the vantage camera was still being
-      // thrown off aim — blew the hull out on top of that. Now framed left-of-centre, clear of
-      // the right-hand HUD column.
-      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-26, 5.5, 38), lookAhead: 26, fov: 40, exposureBias: 1.45 },
-      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.5 },
-      // True lateral engine view for plume authoring. `hull` is a rear three-quarter hero frame;
-      // it cannot prove that the nested core remains inside the sheath or that shock cells read
-      // down the plume axis. This offset is deliberately broad enough to keep both drive pods and
-      // their full exhaust length visible without turning the shot into a telephoto silhouette.
-      { name: 'drive-side', t: 0.34, offset: new THREE.Vector3(26, 0.6, 6), lookAhead: 0, fov: 48, exposureBias: 1.2 },
-      { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
-      { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },
-      { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900, exposureBias: 1.3 },
-      { name: 'planet-rise', t: 0, offset: new THREE.Vector3(90, -26, 180), lookAhead: 1500, fov: 74, gateIndex: 5, gateStandoff: 2600, exposureBias: 2.4 },
-      { name: 'long-run', t: 0.7, offset: new THREE.Vector3(-26, 8, 62), lookAhead: 2200, fov: 82, exposureBias: 1.25 },
-      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100, exposureBias: 1.35 },
-      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200, exposureBias: 1.25 },
-    );
+    for (const vantage of this.courseDefinition.vantages) {
+      this.vantages.push({
+        ...vantage,
+        offset: new THREE.Vector3(...vantage.offset),
+      });
+    }
   }
 
   private resetShipToStart(): void {
@@ -1196,7 +1291,7 @@ export class Game {
           this.setPhase('flying');
           this.pushCallout({
             titleMessage: ENGAGE_MESSAGE,
-            sub: FICTION.destinationName,
+            sub: this.courseDefinition.text.canonicalDestination,
             subMessage: undefined,
             tone: 'good',
             ttl: 1.6,
@@ -1241,7 +1336,8 @@ export class Game {
       }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
-      if (this.ship.position.distanceTo(this.course.startPosition) > SCALE.gateSpacing * 2.2) {
+      if (this.ship.position.distanceTo(this.course.startPosition) >
+        this.courseDefinition.geometry.gateSpacing * 2.2) {
         this.resetShipToStart();
         this.chase.snapTo(this.ship);
       }
@@ -1264,7 +1360,12 @@ export class Game {
    * struct a human produces, so it exercises the real flight model rather than a shortcut.
    */
   private driveAutopilot(command: FlightCommand, dt: number): FlightCommand {
-    const target = this.course.autopilotTarget(this.ship.position, this.tmpA);
+    const target = this.course.autopilotTarget(
+      this.ship.position,
+      this.tmpA,
+      this.elapsed,
+      this.ship.speed,
+    );
     this.tmpB.copy(target).sub(this.ship.position);
     const distance = this.tmpB.length();
     if (distance < 1e-3) return command;
@@ -1274,6 +1375,7 @@ export class Game {
     this.tmpQuat.copy(this.ship.quaternion).invert();
     this.tmpC.copy(this.tmpB).applyQuaternion(this.tmpQuat);
 
+    const needleRoute = this.courseDefinition.id === 'needle-grave';
     const gain = 2.6 * this.autopilotSkill;
     command.yaw = clamp(this.tmpC.x * gain, -1, 1);
     command.pitch = clamp(this.tmpC.y * gain, -1, 1);
@@ -1295,9 +1397,22 @@ export class Game {
     // title, no new contract surface, and uiClick goes from +0.5 dB over the bed to about +6.7.
     if (this.cinematic) command.throttle = Math.min(command.throttle, Game.ATTRACT_THROTTLE);
     const gate = this.course.nextGate;
-    const far = gate ? this.ship.position.distanceTo(gate.position) > gate.radius * 12 : true;
-    command.boost = this.autopilotSkill > 0.75 && alignment > 0.985 && far && this.ship.energy01 > 0.45;
-    command.brake = false;
+    const boostClearanceRadii = needleRoute ? 28 : 12;
+    const far = gate
+      ? this.ship.position.distanceTo(gate.position) > gate.radius * boostClearanceRadii
+      : true;
+    // NEEDLE is authored around braking before its compact, alternating turns. Keep CAIRN's
+    // historical pilot byte-for-byte unchanged; only the new route reads this extra decision.
+    command.brake = needleRoute &&
+      gate !== null &&
+      distance < gate.radius * 46 &&
+      alignment < 0.985 &&
+      this.ship.speed > 220;
+    command.boost = !command.brake &&
+      this.autopilotSkill > 0.75 &&
+      alignment > 0.985 &&
+      far &&
+      this.ship.energy01 > 0.45;
     command.strafeX = 0;
     command.strafeY = 0;
     void dt;
@@ -1403,16 +1518,21 @@ export class Game {
     const bestSplits = readBestSplits(this.course.id);
     if (isNewBest) writeBestTime(this.course.id, this.elapsed, splits);
 
-    const par = (this.course.totalLength / FLIGHT.cruiseSpeed) * 1.06;
-    const ratio = this.elapsed / par;
     const clean = this.impacts === 0;
-    let rank = 'D';
-    if (ratio < 0.74 && clean) rank = 'S';
-    else if (ratio < 0.84) rank = 'A';
-    else if (ratio < 0.96) rank = 'B';
-    else if (ratio < 1.18) rank = 'C';
+    const rank = calculateCourseRank(
+      this.courseDefinition,
+      this.elapsed,
+      this.course.totalLength,
+      FLIGHT.cruiseSpeed,
+      clean,
+    );
+    const maxGateOffset = this.course.passes.reduce(
+      (maximum, pass) => Math.max(maximum, pass.offset),
+      0,
+    );
 
     this.result = {
+      courseId: this.courseDefinition.id,
       totalTime: this.elapsed,
       splits,
       bestTime: best,
@@ -1423,10 +1543,22 @@ export class Game {
       topSpeed: this.topSpeed,
       cleanRun: clean,
       rank,
-      destinationName: FICTION.destinationName,
+      destinationName: this.courseDefinition.text.canonicalDestination,
+      maxGateOffset,
     };
 
+    const progress = this.progressStore.recordSuccessfulFinish(
+      this.courseDefinition.id,
+      this.result,
+    );
+    this.newlyUnlockedCourseId = progress.newlyUnlocked;
+    this.result.newlyUnlockedCourseId = progress.newlyUnlocked;
+    this.campaignNavigationError = progress.newlyUnlocked !== null && !progress.persistence.reloadSafe
+      ? 'storage-unavailable'
+      : null;
+
     this.setPhase('finished');
+    this.overlay.syncCampaign(this.campaignViewModel());
     this.overlay.showResult(this.result);
     this.audio.play('finish');
     if (isNewBest) this.audio.play('newBest');
@@ -1514,7 +1646,7 @@ export class Game {
     this.derelicts.update(this.clock, camPos);
     this.shelfSpan.update(this.clock, camPos);
     this.terminus.update(this.clock, camPos, pixelScale);
-    this.course.update3d(dt, this.clock, camPos, pixelScale);
+    this.course.update3d(dt, this.clock, this.elapsed, camPos, pixelScale);
 
     // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
     // short at cruise and only tearing open under boost — that contrast is the point.
@@ -1745,7 +1877,7 @@ export class Game {
     const targetPosition = gate ? gate.position : this.terminus.position;
     t.gate.index = this.course.nextIndex;
     t.gate.total = this.course.gates.length;
-    t.gate.name = gate ? gate.name : FICTION.destinationName;
+    t.gate.name = gate ? gate.name : this.courseDefinition.text.canonicalDestination;
     t.gate.nameMessage = gate?.nameMessage;
     t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
@@ -1901,12 +2033,21 @@ export class Game {
       this.pushCallout({
         titleMessage: GATE_ACCURACY_MESSAGES[accuracy],
         sub: undefined,
-        subMessage: { type: 'callout-sub.gate-progress', remaining },
+        subMessage: {
+          type: 'callout-sub.gate-progress',
+          remaining,
+          courseId: this.courseDefinition.id,
+        },
         tone: precision > 0.6 ? 'good' : 'neutral',
         ttl: 1.15,
       });
       this.pushLog({
-        message: { type: 'log.gate-cleared', gate: event.index + 1, seconds: event.time },
+        message: {
+          type: 'log.gate-cleared',
+          gate: event.index + 1,
+          seconds: event.time,
+          courseId: this.courseDefinition.id,
+        },
         tone: 'good',
       });
       this.radio(event.index + 1);
@@ -1922,19 +2063,23 @@ export class Game {
         ttl: 1.6,
       });
       this.pushLog({
-        message: { type: 'log.gate-missed', gate: gate.index + 1 },
+        message: {
+          type: 'log.gate-missed',
+          gate: gate.index + 1,
+          courseId: this.courseDefinition.id,
+        },
         tone: 'warn',
       });
     };
   }
 
   private radio(step: number): void {
-    const line = RADIO_LINES.find((l) => l.at === step);
+    const line = RADIO_LINES[this.courseDefinition.id].find((candidate) => candidate.at === step);
     if (!line || this.lastRadio === step) return;
     this.lastRadio = step;
     this.audio.play('radio');
-    const localizedText = this.activeTranslator.messages.events[line.key];
-    const legacyDurationBasis = LEGACY_ENGLISH.messages.events[line.key].length;
+    const localizedText = this.activeTranslator.messages.campaign.routes[this.courseDefinition.id][line.key];
+    const legacyDurationBasis = LEGACY_ENGLISH.messages.campaign.routes[this.courseDefinition.id][line.key].length;
     this.overlay.radio(line.speaker, localizedText, legacyDurationBasis);
   }
 
@@ -2093,9 +2238,10 @@ export class Game {
   /** Fired when the browser or driver drops the GPU context. */
   onContextLost: (() => void) | null = null;
 
-  private readonly handleContextLost = (event: Event): void => {
-    // Preventing the default is what allows a restore event to ever fire.
-    event.preventDefault();
+  /** Fired when the simulation halts after the same frame path repeatedly throws. */
+  onRuntimeFailure: (() => void) | null = null;
+
+  private haltRendering(): void {
     this.contextLost = true;
     this.fontGeneration += 1;
     this.fontPreparation?.cancel();
@@ -2104,14 +2250,20 @@ export class Game {
     this.paused = true;
     this.audio.suspend();
     this.input.releaseLock();
-    this.errors.push('webgl context lost');
-    // A context can disappear while loader-only shader prewarming is still pending. No render can
-    // resolve ready() after that, so settle the boot wait here and let main.ts keep the fatal UI.
+    // A fatal condition can happen before the first present. Always settle the boot wait so the
+    // loader can hand control to the localized fatal screen instead of hanging indefinitely.
     if (this.firstFrameResolve) {
       const resolve = this.firstFrameResolve;
       this.firstFrameResolve = null;
       resolve();
     }
+  }
+
+  private readonly handleContextLost = (event: Event): void => {
+    // Preventing the default is what allows a restore event to ever fire.
+    event.preventDefault();
+    this.haltRendering();
+    this.errors.push('webgl context lost');
     this.onContextLost?.();
   };
 
@@ -2257,13 +2409,14 @@ export class Game {
       if (this.driven) return;
       try {
         this.frame(dt);
+        this.frameFailures = 0;
       } catch (error) {
         this.errors.push(`frame: ${error instanceof Error ? error.message : String(error)}`);
         this.frameFailures++;
         // A defect that repeats every frame would otherwise spam until the tab dies.
         if (this.frameFailures > 60) {
-          this.contextLost = true;
-          this.onContextLost?.();
+          this.haltRendering();
+          this.onRuntimeFailure?.();
         }
       }
     };
@@ -2654,6 +2807,56 @@ export class Game {
 
   getGateHistory(): GatePassRecord[] {
     return this.gateHistory.slice();
+  }
+
+  getCourseState(): {
+    courseId: CourseDefinition['id'];
+    recordId: string;
+    seed: number;
+    gateCount: number;
+    length: number;
+    resolution: CourseResolution;
+  } {
+    return {
+      courseId: this.courseDefinition.id,
+      recordId: this.course.id,
+      seed: this.seed,
+      gateCount: this.course.gates.length,
+      length: this.course.totalLength,
+      resolution: { ...this.courseResolution },
+    };
+  }
+
+  getCampaignProgress(): ReturnType<ProgressStore['snapshot']> {
+    return this.progressStore.snapshot();
+  }
+
+  getCrossingHistory(): {
+    index: number;
+    time: number;
+    radialDistance: number;
+    normalizedOffset: number;
+    speed: number;
+    cleared: boolean;
+    blockedBy: 'aperture' | 'shear' | null;
+  }[] {
+    return this.course.crossings.map((event) => ({
+      index: event.index,
+      time: event.time,
+      radialDistance: event.radialDistance,
+      normalizedOffset: event.offset,
+      speed: event.speed,
+      cleared: event.cleared,
+      blockedBy: event.blockedBy,
+    }));
+  }
+
+  getShearState(): ReturnType<Course['getShearDebug']> {
+    return this.course.getShearDebug(this.elapsed);
+  }
+
+  getRouteUrl(courseId: CourseDefinition['id']): string {
+    return buildCourseUrl(window.location.href, courseId);
   }
 
   getAudioState(): ReturnType<AudioBus['debugMixState']> {

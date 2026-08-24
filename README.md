@@ -32,6 +32,15 @@ pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정�
 `last-vector.locale.v1`에 `ko` 또는 `en`으로 저장된다. 브리핑에 들어가면 그 언어가 현재 주행에
 고정되어 재시작과 재도전에도 유지되고, 타이틀로 돌아온 뒤에만 저장된 언어를 다시 읽고 바꿀 수 있다.
 
+## 항로와 진행
+
+타이틀의 항로 선택기에서 **CAIRN DRIFT**와 **NEEDLE GRAVE**를 고른다. 처음에는 CAIRN만
+열려 있고, 한 번 완주하면 회전식 `SHEAR` 차단판이 있는 6게이트 정밀 항로 NEEDLE이 해금된다.
+항로별 최초 완주, 최고 랭크, 무충돌 완주, 정밀 통과 목표와 PB·구간 기록은 서로 분리해 저장한다.
+진행 상태는 `last-vector.progress.v1`에 보관되며, `?course=cairn-drift` 또는
+`?course=needle-grave`로 결정적인 항로 URL을 만들 수 있다. 잠긴 항로의 직접 URL은 CAIRN으로
+안전하게 되돌아간다.
+
 ## 배포
 
 `main`에 푸시하면 `.github/workflows/deploy.yml`이 GitHub Pages로 배포한다. 워크플로는 `pnpm build`를
@@ -87,8 +96,10 @@ src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하�
 
 ```bash
 pnpm test:i18n             # 브라우저 없이 카탈로그·타입·안전 DOM 계약 검사
+pnpm test:campaign         # 브라우저 없이 항로 카탈로그·진행 저장 계약 검사
 node scripts/playtest/localization.mjs  # 한국어·영어 브라우저 localization 검증
 pnpm playtest              # 무인 전체 주행 + 어서션
+pnpm playtest:campaign     # 잠금·해금·URL·SHEAR·두 번째 항로 실주행 검증
 pnpm playtest:perf         # 1080p / 1440p 프레임타임 측정
 pnpm playtest:screenshots  # 결정적 스크린샷 매트릭스
 pnpm playtest:all          # perf/HiDPI, boost VFX, i18n, localization, 주행, 스크린샷, 오디오 전체 집계

@@ -13,6 +13,7 @@ import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
 import {
   Screens,
+  type CampaignViewModel,
   type ScreenFocusToken,
   type ScreenView,
   type UiSound,
@@ -129,6 +130,11 @@ export class Overlay {
         this.paused = false;
         host.quitToTitle();
       },
+      selectRoute: (courseId) => host.selectRoute(courseId),
+      showRouteSelect: () => {
+        this.paused = false;
+        host.showRouteSelect();
+      },
       pause: () => host.pause(),
       requestLocale: (locale) => host.requestLocale(locale),
       setSetting: (key, value) => host.setSetting(key, value),
@@ -169,6 +175,10 @@ export class Overlay {
     this.hud.update(t, dt);
     /* Course facts the briefing states. Guarded inside; they change once per run at most. */
     this.screens.setCourseFacts(t.courseLength, t.gate.total);
+  }
+
+  syncCampaign(viewModel: CampaignViewModel): void {
+    this.screens.syncCampaign(viewModel);
   }
 
   captureFocusToken(): ScreenFocusToken | null {

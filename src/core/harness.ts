@@ -14,6 +14,9 @@ import type {
   Settings,
   Telemetry,
 } from './contracts.ts';
+import type { CourseId, ObjectiveId } from './Courses.ts';
+import type { CourseResolution } from './CourseSelection.ts';
+import type { ProgressV1, ProgressWriteOutcome } from './Progress.ts';
 
 export interface HarnessInput {
   /**
@@ -218,6 +221,59 @@ export interface HarnessLocaleState {
   fontStatus: LocaleFontStatus;
 }
 
+/** Stable, JSON-safe identity for the one route whose world was built at boot. */
+export interface HarnessCourseState {
+  courseId: CourseId;
+  recordId: string;
+  seed: number;
+  gateCount: number;
+  length: number;
+  resolution: CourseResolution;
+}
+
+/** Dependency-free catalog projection; it deliberately excludes render/world objects. */
+export interface HarnessCatalogState {
+  order: readonly CourseId[];
+  courses: ReadonlyArray<{
+    id: CourseId;
+    order: number;
+    defaultSeed: number;
+    recordId: string;
+    unlocks: CourseId | null;
+    gateCount: number;
+    sector: string;
+    destination: string;
+    objectives: readonly ObjectiveId[];
+    shearGates: readonly number[];
+  }>;
+}
+
+/** Every aperture-plane crossing, including recoverable misses. */
+export interface HarnessCourseCrossing {
+  index: number;
+  time: number;
+  radialDistance: number;
+  speed: number;
+  /** Fraction of the aperture radius. */
+  normalizedOffset: number;
+  cleared: boolean;
+  blockedBy: 'aperture' | 'shear' | null;
+}
+
+/** Shared render/predicate phase evidence for the active route's SHEAR field. */
+export interface HarnessShearState {
+  drawCalls: number;
+  triangles: number;
+  halfWidthRadians: number;
+  hubRadiusFraction: number;
+  states: ReadonlyArray<{
+    gateIndex: number;
+    phase: number;
+    initialPhase: number;
+    angularSpeed: number;
+  }>;
+}
+
 export interface HarnessApi {
   readonly version: string;
   /**
@@ -240,6 +296,20 @@ export interface HarnessApi {
   phase(): Phase;
   /** Non-null once the run has finished successfully; failures deliberately keep this null. */
   result(): RunResult | null;
+  /** Active boot-built route identity and URL-resolution evidence. */
+  course(): HarnessCourseState;
+  /** Immutable route authoring projected to a compact JSON-safe catalog. */
+  catalog(): HarnessCatalogState;
+  /** Sanitized campaign progress, kept separate from per-seed PB storage. */
+  progress(): ProgressV1;
+  /** Current route's moving-barrier phases, or null for a route without SHEAR. */
+  shear(): HarnessShearState | null;
+  /** Aperture-plane outcomes; unlike gateHistory(), this includes misses. */
+  crossings(): HarnessCourseCrossing[];
+  /** Test-only validated progress installation. Raw storage stays encapsulated. */
+  installProgress(value: unknown): ProgressWriteOutcome;
+  /** Build navigation data only. This never changes location or simulation state. */
+  routeUrl(courseId: CourseId): string;
   /**
    * Apply normalised structural damage for deterministic terminal-state tests.
    *

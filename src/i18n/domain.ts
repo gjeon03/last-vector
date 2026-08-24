@@ -12,6 +12,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
   switch (message.type) {
     case 'gate-name.terminus-approach':
       return messages.events.terminusApproach;
+    case 'gate-name.nadir-approach':
+      return messages.events.nadirApproach;
     case 'callout-title.pointer-lock-unavailable':
       return messages.events.pointerLockUnavailable;
     case 'callout-title.camera-view':
@@ -37,6 +39,9 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
     case 'callout-sub.boost-recharging':
       return messages.events.boostRechargingSub;
     case 'callout-sub.gate-progress':
+      if (message.courseId) {
+        return messages.campaign.routes[message.courseId].gateProgress(message.remaining);
+      }
       return messages.events.gateProgress(message.remaining);
     case 'callout-sub.gate-realign':
       return messages.events.gateRealign;
@@ -47,8 +52,14 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
     case 'log.boost-depleted':
       return messages.events.boostDepletedLog;
     case 'log.gate-cleared':
+      if (message.courseId) {
+        return messages.campaign.routes[message.courseId].gateClearedLog(message.gate, message.seconds);
+      }
       return messages.events.gateClearedLog(message.gate, message.seconds);
     case 'log.gate-missed':
+      if (message.courseId) {
+        return messages.campaign.routes[message.courseId].gateMissedLog(message.gate);
+      }
       return messages.events.gateMissedLog(message.gate);
     default:
       return unreachable(message);
