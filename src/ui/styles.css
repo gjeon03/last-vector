@@ -62,6 +62,127 @@
   contain: strict;
 }
 
+/* Chapter 02 objective instrument: compact, technical, and outside the central flight lane. */
+.lv-escape-hud {
+  position: absolute;
+  top: clamp(8.5rem, 18vh, 13rem);
+  right: clamp(1.4rem, 3.2vw, 4.2rem);
+  width: clamp(12.5rem, 17vw, 17rem);
+  padding: 0.75rem 0.85rem 0.8rem;
+  color: var(--c-ink);
+  background: linear-gradient(135deg, rgba(5, 13, 22, 0.76), rgba(14, 22, 28, 0.36));
+  border-left: 2px solid rgba(255, 89, 48, 0.82);
+  border-top: 1px solid rgba(101, 225, 255, 0.28);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 0.8rem), calc(100% - 0.8rem) 100%, 0 100%);
+  pointer-events: none;
+}
+
+.lv-escape-hud[hidden] {
+  display: none;
+}
+
+.lv-escape-hud[data-pressure='warning'],
+.lv-escape-hud[data-pressure='critical'] {
+  border-left-color: #ff633d;
+  box-shadow: -0.75rem 0 1.6rem rgba(255, 61, 31, 0.3), inset 0.22rem 0 rgba(255, 72, 38, 0.18);
+}
+
+.lv-escape-hud[data-pressure='critical'] {
+  box-shadow: -1rem 0 2.2rem rgba(255, 45, 20, 0.52), inset 0.3rem 0 rgba(255, 67, 30, 0.32);
+}
+
+.lv-escape-act {
+  margin-bottom: 0.65rem;
+  color: #ff8a58;
+  font-family: var(--f-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.19em;
+}
+
+.lv-escape-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.28rem;
+}
+
+.lv-escape-k {
+  color: var(--c-ink-dim);
+  font-family: var(--f-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+}
+
+.lv-escape-v {
+  color: #d6f8ff;
+  font-family: var(--f-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+}
+
+.lv-escape-race {
+  position: relative;
+  height: 0.65rem;
+  margin-top: 0.72rem;
+  border-top: 1px solid rgba(176, 224, 234, 0.22);
+  border-bottom: 1px solid rgba(176, 224, 234, 0.12);
+}
+
+.lv-escape-front,
+.lv-escape-ship {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: left center;
+}
+
+.lv-escape-front-fill,
+.lv-escape-ship-fill {
+  position: absolute;
+  inset: 0;
+  display: block;
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.lv-escape-pressure {
+  margin-top: 0.58rem;
+  padding: 0.34rem 0.45rem;
+  color: #fff0e8;
+  background: repeating-linear-gradient(-45deg, rgba(255, 55, 26, 0.3) 0 0.35rem, rgba(74, 10, 6, 0.58) 0.35rem 0.7rem);
+  border: 1px solid rgba(255, 105, 62, 0.82);
+  font-family: var(--f-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.lv-escape-pressure[hidden] {
+  display: none;
+}
+
+.lv-escape-front-fill {
+  height: 100%;
+  background: repeating-linear-gradient(90deg, rgba(255, 69, 37, 0.18) 0 0.24rem, rgba(255, 69, 37, 0.46) 0.24rem 0.32rem);
+}
+
+.lv-escape-ship-fill {
+  top: 0.23rem;
+  height: 0.16rem;
+  background: #79e9ff;
+  box-shadow: 0 0 0.5rem rgba(80, 223, 255, 0.82);
+}
+
+@media (max-width: 760px) {
+  .lv-escape-hud {
+    top: 7.2rem;
+    right: 0.8rem;
+    width: 11.5rem;
+  }
+}
+
 .lv-root *,
 .lv-root *::before,
 .lv-root *::after {
@@ -2801,6 +2922,15 @@ kbd {
   letter-spacing: -0.01em;
   color: #f4fbff;
   text-shadow: 0 4px 30px rgba(0, 0, 0, 0.85);
+}
+
+.lv-res-failure-detail {
+  max-width: 42em;
+  margin: clamp(12px, 1.8vmin, 24px) 0 0;
+  color: var(--c-ink-soft);
+  font-size: var(--fs-small);
+  line-height: 1.65;
+  letter-spacing: 0.04em;
 }
 
 .lv-res-delta {

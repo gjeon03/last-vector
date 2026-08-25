@@ -6,8 +6,14 @@ import {
   type FlightPathDefinition,
   type RadioAuthoringDefinition,
 } from './Courses.ts';
+import {
+  LAST_ASCENT_DEFAULT_SEED,
+  LAST_ASCENT_PATH,
+  LAST_ASCENT_PRESENTATION_COURSE,
+  LAST_ASCENT_RADIO,
+} from '../game/missions/LastAscentDefinition.ts';
 
-export type MissionId = 'cairn-drift';
+export type MissionId = 'cairn-drift' | 'last-ascent';
 export type MissionChapter = 1 | 2 | 3;
 export type MissionCapability = 'fire';
 export type MasteryId = 'precision';
@@ -82,13 +88,37 @@ export const CAIRN_MISSION: MissionDefinition = {
   capabilities: [],
 };
 
-export const ACTIVE_MISSION_ORDER = ['cairn-drift'] as const satisfies readonly MissionId[];
+export const LAST_ASCENT_MISSION: MissionDefinition = {
+  id: 'last-ascent',
+  chapter: 2,
+  rulesetVersion: 1,
+  defaultSeed: LAST_ASCENT_DEFAULT_SEED,
+  world: { kind: 'frontier', sourceCourse: LAST_ASCENT_PRESENTATION_COURSE },
+  objective: {
+    kind: 'escape',
+    path: LAST_ASCENT_PATH,
+    shockwave: {
+      speed: 0.0055,
+      startProgress: -0.08,
+      catchProgress: 0.3325,
+    },
+  },
+  mastery: ['precision'],
+  radio: LAST_ASCENT_RADIO,
+  capabilities: [],
+};
+
+export const ACTIVE_MISSION_ORDER = [
+  'cairn-drift',
+  'last-ascent',
+] as const satisfies readonly MissionId[];
 export const DORMANT_COURSE_ORDER = KNOWN_COURSE_ORDER.filter(
   (id): id is Exclude<CourseId, MissionId> => id !== 'cairn-drift',
 );
 
 export const MISSION_CATALOG: Readonly<Record<MissionId, MissionDefinition>> = {
   'cairn-drift': CAIRN_MISSION,
+  'last-ascent': LAST_ASCENT_MISSION,
 };
 
 export const DEFAULT_MISSION_ID: MissionId = 'cairn-drift';

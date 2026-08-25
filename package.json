@@ -12,6 +12,8 @@
     "test:i18n": "node --experimental-strip-types scripts/playtest/i18n-contract.mjs",
     "test:campaign": "node --experimental-strip-types scripts/playtest/campaign-contract.mjs",
     "test:boost": "node --experimental-strip-types scripts/playtest/boost-contract.mjs",
+    "test:last-ascent": "node --experimental-strip-types scripts/playtest/last-ascent-contract.mjs",
+    "playtest:last-ascent": "node scripts/playtest/last-ascent-browser.mjs",
     "test:stage-landmarks": "node --experimental-strip-types scripts/playtest/stage-landmarks-contract.mjs",
     "serve:dist": "node scripts/static-server.mjs",
     "playtest": "node scripts/playtest/playtest.mjs",

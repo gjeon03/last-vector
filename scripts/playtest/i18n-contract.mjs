@@ -42,6 +42,10 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.cairn-drift.gateClearedLog', 2],
   ['campaign.routes.cairn-drift.gateMissedLog', 1],
   ['campaign.routes.cairn-drift.gateShearBlockedLog', 1],
+  ['campaign.routes.last-ascent.gateProgress', 1],
+  ['campaign.routes.last-ascent.gateClearedLog', 2],
+  ['campaign.routes.last-ascent.gateMissedLog', 1],
+  ['campaign.routes.last-ascent.gateShearBlockedLog', 1],
   ['campaign.routes.needle-grave.gateProgress', 1],
   ['campaign.routes.needle-grave.gateClearedLog', 2],
   ['campaign.routes.needle-grave.gateMissedLog', 1],
@@ -282,6 +286,12 @@ await report.check(
       enCairnClear: en.campaign.routes['cairn-drift'].gateClearedLog(7, 12.34),
       koCairnMiss: ko.campaign.routes['cairn-drift'].gateMissedLog(7),
       enCairnMiss: en.campaign.routes['cairn-drift'].gateMissedLog(7),
+      koAscentProgress: ko.campaign.routes['last-ascent'].gateProgress(2),
+      enAscentProgress: en.campaign.routes['last-ascent'].gateProgress(2),
+      koAscentClear: ko.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
+      enAscentClear: en.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
+      koAscentRadio: ko.campaign.routes['last-ascent'].radio3,
+      enAscentRadio: en.campaign.routes['last-ascent'].radio3,
       koNeedleProgress: ko.campaign.routes['needle-grave'].gateProgress(2),
       enNeedleProgress: en.campaign.routes['needle-grave'].gateProgress(2),
       koNeedleClear: ko.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
@@ -308,6 +318,12 @@ await report.check(
       enCairnClear: 'cairn 07 · 12.34s',
       koCairnMiss: 'cairn 07 missed',
       enCairnMiss: 'cairn 07 missed',
+      koAscentProgress: 'SAFE CORRIDOR 2 REMAINING',
+      enAscentProgress: '2 SAFE CORRIDORS REMAINING',
+      koAscentClear: 'safe corridor 03 · 66.93s',
+      enAscentClear: 'safe corridor 03 · 66.93s',
+      koAscentRadio: '두 번째 잔해선 통과. 충격파가 대기권을 넘었다. 거리를 계속 벌려.',
+      enAscentRadio: 'Second line clear. The front has crossed the atmosphere; keep building separation.',
       koNeedleProgress: '2 NEEDLES REMAINING',
       enNeedleProgress: '2 NEEDLES REMAINING',
       koNeedleClear: 'needle 04 · 9.87s',
@@ -344,17 +360,17 @@ await report.check(
 await report.check(
   {
     id: 'I18N.chapter-stage-rail',
-    name: 'Chapter 01 presents one mission without a one-node selector',
+    name: 'The active campaign presents CAIRN then LAST ASCENT in one chapter rail',
     assertion:
-      'CAIRN is the sole active mission, dormant route copy remains recognized, the single-node '
-      + 'selector stays absent, and Korean narrative/English chrome remain explicit.',
+      'Two active missions share one catalog rail, dormant route copy remains recognized, and '
+      + 'Korean narrative/English chrome remain explicit.',
   },
   async () => {
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
     const missionsSource = await readFile(new URL('../../src/core/Missions.ts', import.meta.url), 'utf8');
-    const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'];
+    const recognizedIds = ['cairn-drift', 'last-ascent', 'needle-grave', 'wreckline', 'ringfall'];
     verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
       'Korean campaign catalog does not use the canonical recognized stage IDs.', {
         actual: Object.keys(ko.campaign.routes),
@@ -368,20 +384,22 @@ await report.check(
     const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
     const railSource = screensSource.slice(railStart, railEnd);
     verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the chapter heading.');
-    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift'\s*\]/u.test(missionsSource),
-      'The player-facing mission order is not CAIRN-only.', { missionsSource });
+    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift',\s*'last-ascent',\s*\]/u.test(missionsSource),
+      'The player-facing mission order is not CAIRN then LAST ASCENT.', { missionsSource });
     verify(railSource.includes('if (CHAPTER_STAGE_IDS.length === 1) return section;'),
       'The title does not suppress its selector when a chapter has one mission.', { railSource });
     verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
       'Result mission selection is not guarded behind a multi-chapter catalog.');
-    verify(screensSource.includes("'run-again'") && screensSource.includes("'return'"),
-      'The one-mission result path omits RUN AGAIN or RETURN.');
+    verify(screensSource.includes("'run-again'")
+      && screensSource.includes("'stage-select'")
+      && screensSource.includes("'return'"),
+    'The campaign result path omits RUN AGAIN, CHAPTER SELECT, or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
       'Mission mastery treats a non-S recorded rank as complete.');
 
     const hybridChrome = {
-      chapter: 'CHAPTER 01',
-      chapterName: 'THE CAIRN FRONTIER',
+      chapter: 'FLIGHT CAMPAIGN',
+      chapterName: 'THE FALL OF ACHRA',
       stageSelection: 'CHAPTER SELECT',
       stageObjectives: 'MISSION MASTERY',
       stage: 'MISSION',
@@ -396,7 +414,7 @@ await report.check(
           en: en.campaign[key],
         });
     }
-    for (const id of ['wreckline', 'ringfall']) {
+    for (const id of ['last-ascent', 'wreckline', 'ringfall']) {
       const korean = ko.campaign.routes[id];
       const english = en.campaign.routes[id];
       verify(/[가-힣]/u.test(korean.tagline + korean.briefingLine1 + korean.radio1),
@@ -411,8 +429,8 @@ await report.check(
 
     return {
       recognizedIds,
-      activeMissionIds: ['cairn-drift'],
-      stableSingleMissionActions: ['run-again', 'return'],
+      activeMissionIds: ['cairn-drift', 'last-ascent'],
+      stableCampaignActions: ['run-again', 'stage-select', 'return'],
       hybridChrome,
     };
   },
