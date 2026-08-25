@@ -16,6 +16,8 @@ track remains independently playable; final integration may insert Chapter 02 ah
   chase/cockpit/far-chase camera cycle.
 - `7318d58771d6af244ec1e0eedf78ad4d4f64aa19` — final required-path, target-readability,
   result-denominator, failure/capture, and DPR evidence correction.
+- `2ce21992a0458c660bf60e50c17791c1415d42cb` — sequential extraction turns, bounded major-array
+  contacts, Strike PB result/UI, and focused independent-review correction evidence.
 
 ## Delivered chapter
 
@@ -25,6 +27,9 @@ track remains independently playable; final integration may insert Chapter 02 ah
 - Success requires any 3 of 6 shield nodes, the core, both extraction turns, and hull above zero.
   Objective-owned failures distinguish the core boundary without three nodes, missed core window,
   and blast timeout; common hull failure remains `HULL BREACH`.
+- The two extraction turns are objective-owned 620 m plane/aperture crossings at path progress
+  0.89 and 0.955. Only the next turn can clear, at most once per update; final-aperture success is
+  gated on 2/2. A direct core-to-terminus chord remains incomplete at 0/2.
 - All eight damageable targets are represented by fixed facility geometry and bounded
   screen-readable beacons. Shield housings/halos are cyan, destroyed housings clear from the line of
   fire, and the exposed core receives an unmistakable pulsing red-orange sight marker with a bright
@@ -39,8 +44,12 @@ track remains independently playable; final integration may insert Chapter 02 ah
 - Effects remain two fixed draws: 48 pooled tracers and 8 pooled explosions. The facility is nine
   fixed draws, 24,240 triangles, seven geometries, and six materials. It adds no light, shadow,
   slicing, rigid-body debris, enemy, ammo, heat, loot, or upgrade system.
+- The BLACK ARRAY publishes exactly 32 stable major-structure contacts: eight production path
+  banks by four spherical ring/pylon proxies, radius 150 m, at the rendered 720/840 m radial arms.
+  Damageable targets stay non-colliding and the intended central opening remains clean.
 - Strike telemetry/result UI separates the clear threshold (`3 REQUIRED`) from authored progress
-  (`3 / 6` or mastery `6 / 6`). Progress is clear-only and PB identity remains ruleset-partitioned.
+  (`3 / 6` or mastery `6 / 6`). Strike results now retain `bestTime` and `isNewBest`, so the common
+  result shell presents both `NEW BEST` and exact ruleset-partitioned PB comparisons.
 - Story, radio, result accessibility, and chapter text are Korean; technical flight chrome remains
   English. No speech synthesis or second audio context was added.
 - C cycles chase → cockpit → far-chase → chase. The camera choice persists and invalid stored data
@@ -48,10 +57,12 @@ track remains independently playable; final integration may insert Chapter 02 ah
 
 ## Verification
 
-All commands passed on 2026-08-25 in the isolated DEAD SIGNAL worktree. No broad matrix or
-`playtest:all` was run.
+The original chapter commands passed on 2026-08-25. The independent-review correction reran only
+the focused static/60-120/DPR1 evidence on 2026-08-26; renderer resources did not change, so the
+settled DPR2 profile was retained rather than rerun. No broad matrix or `playtest:all` was run.
 
 - `pnpm build`
+- `pnpm typecheck`
 - `pnpm test:dead-signal`
 - `pnpm test:campaign`
 - `pnpm test:i18n`
@@ -64,8 +75,14 @@ All commands passed on 2026-08-25 in the isolated DEAD SIGNAL worktree. No broad
 Fast deterministic contracts at 60 Hz and 120 Hz produced identical weapon facts: 8 shots, 3 hits,
 one destroyed shield, one 25-point recharge reward, and the same bounded event sequence. The full
 objective proof succeeded at exactly 112 seconds at both rates with 6/6 shields, core destroyed,
-extraction crossed, and `targetsRequired: 3` / `targetsTotal: 6`. All three authored failure
-boundaries also returned their exact reasons.
+both sequential extraction turns crossed, final aperture crossed, hull 1.0, zero structure
+contacts, and `targetsRequired: 3` / `targetsTotal: 6`. A direct core-to-terminus chord remained
+running at 0/2 turns. All three authored failure boundaries also returned their exact reasons.
+
+The staged BLACK ARRAY collision used the real common `MissionRuntime.simulate` contact path. One
+10 m overlap with `black-array-structure-1-1` invoked `applyImpact` once, emitted one `onContact`
+callback, produced proximity 1, and changed hull 1.0 → 0.8. This is the same contact-to-hull seam
+used by production, not a test-only damage shortcut.
 
 The real-input Chromium probe proved:
 
@@ -78,7 +95,10 @@ The real-input Chromium probe proved:
 
 The focused production journey first proved the actual `CORE WINDOW MISSED` failure screen, then
 completed a required-path clear with exactly 3/6 nodes, the core, extraction, 100% hull, and persisted
-clear. DPR1 finished in 112.58 seconds; DPR2 finished in 114.02 seconds. The slower capture arm holds
+clear. The corrected DPR1 finished in 112.70 seconds with 2/2 turns, zero impacts, and `NEW BEST`.
+An exact `dead-signal-r2-1337` comparison fixture then finished in 106.03 seconds against a 100.00
+second PB and rendered `+6.03 vs BEST 01:40.00`, while preserving `SHIELD NODES 3 / 6`. The prior
+DPR2 run finished in 114.02 seconds. The slower capture arm holds
 fire while each authored target scene settles, so shot accuracy is evidence-harness timing rather
 than a mastery claim.
 
@@ -101,9 +121,20 @@ late shader compilation in the settled scene.
 - `playtest-out/dead-signal-journey-dpr1/02-array-core-dpr1.png` — exposed core with distinct
   red-orange pulsing marker and bright inner point, before fire.
 - `playtest-out/dead-signal-journey-dpr1/03-extraction-turns-dpr1.png` — readable array structure
-  during the two-turn blast extraction.
+  and explicit `EXTRACTION TURN 1` / `TURN 0/2` state during blast extraction.
 - `playtest-out/dead-signal-journey-dpr1/04-result-dpr1.png` — actual settled result view showing
-  `SHIELD NODES 3 / 6`, core destroyed, and 100% hull.
+  `NEW BEST`, `SHIELD NODES 3 / 6`, core destroyed, and 100% hull.
+
+## Independent review correction
+
+1. The old final-aperture-only extraction accepted a shortcut. Two sequential objective-owned
+   turn crossings now gate the terminus; 60/120 references clear 2/2 and the shortcut stays 0/2.
+2. The rendered BLACK ARRAY was wholly intangible after target contacts were removed. Thirty-two
+   bounded off-axis structure proxies now use the common contact/hull path, while both deterministic
+   references and the production 3/6 journey remain clean at full hull.
+3. `Game` already computed ruleset-partitioned PB facts, but Strike discarded them. Strike result
+   construction and the shared result shell now preserve and visibly prove both new-best and exact
+   comparison states without changing the 3/6 denominator.
 
 Reports: `playtest-out/dead-signal-contract/report.json`,
 `playtest-out/dead-signal-input/report.json`,
