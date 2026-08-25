@@ -17,28 +17,51 @@ import type { DeadSignalState, DeadSignalTargetState } from './DeadSignalState.t
 
 export type DeadSignalAct = 'ingress' | 'shield-run' | 'core' | 'extract';
 
+interface ExtractionTurnRuntime {
+  readonly position: THREE.Vector3;
+  readonly normal: THREE.Vector3;
+  readonly radius: number;
+}
+
 export class DeadSignalObjective implements MissionObjectiveRuntime {
   readonly kind = 'strike' as const;
 
   private readonly path: FlightPath;
   private readonly mission: DeadSignalMissionDefinition;
   private readonly state: DeadSignalState;
+  private readonly extractionTurns: readonly ExtractionTurnRuntime[];
   private readonly offset = new THREE.Vector3();
+  private readonly previousPosition = new THREE.Vector3();
+  private readonly crossingPosition = new THREE.Vector3();
   private spineIndex = 0;
   private progress = 0;
   private elapsed = 0;
+  private extractionTurnsCleared = 0;
+  private hasPreviousPosition = false;
   private terminal: ObjectiveTerminalState = { status: 'running' };
 
   constructor(path: FlightPath, mission: DeadSignalMissionDefinition, state: DeadSignalState) {
     this.path = path;
     this.mission = mission;
     this.state = state;
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    this.extractionTurns = Object.freeze(mission.objective.extractionTurns.map((turn) => {
+      path.poseAt(turn.pathT, position, quaternion);
+      return Object.freeze({
+        position: position.clone(),
+        normal: new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion).normalize(),
+        radius: turn.radius,
+      });
+    }));
   }
 
   reset(): void {
     this.spineIndex = 0;
     this.progress = 0;
     this.elapsed = 0;
+    this.extractionTurnsCleared = 0;
+    this.hasPreviousPosition = false;
     this.terminal = { status: 'running' };
   }
 
@@ -46,6 +69,7 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
     if (this.terminal.status !== 'running') return this.terminal;
     this.elapsed = frame.elapsed;
     this.advanceProgress(frame.position);
+    this.advanceExtractionTurns(frame.position);
     const definition = this.mission.objective;
     const shieldDestroyed = this.state.shieldDestroyed;
 
@@ -70,7 +94,9 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
       return this.terminal;
     }
 
-    if (this.state.coreDestroyed && this.crossedExtraction(frame.position)) {
+    if (this.state.coreDestroyed
+      && this.extractionTurnsCleared === this.extractionTurns.length
+      && this.crossedExtraction(frame.position)) {
       this.terminal = { status: 'succeeded' };
     }
     return this.terminal;
@@ -82,7 +108,8 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
     const shieldRequired = this.mission.objective.shieldRequired;
     const coreStep = this.state.coreDestroyed ? 1 : 0;
     const extractionStep = this.terminal.status === 'succeeded' ? 1 : 0;
-    const current = Math.min(this.state.shieldDestroyed, shieldRequired) + coreStep + extractionStep;
+    const current = Math.min(this.state.shieldDestroyed, shieldRequired)
+      + coreStep + this.extractionTurnsCleared + extractionStep;
     return {
       label: target?.kind === 'calibration'
         ? 'CALIBRATION TARGET'
@@ -90,12 +117,14 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
           ? target.id.toUpperCase()
           : target?.kind === 'core'
             ? 'ARRAY CORE'
-            : 'EXTRACTION VECTOR',
+            : this.extractionTurnsCleared < this.extractionTurns.length
+              ? `EXTRACTION TURN ${this.extractionTurnsCleared + 1}`
+              : 'EXTRACTION VECTOR',
       anchor,
       distance: position.distanceTo(anchor),
       progress: this.progress,
       current,
-      total: shieldRequired + 2,
+      total: shieldRequired + 2 + this.extractionTurns.length,
     };
   }
 
@@ -122,6 +151,8 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
       shotsHit: this.state.shotsHit,
       blastSeconds,
       pathProgress: this.progress,
+      extractionTurnsCleared: this.extractionTurnsCleared,
+      extractionTurnsTotal: this.extractionTurns.length,
     };
   }
 
@@ -150,6 +181,8 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
       missionId: this.mission.id,
       rulesetVersion: this.mission.rulesetVersion,
       totalTime: input.totalTime,
+      bestTime: input.bestTime,
+      isNewBest: input.isNewBest,
       hullRemaining: input.hullRemaining,
       objectiveSummary: `${this.state.shieldDestroyed} / ${this.state.shieldTotal} + CORE`,
       targetsDestroyed: this.state.shieldDestroyed,
@@ -197,10 +230,36 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
   }
 
   private extractionAnchor(): THREE.Vector3 {
-    if (this.progress < 0.91) {
-      return this.path.spine[Math.floor(this.path.spine.length * 0.93)]!;
+    return this.extractionTurns[this.extractionTurnsCleared]?.position
+      ?? this.path.terminusPosition;
+  }
+
+  /**
+   * Crosses at most one authored turn plane per simulation update. A direct core-to-terminus
+   * chord can therefore neither consume both turns in one teleport nor inherit final-aperture
+   * success. The radial test rejects a chord that cuts inside the bent extraction path.
+   */
+  private advanceExtractionTurns(position: THREE.Vector3): void {
+    if (!this.hasPreviousPosition) {
+      this.previousPosition.copy(position);
+      this.hasPreviousPosition = true;
+      return;
     }
-    return this.path.terminusPosition;
+    if (!this.state.coreDestroyed || this.extractionTurnsCleared >= this.extractionTurns.length) {
+      this.previousPosition.copy(position);
+      return;
+    }
+    const turn = this.extractionTurns[this.extractionTurnsCleared]!;
+    const from = this.offset.copy(this.previousPosition).sub(turn.position).dot(turn.normal);
+    const to = this.offset.copy(position).sub(turn.position).dot(turn.normal);
+    if (from <= 0 && to > 0) {
+      const alpha = -from / Math.max(to - from, 1e-6);
+      this.crossingPosition.lerpVectors(this.previousPosition, position, alpha).sub(turn.position);
+      const axial = this.crossingPosition.dot(turn.normal);
+      this.crossingPosition.addScaledVector(turn.normal, -axial);
+      if (this.crossingPosition.length() <= turn.radius) this.extractionTurnsCleared++;
+    }
+    this.previousPosition.copy(position);
   }
 
   private crossedExtraction(position: THREE.Vector3): boolean {

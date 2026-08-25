@@ -955,7 +955,7 @@ export class Hud {
         ? Math.round((strike.shotsHit ?? 0) / (strike.shotsFired ?? 1) * 100)
         : 0;
       const status = strike.act === 'extract'
-        ? `${this.messages.hud.extracting} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
+        ? `${this.messages.hud.extracting} · TURN ${strike.extractionTurnsCleared ?? 0}/${strike.extractionTurnsTotal ?? 2} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
         : strike.act === 'core'
           ? `${this.messages.hud.arrayCore} · ${strike.coreExposed ? 'EXPOSED' : 'LOCKED'}`
           : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.shieldNodesTotal ?? strike.targetsRequired} · ${strike.targetsRequired} REQUIRED · ${this.messages.hud.accuracy} ${accuracy}%`;

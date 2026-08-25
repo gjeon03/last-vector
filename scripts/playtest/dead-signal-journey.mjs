@@ -28,6 +28,18 @@ const REQUIRED_METHODS = [
   'errors',
 ];
 
+const evidenceTime = (seconds) => {
+  const total = Math.floor(seconds * 100);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${pad(Math.floor(total / 6000))}:${pad(Math.floor(total / 100) % 60)}.${pad(total % 100)}`;
+};
+
+const evidenceDelta = (seconds) => {
+  const rounded = Math.round(seconds * 100) / 100;
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '±';
+  return `${sign}${Math.abs(rounded).toFixed(2)}`;
+};
+
 await runManagedSuite({
   suite: 'dead-signal-journey',
   argv: process.argv.slice(2),
@@ -269,8 +281,13 @@ async function runJourney({ report, session, options }) {
       && result.targetsDestroyed === 3
       && result.coreDestroyed === true
       && result.hullRemaining >= 0.35
+      && result.cleanRun === true
+      && result.bestTime === null
+      && result.isNewBest === true
       && telemetry.objective?.kind === 'strike'
       && telemetry.objective.coreDestroyed === true
+      && telemetry.objective.extractionTurnsCleared === 2
+      && telemetry.objective.extractionTurnsTotal === 2
       && progress.missions?.['dead-signal']?.cleared === true
       && errors.length === 0,
     'The production attack run did not satisfy every success condition.', {
@@ -296,13 +313,89 @@ async function runJourney({ report, session, options }) {
       actions: [...document.querySelectorAll('[data-view="results"][data-open="1"] [data-action]')]
         .map((node) => node.getAttribute('data-action')),
       objectiveHud: document.querySelector('.lv-strikestatus')?.textContent ?? '',
+      newBest: document.querySelector('.lv-newbest')?.textContent?.trim() ?? '',
+      comparison: document.querySelector('.lv-res-delta')?.textContent?.trim() ?? '',
     }));
     verify(resultUi.stats.some((text) => text?.includes('SHIELD NODES'))
       && resultUi.stats.some((text) => text?.includes('ACCURACY'))
       && resultUi.stats.some((text) => text?.includes('CORE'))
       && resultUi.actions.includes('run-again')
-      && resultUi.actions.includes('stage-select'),
+      && resultUi.actions.includes('stage-select')
+      && resultUi.newBest === 'NEW BEST'
+      && resultUi.comparison === '',
     'The strike result omitted objective stats or campaign actions.', resultUi);
+
+    // Preserve the actual NEW BEST presentation above, then install a faster PB under the exact
+    // mission/ruleset/seed identity and fly one comparison pass through the same production path.
+    const bestRecordId = `${result.missionId}-r${result.rulesetVersion}-${options.seed >>> 0}`;
+    const seededBest = 100;
+    await page.evaluate(({ recordId, seconds }) => {
+      const key = 'last-vector.best.v1';
+      const all = JSON.parse(localStorage.getItem(key) ?? '{}');
+      all[recordId] = { time: seconds, splits: [] };
+      localStorage.setItem(key, JSON.stringify(all));
+    }, { recordId: bestRecordId, seconds: seededBest });
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+    let comparisonPhase = await callHarness(page, 'phase');
+    let comparisonIterations = 0;
+    let comparisonShieldReady = false;
+    let comparisonCoreReady = false;
+    while (comparisonPhase === 'flying' && comparisonIterations < 520) {
+      const sample = await callHarness(page, 'telemetry');
+      const strike = sample.objective;
+      const label = sample.guidance?.label ?? '';
+      const targetInRange = sample.guidance?.distance <= 3_050;
+      if (!comparisonShieldReady && label.startsWith('SHIELD-')
+        && sample.guidance?.distance < 2_800
+        && sample.guidance?.anchor.onScreen) comparisonShieldReady = true;
+      if (!comparisonCoreReady && label === 'ARRAY CORE'
+        && sample.guidance?.distance < 1_800
+        && sample.guidance?.anchor.onScreen) comparisonCoreReady = true;
+      const fire = targetInRange && strike?.coreDestroyed !== true && (
+        label === 'CALIBRATION TARGET'
+        || (comparisonShieldReady && label.startsWith('SHIELD-')
+          && (strike?.targetsDestroyed ?? 0) < 3)
+        || (comparisonCoreReady && label === 'ARRAY CORE' && sample.elapsed >= 85)
+      );
+      const boost = sample.elapsed >= 25 && Math.floor(sample.elapsed) % 5 === 0;
+      await callHarness(page, 'setInput', [{ throttle: 1, fire, boost, brake: false }]);
+      await callHarness(page, 'stepSimulation', [15, 1 / hz], 120_000);
+      comparisonIterations++;
+      comparisonPhase = await callHarness(page, 'phase');
+    }
+    const comparisonResult = await callHarness(page, 'result');
+    const comparisonTelemetry = await callHarness(page, 'telemetry');
+    const expectedComparison = comparisonResult?.kind === 'strike'
+      ? `${evidenceDelta(comparisonResult.totalTime - seededBest)} vs BEST ${evidenceTime(seededBest)}`
+      : '';
+    const comparisonUi = await page.evaluate(() => ({
+      newBest: document.querySelector('.lv-newbest')?.textContent?.trim() ?? '',
+      comparison: document.querySelector('.lv-res-delta')?.textContent?.trim() ?? '',
+      shield: [...document.querySelectorAll('.lv-res-stat')]
+        .map((node) => node.textContent?.trim() ?? '')
+        .find((text) => text.includes('SHIELD NODES')) ?? '',
+    }));
+    verify(comparisonPhase === 'finished'
+      && comparisonResult?.kind === 'strike'
+      && comparisonResult.bestTime === seededBest
+      && comparisonResult.isNewBest === false
+      && comparisonResult.targetsDestroyed === 3
+      && comparisonResult.targetsTotal === 6
+      && comparisonResult.cleanRun === true
+      && comparisonUi.newBest === ''
+      && comparisonUi.comparison === expectedComparison
+      && comparisonUi.shield.includes('3 / 6'),
+    'The ruleset-partitioned strike PB comparison was not exact or visible.', {
+      bestRecordId,
+      seededBest,
+      comparisonPhase,
+      comparisonResult,
+      expectedComparison,
+      comparisonUi,
+      comparisonIterations,
+      comparisonTelemetry,
+    });
     return {
       phase,
       result,
@@ -311,6 +404,14 @@ async function runJourney({ report, session, options }) {
       resultUi,
       iterations,
       captures,
+      personalBest: {
+        first: { bestTime: result.bestTime, isNewBest: result.isNewBest, ui: resultUi.newBest },
+        recordId: bestRecordId,
+        comparison: comparisonResult,
+        comparisonUi,
+        expectedComparison,
+        telemetry: comparisonTelemetry.objective,
+      },
     };
   });
 

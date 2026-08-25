@@ -129,6 +129,9 @@ export interface StrikeObjectiveTelemetry {
   shotsHit?: number;
   blastSeconds?: number | null;
   pathProgress?: number;
+  /** Objective-owned sequential extraction turns; absent on foundation-era fixtures. */
+  extractionTurnsCleared?: number;
+  extractionTurnsTotal?: number;
 }
 
 export type ObjectiveTelemetry =
@@ -280,6 +283,8 @@ export interface EscapeMissionResult extends MissionResultBase {
 
 export interface StrikeMissionResult extends MissionResultBase {
   kind: 'strike';
+  bestTime: number | null;
+  isNewBest: boolean;
   targetsDestroyed: number;
   targetsRequired: number;
   /** Authored target count when the success threshold is smaller than the mastery total. */

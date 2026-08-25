@@ -2114,6 +2114,20 @@ export class Screens {
       el('div', 'lv-res-k', m.results.totalTime),
       el('div', 'lv-res-time', formatTime(r.totalTime)),
     );
+    if (r.kind === 'strike' && r.isNewBest) {
+      const badge = el('div', 'lv-newbest');
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
+      time.appendChild(badge);
+    } else if (r.kind === 'strike' && r.bestTime != null) {
+      const deltaSeconds = r.totalTime - r.bestTime;
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(deltaSeconds), formatTime(r.bestTime)),
+      );
+      delta.dataset['tone'] = deltaSeconds <= 0 ? 'good' : 'bad';
+      time.appendChild(delta);
+    }
     const stats = el('dl', 'lv-res-stats');
     const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'strike'
       ? [

@@ -3,9 +3,14 @@ import * as THREE from 'three';
 import { FLIGHT } from '../../src/core/art.ts';
 import { ACTIVE_MISSION_ORDER, getMissionDefinition } from '../../src/core/Missions.ts';
 import { FlightPath } from '../../src/game/FlightPath.ts';
+import { MissionRuntime } from '../../src/game/MissionRuntime.ts';
 import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
 import { DeadSignalObjective } from '../../src/game/missions/DeadSignalObjective.ts';
 import { DeadSignalState } from '../../src/game/missions/DeadSignalState.ts';
+import {
+  DEAD_SIGNAL_STRUCTURE_CONTACT_COUNT,
+  buildDeadSignalStructureContacts,
+} from '../../src/game/missions/DeadSignalWorld.ts';
 import {
   DEAD_SIGNAL_WEAPON,
   DeadSignalWeapon,
@@ -52,6 +57,7 @@ await report.check({
     ),
   });
   const facilityDebug = facility.getDebugState();
+  const contacts = buildDeadSignalStructureContacts(path);
   verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift', 'dead-signal'])
     && getMissionDefinition('dead-signal') === DEAD_SIGNAL_MISSION,
   'The standalone mission catalog is not CAIRN then DEAD SIGNAL.');
@@ -74,6 +80,9 @@ await report.check({
     && facilityDebug.triangles <= 120_000
     && facilityDebug.targetables === state.targets.length,
   'The industrial array crossed its render budget.', facilityDebug);
+  verify(contacts.length === DEAD_SIGNAL_STRUCTURE_CONTACT_COUNT
+    && contacts.every((contact) => contact.kind === 'landmark' && contact.radius === 150),
+  'The fixed major-structure contact set drifted.', contacts);
   facility.dispose();
   effects.dispose();
   return {
@@ -86,6 +95,11 @@ await report.check({
       draws: 2,
       tracerCapacity: effects.tracerCapacity,
       explosionCapacity: effects.explosionCapacity,
+    },
+    structureContacts: {
+      count: contacts.length,
+      radius: contacts[0]?.radius,
+      kinds: [...new Set(contacts.map((contact) => contact.kind))],
     },
   };
 });
@@ -161,6 +175,35 @@ await report.check({
 
 function successfulTrace(hz) {
   const { path, state, objective } = makeRuntime();
+  const contacts = buildDeadSignalStructureContacts(path);
+  const world = {
+    contacts,
+    contactCapacity: DEAD_SIGNAL_STRUCTURE_CONTACT_COUNT,
+    targetables: state.targets,
+    reset() {},
+    updateSimulation() {},
+    updatePresentation() {},
+    applyQuality() {},
+    dispose() {},
+  };
+  const runtime = new MissionRuntime({
+    definition: DEAD_SIGNAL_MISSION,
+    path,
+    world,
+    objective,
+  });
+  const body = {
+    position: new THREE.Vector3(),
+    radius: 18,
+    speed: 720,
+    hull: 1,
+    applyImpact() {
+      this.hull = Math.max(0, this.hull - 0.2);
+      return 0.5;
+    },
+  };
+  const forward = new THREE.Vector3();
+  let contactFeedback = 0;
   const pending = [
     [21, 'calibration'],
     [37, 'shield-01'],
@@ -180,10 +223,24 @@ function successfulTrace(hz) {
       destroy(state, pending[eventIndex][1], pending[eventIndex][0]);
       eventIndex++;
     }
+    const pathT = Math.min(0.995, elapsed / 112);
     const position = elapsed >= 112
       ? path.terminusPosition
-      : path.curve.getPointAt(Math.min(0.995, elapsed / 112));
-    terminal = objective.update({ position, speed: 720, elapsed });
+      : path.curve.getPointAt(pathT);
+    body.position.copy(position);
+    path.curve.getTangentAt(pathT, forward).normalize();
+    const outcome = runtime.simulate({
+      dt: 1 / hz,
+      elapsed,
+      body,
+      forward,
+      fire: false,
+      proximityRange: 180,
+      resolveContacts: true,
+      resolveObjective: true,
+      onContact: () => { contactFeedback++; },
+    });
+    terminal = outcome.terminal ?? { status: 'running' };
     if (terminal.status !== 'running') break;
   }
   return {
@@ -193,7 +250,7 @@ function successfulTrace(hz) {
     telemetry: objective.telemetry(),
     result: objective.buildResult({
       totalTime: elapsed,
-      hullRemaining: 1,
+      hullRemaining: body.hull,
       topSpeed: 1_078,
       cleanRun: true,
       bestTime: null,
@@ -201,6 +258,8 @@ function successfulTrace(hz) {
       isNewBest: true,
       cruiseSpeed: FLIGHT.cruiseSpeed,
     }),
+    contactFeedback,
+    hullRemaining: body.hull,
   };
 }
 
@@ -222,12 +281,95 @@ await report.check({
       && trace.result.coreDestroyed
       && trace.result.targetsTotal === 6
       && trace.result.objectiveSummary === '6 / 6 + CORE'
-      && trace.result.hullRemaining > 0,
+      && trace.result.bestTime === null
+      && trace.result.isNewBest
+      && trace.telemetry.extractionTurnsCleared === 2
+      && trace.telemetry.extractionTurnsTotal === 2
+      && trace.contactFeedback === 0
+      && trace.hullRemaining === 1,
     'The successful trace omitted a success condition.', trace);
   }
   verify(Math.abs(at60.elapsed - at120.elapsed) <= 1 / 60,
     'Tick rates disagreed on successful extraction time.', { at60, at120 });
   return { at60, at120 };
+});
+
+await report.check({
+  id: 'DEAD-SIGNAL.structure-contact',
+  name: 'The BLACK ARRAY major structure is tangible without blocking the intended opening',
+  assertion:
+    'A staged overlap with a production-path ring/pylon proxy produces common contact/hull '
+    + 'feedback while the 60/120 reference traces above remain collision-clean.',
+}, () => {
+  const { path, state, objective } = makeRuntime();
+  const contacts = buildDeadSignalStructureContacts(path);
+  const world = {
+    contacts,
+    contactCapacity: DEAD_SIGNAL_STRUCTURE_CONTACT_COUNT,
+    targetables: state.targets,
+    reset() {},
+    updateSimulation() {},
+    updatePresentation() {},
+    applyQuality() {},
+    dispose() {},
+  };
+  const runtime = new MissionRuntime({
+    definition: DEAD_SIGNAL_MISSION,
+    path,
+    world,
+    objective,
+  });
+  const contact = contacts[0];
+  verify(contact, 'The production structure contact set is empty.');
+  let impactCalls = 0;
+  let feedbackCalls = 0;
+  const body = {
+    position: contact.position.clone().add(new THREE.Vector3(contact.radius + 8, 0, 0)),
+    radius: 18,
+    speed: 720,
+    hull: 1,
+    applyImpact() {
+      impactCalls++;
+      this.hull -= 0.2;
+      return 0.72;
+    },
+  };
+  const outcome = runtime.simulate({
+    dt: 1 / 60,
+    elapsed: 30,
+    body,
+    forward: new THREE.Vector3(0, 0, -1),
+    fire: false,
+    proximityRange: 180,
+    resolveContacts: true,
+    resolveObjective: false,
+    onContact: (hit) => {
+      if (hit.id === contact.id) feedbackCalls++;
+    },
+  });
+  verify(contacts.length === 32
+    && impactCalls === 1
+    && feedbackCalls === 1
+    && body.hull === 0.8
+    && outcome.proximity === 1
+    && !outcome.hullFailed,
+  'The staged major-structure collision did not traverse the common hull/contact seam.', {
+    contacts: contacts.length,
+    contact,
+    impactCalls,
+    feedbackCalls,
+    hull: body.hull,
+    outcome,
+  });
+  return {
+    contacts: contacts.length,
+    stagedContactId: contact.id,
+    impactCalls,
+    feedbackCalls,
+    hullBefore: 1,
+    hullAfter: body.hull,
+    proximity: outcome.proximity,
+  };
 });
 
 await report.check({
@@ -267,6 +409,21 @@ await report.check({
     elapsed: 116,
   });
 
+  const shortcut = makeRuntime();
+  for (const id of ['shield-01', 'shield-02', 'shield-03']) destroy(shortcut.state, id, 55);
+  destroy(shortcut.state, 'core', 86);
+  shortcut.objective.update({
+    position: shortcut.path.curve.getPointAt(0.79),
+    speed: 800,
+    elapsed: 86,
+  });
+  const shortcutTerminal = shortcut.objective.update({
+    position: shortcut.path.terminusPosition,
+    speed: 800,
+    elapsed: 90,
+  });
+  const shortcutTelemetry = shortcut.objective.telemetry();
+
   verify(insufficientTerminal.status === 'failed'
     && insufficientTerminal.reason === 'core-boundary-without-shields',
   'The insufficient-node boundary did not fail distinctly.', insufficientTerminal);
@@ -274,7 +431,20 @@ await report.check({
     'The core-window boundary did not fail distinctly.', missedTerminal);
   verify(blastTerminal.status === 'failed' && blastTerminal.reason === 'blast-timeout',
     'The extraction blast boundary did not fail distinctly.', blastTerminal);
-  return { insufficientTerminal, missedTerminal, blastTerminal };
+  verify(shortcutTerminal.status === 'running'
+    && shortcutTelemetry.extractionTurnsCleared === 0
+    && shortcutTelemetry.extractionTurnsTotal === 2,
+  'A direct core-to-terminus chord incorrectly completed authored extraction turns.', {
+    shortcutTerminal,
+    shortcutTelemetry,
+  });
+  return {
+    insufficientTerminal,
+    missedTerminal,
+    blastTerminal,
+    shortcutTerminal,
+    shortcutTelemetry,
+  };
 });
 
 await report.write();

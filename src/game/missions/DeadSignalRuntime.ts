@@ -73,6 +73,7 @@ export const createDeadSignalMissionRuntime: GameMissionRuntimeFactory = (contex
     facility,
     effects,
     state,
+    path,
   });
   return new MissionRuntime({ definition, path, world, objective, weapon });
 };

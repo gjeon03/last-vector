@@ -23,6 +23,10 @@ export interface DeadSignalStrikeDefinition extends StrikeObjectiveDefinition {
   readonly coreBoundaryProgress: number;
   readonly coreWindowEndProgress: number;
   readonly finalBlastDeadlineSeconds: number;
+  readonly extractionTurns: readonly {
+    readonly pathT: number;
+    readonly radius: number;
+  }[];
 }
 
 export interface DeadSignalMissionDefinition extends Omit<MissionDefinition, 'objective'> {
@@ -127,6 +131,10 @@ export const DEAD_SIGNAL_MISSION: DeadSignalMissionDefinition = Object.freeze({
     coreBoundaryProgress: 0.755,
     coreWindowEndProgress: 0.865,
     finalBlastDeadlineSeconds: 120,
+    extractionTurns: Object.freeze([
+      Object.freeze({ pathT: 0.89, radius: 620 }),
+      Object.freeze({ pathT: 0.955, radius: 620 }),
+    ]),
     extraction: Object.freeze({ startProgress: 0.82, timeoutSeconds: 30 }),
   }),
   mastery: Object.freeze(['all-nodes', 'accuracy'] as const),
