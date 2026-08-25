@@ -10,7 +10,7 @@ import type {
   Locale,
   LocaleFontStatus,
   Phase,
-  RunResult,
+  MissionResult,
   Settings,
   Telemetry,
 } from './contracts.ts';
@@ -319,7 +319,7 @@ export interface HarnessApi {
   telemetry(): Telemetry;
   phase(): Phase;
   /** Non-null once the run has finished successfully; failures deliberately keep this null. */
-  result(): RunResult | null;
+  result(): MissionResult | null;
   /** Active boot-built route identity and URL-resolution evidence. */
   course(): HarnessCourseState;
   /** Immutable route authoring projected to a compact JSON-safe catalog. */

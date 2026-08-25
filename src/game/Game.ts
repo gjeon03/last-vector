@@ -49,7 +49,6 @@ import {
 import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import {
-  calculateCourseRank,
   type CourseDefinition,
 } from '../core/Courses.ts';
 import { hasRadioSafeWindow, radioDurationSeconds } from '../core/RadioSchedule.ts';
@@ -57,7 +56,12 @@ import { CAIRN_MISSION, type MissionDefinition } from '../core/Missions.ts';
 import { buildMissionUrl, type MissionResolution } from '../core/MissionSelection.ts';
 import { ProgressStore } from '../core/Progress.ts';
 import { GateRaceObjective } from './GateRaceObjective.ts';
-import { MissionRuntime } from './MissionRuntime.ts';
+import {
+  createGameMissionRuntime,
+  MissionRuntime,
+  type GameMissionRuntimeFactory,
+} from './MissionRuntime.ts';
+import type { FlightPath } from './FlightPath.ts';
 import { World } from './World.ts';
 import type {
   AudioBus,
@@ -70,7 +74,7 @@ import type {
   LogMessage,
   Locale,
   Phase,
-  RunResult,
+  MissionResult,
   Settings,
   Telemetry,
   UiAudioBus,
@@ -220,6 +224,7 @@ export interface GameOptions {
   root: HTMLElement;
   missionDefinition?: MissionDefinition;
   missionResolution?: MissionResolution;
+  missionRuntimeFactory?: GameMissionRuntimeFactory;
   progressStore?: ProgressStore;
   localeStore?: LocaleStore;
   fonts?: {
@@ -271,9 +276,8 @@ export class Game {
   private readonly stageLandmarks: StageLandmarks;
   private readonly dust: DustField;
   private readonly terminus: Terminus;
-  private readonly course: Course;
-  private readonly objective: GateRaceObjective;
-  private readonly world: World;
+  /** Current CAIRN render adapter; distinct only while an injected chapter runtime is active. */
+  private readonly fallbackMission: MissionRuntime;
   private readonly mission: MissionRuntime;
   private readonly ship = new Ship();
   private readonly shipModel: ShipModel;
@@ -291,7 +295,7 @@ export class Game {
   private countdownTimer = 0;
   /** Cancels the lingering GO card without letting an old run hide a new countdown. */
   private countdownClearTimer: number | null = null;
-  private result: RunResult | null = null;
+  private result: MissionResult | null = null;
   private topSpeed = 0;
   private impacts = 0;
   /** -1 = not triggered, -2 = emitted/deferred; non-negative = run-time trigger second. */
@@ -412,10 +416,7 @@ export class Game {
   constructor(options: GameOptions) {
     this.root = options.root;
     this.missionDefinition = options.missionDefinition ?? CAIRN_MISSION;
-    if (this.missionDefinition.objective.kind !== 'gate-race') {
-      throw new Error(`Unsupported objective runtime: ${this.missionDefinition.objective.kind}`);
-    }
-    this.courseDefinition = this.missionDefinition.objective.gates;
+    this.courseDefinition = this.missionDefinition.world.sourceCourse;
     this.missionResolution = options.missionResolution ?? {
       missionId: this.missionDefinition.id,
       source: 'default',
@@ -504,12 +505,12 @@ export class Game {
     this.farScene.add(this.planet.object);
 
     // --- near scene -----------------------------------------------------------------
-    this.course = new Course(this.courseDefinition, seed, this.lighting);
-    this.mainScene.add(this.course.object);
+    const course = new Course(this.courseDefinition, seed, this.lighting);
+    this.mainScene.add(course.object);
 
     this.terminus = new Terminus({
-      position: this.course.terminusPosition,
-      normal: this.course.terminusNormal,
+      position: course.terminusPosition,
+      normal: course.terminusNormal,
       lighting: this.lighting,
       seed: seed ^ 0x7f31,
       apertureRadius: this.courseDefinition.destination.apertureRadius,
@@ -521,15 +522,15 @@ export class Game {
       kind: this.courseDefinition.world.landmarkKind,
       lighting: this.lighting,
       seed: seed ^ 0x5bd1,
-      anchors: this.buildStageLandmarkAnchors(),
-      protectedChannel: this.course.clearChannel,
+      anchors: this.buildStageLandmarkAnchors(course.path),
+      protectedChannel: course.clearChannel,
     });
     this.mainScene.add(this.stageLandmarks.object);
 
     this.asteroids = new AsteroidField({
       count: maxProfile.asteroidCount,
       lighting: this.lighting,
-      spine: this.course.spine,
+      spine: course.spine,
       spread: SCALE.asteroidFieldRadius * this.courseDefinition.field.spreadFraction,
       // Absolute metres, deliberately not a multiple of the aperture: shrinking the gate
       // for difficulty must not silently shrink the flyable channel as well.
@@ -544,16 +545,16 @@ export class Game {
       hazardBand: this.courseDefinition.field.hazardBand,
       // The flown volume: the curved spine the ship follows AND the chords a fast pilot cuts
       // to, each at its own leg's clearance. Built by Course, which is what knows the legs.
-      keepClearSegments: this.course.clearChannel,
+      keepClearSegments: course.clearChannel,
       keepClear: [
         // The spawn point, generously: the very first thing a player sees must not be a
         // collision. And every aperture, so threading a cairn is never blocked by a boulder
         // that happens to have landed in the hole.
         {
-          center: this.course.startPosition.clone(),
+          center: course.startPosition.clone(),
           radius: this.courseDefinition.field.startKeepClearRadius,
         },
-        ...this.course.gates.map((gate) => ({
+        ...course.gates.map((gate) => ({
           center: gate.position.clone(),
           radius: gate.radius * this.courseDefinition.field.gateKeepClearScale,
         })),
@@ -568,7 +569,7 @@ export class Game {
 
     this.derelicts = new DerelictField({
       lighting: this.lighting,
-      spine: this.course.spine,
+      spine: course.spine,
       seed: seed ^ 0x1a77,
       count: this.courseDefinition.world.derelictCount,
     });
@@ -577,11 +578,12 @@ export class Game {
     this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
     this.mainScene.add(this.dust.object);
 
-    this.objective = new GateRaceObjective(
-      this.course,
+    const objective = new GateRaceObjective(
+      course,
       this.terminus.apertureRadius * 2.4,
+      this.missionDefinition,
     );
-    this.world = new World({
+    const world = new World({
       starfield: this.starfield,
       star: this.star,
       planet: this.planet,
@@ -591,14 +593,21 @@ export class Game {
       landmarks: this.stageLandmarks,
       dust: this.dust,
       terminus: this.terminus,
-      course: this.course,
+      course,
     });
-    this.mission = new MissionRuntime({
+    const fallbackRuntime = new MissionRuntime({
       definition: this.missionDefinition,
-      path: this.course.path,
-      world: this.world,
-      objective: this.objective,
+      path: course.path,
+      world,
+      objective,
+      legacyCourse: course,
     });
+    this.fallbackMission = fallbackRuntime;
+    this.mission = createGameMissionRuntime({
+      definition: this.missionDefinition,
+      seed,
+      fallback: fallbackRuntime,
+    }, options.missionRuntimeFactory);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
     this.shipMeshHolder.add(this.shipModel.object);
@@ -941,6 +950,9 @@ export class Game {
   // ---------------------------------------------------------------------------------
 
   private createTelemetry(): Telemetry {
+    const course = this.mission.legacyCourse;
+    const guidance = this.mission.objective.guidance(this.mission.path.startPosition);
+    const firstGate = course?.gates[0];
     return {
       phase: 'boot',
       speed: 0,
@@ -956,29 +968,29 @@ export class Game {
       velocityAnchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
       gate: {
         index: 0,
-        total: this.course.gates.length,
-        name: this.course.gates[0]?.name ?? '',
-        nameMessage: this.course.gates[0]?.nameMessage,
+        total: course?.gates.length ?? guidance.total,
+        name: firstGate?.name ?? guidance.label,
+        nameMessage: firstGate?.nameMessage ?? guidance.labelMessage,
         distance: 0,
         anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
         alignment: 0,
       },
       guidance: {
-        label: this.course.gates[0]?.name ?? this.courseDefinition.text.canonicalDestination,
+        label: guidance.label,
         anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
         distance: 0,
         progress: 0,
         current: 0,
-        total: this.course.gates.length,
+        total: guidance.total,
       },
-      objective: this.objective.telemetry(),
+      objective: this.mission.objective.telemetry(),
       courseRemaining: 0,
-      courseTotal: this.course.totalLength,
+      courseTotal: this.mission.path.totalLength,
       elapsed: 0,
       splits: [],
-      bestTime: readBestTime(this.course.id),
-      bestSplits: readBestSplits(this.course.id),
-      courseLength: this.course.totalLength,
+      bestTime: readBestTime(this.mission.recordId(this.seed)),
+      bestSplits: readBestSplits(this.mission.recordId(this.seed)),
+      courseLength: this.mission.path.totalLength,
       sectorName: this.courseDefinition.text.canonicalSector,
       destinationName: this.courseDefinition.text.canonicalDestination,
       callout: null,
@@ -998,7 +1010,7 @@ export class Game {
     }
   }
 
-  private buildStageLandmarkAnchors(): StageLandmarkAnchorFrame[] {
+  private buildStageLandmarkAnchors(path: FlightPath): StageLandmarkAnchorFrame[] {
     const kind = this.courseDefinition.world.landmarkKind;
     let specs: readonly StageLandmarkAnchorSpec[] = STAGE_LANDMARK_ANCHORS[kind];
     if (kind === 'cairn') {
@@ -1017,11 +1029,11 @@ export class Game {
     const worldUp = new THREE.Vector3(0, 1, 0);
     for (const spec of specs) {
       const index = Math.min(
-        this.course.spine.length - 1,
-        Math.max(0, Math.floor(this.course.spine.length * spec.routeFraction)),
+        path.spine.length - 1,
+        Math.max(0, Math.floor(path.spine.length * spec.routeFraction)),
       );
-      const anchor = this.course.spine[index]!;
-      const ahead = this.course.spine[Math.min(this.course.spine.length - 1, index + 6)]!;
+      const anchor = path.spine[index]!;
+      const ahead = path.spine[Math.min(path.spine.length - 1, index + 6)]!;
       const forward = new THREE.Vector3().subVectors(ahead, anchor).normalize();
       const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
       const up = new THREE.Vector3().crossVectors(right, forward).normalize();
@@ -1037,8 +1049,12 @@ export class Game {
   private resetShipToStart(resetWorld = true): void {
     // Title/briefing loops historically rewind moving debris with the ship. Mission resets have
     // already reset their world, so their call sites pass false and avoid doing the same work twice.
-    if (resetWorld) this.world.reset();
-    this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
+    if (resetWorld) this.mission.world.reset();
+    this.ship.reset(
+      this.mission.path.startPosition,
+      this.mission.path.startQuaternion,
+      FLIGHT.cruiseSpeed * 0.55,
+    );
     // A restart is a new visual run as well as a new physics run. Leaving the smoothed boost
     // value alive made the first countdown frame look like a shutdown transient after restarting
     // during boost, even though Ship.reset() had already cleared the actual engine state.
@@ -1091,8 +1107,8 @@ export class Game {
     this.radioEndPending = false;
     this.result = null;
     this.telemetry.splits = [];
-    this.telemetry.bestTime = readBestTime(this.course.id);
-    this.telemetry.bestSplits = readBestSplits(this.course.id);
+    this.telemetry.bestTime = readBestTime(this.mission.recordId(this.seed));
+    this.telemetry.bestSplits = readBestSplits(this.mission.recordId(this.seed));
     this.clearPause();
     this.autopilot = false;
     this.cinematic = false;
@@ -1422,7 +1438,7 @@ export class Game {
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
     // Motion belongs to simulation, not visual update. The collision pass below and the render
     // later in this same frame therefore read the same positions.
-    this.world.updateSimulation(dt, this.ship.position);
+    this.mission.world.updateSimulation(dt, this.ship.position);
     this.resolveCollisions(dt);
 
     if (this.phase === 'flying') {
@@ -1441,7 +1457,7 @@ export class Game {
       }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
-      if (this.ship.position.distanceTo(this.course.startPosition) >
+      if (this.ship.position.distanceTo(this.mission.path.startPosition) >
         this.courseDefinition.geometry.gateSpacing * 2.2) {
         this.resetShipToStart();
         this.chase.snapTo(this.ship);
@@ -1465,12 +1481,15 @@ export class Game {
    * struct a human produces, so it exercises the real flight model rather than a shortcut.
    */
   private driveAutopilot(command: FlightCommand, dt: number): FlightCommand {
-    const target = this.course.autopilotTarget(
-      this.ship.position,
-      this.tmpA,
-      this.elapsed,
-      this.ship.speed,
-    );
+    const course = this.mission.legacyCourse;
+    const target = course
+      ? course.autopilotTarget(
+        this.ship.position,
+        this.tmpA,
+        this.elapsed,
+        this.ship.speed,
+      )
+      : this.mission.objective.guidance(this.ship.position).anchor;
     this.tmpB.copy(target).sub(this.ship.position);
     const distance = this.tmpB.length();
     if (distance < 1e-3) return command;
@@ -1500,7 +1519,7 @@ export class Game {
     // Fixing the loudness at its source rather than ducking it downstream: no menu mix at the
     // title, no new contract surface, and uiClick goes from +0.5 dB over the bed to about +6.7.
     if (this.cinematic) command.throttle = Math.min(command.throttle, Game.ATTRACT_THROTTLE);
-    const gate = this.course.nextGate;
+    const gate = course?.nextGate ?? null;
     const pilot = this.courseDefinition.pilot;
     const boostClearanceRadii = pilot.boostClearanceRadii;
     const far = gate
@@ -1655,25 +1674,17 @@ export class Game {
     if (this.phase !== 'flying') return;
     this.cancelCountdownClear();
     this.overlay.setCountdown(null);
-    const splits = this.course.passes.map((p) => p.time);
-    const best = readBestTime(this.course.id);
+    const recordId = this.mission.recordId(this.seed);
+    const splits = [...this.mission.bestRunSplits()];
+    const best = readBestTime(recordId);
     const isNewBest = best === null || this.elapsed < best;
     // Read the previous best's splits BEFORE overwriting, so the results screen compares this
     // run against the run it beat rather than against itself.
-    const bestSplits = readBestSplits(this.course.id);
-    if (isNewBest) writeBestTime(this.course.id, this.elapsed, splits);
+    const bestSplits = readBestSplits(recordId);
+    if (isNewBest) writeBestTime(recordId, this.elapsed, splits);
 
     const clean = this.impacts === 0;
-    const rank = calculateCourseRank(
-      this.courseDefinition,
-      this.elapsed,
-      this.course.totalLength,
-      FLIGHT.cruiseSpeed,
-      clean,
-    );
-    this.result = this.objective.buildResult({
-      missionId: this.missionDefinition.id,
-      rulesetVersion: this.missionDefinition.rulesetVersion,
+    this.result = this.mission.buildResult({
       totalTime: this.elapsed,
       hullRemaining: this.ship.hull,
       bestTime: best,
@@ -1681,8 +1692,7 @@ export class Game {
       isNewBest,
       topSpeed: this.topSpeed,
       cleanRun: clean,
-      rank,
-      destinationName: this.courseDefinition.text.canonicalDestination,
+      cruiseSpeed: FLIGHT.cruiseSpeed,
     });
 
     const progress = this.progressStore.recordSuccessfulFinish(
@@ -1743,7 +1753,7 @@ export class Game {
       // visible stick/head rig on the command that actually reaches the ship instead of leaving
       // held pre-breach input frozen into the cockpit behind the terminal overlay.
       const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.input.command;
-      const gate = this.course.nextGate;
+      const gate = this.mission.legacyCourse?.nextGate ?? null;
       this.ship.getForward(this.cockpitForward);
       const state = this.cockpitState;
       state.dt = dt;
@@ -1775,7 +1785,7 @@ export class Game {
     // the multiplicand wrong.
     const pixelScale = Math.max(0.6, this.post.renderHeight / 1080);
     const camPos = this.chase.camera.position;
-    this.world.updatePresentation({
+    this.mission.world.updatePresentation({
       dt,
       clock: this.clock,
       runTime: this.elapsed,
@@ -1894,8 +1904,9 @@ export class Game {
     // harness steps exactly one frame before it presents — a damped value would move about 3%
     // of the way there, so the bias would have measured as having no effect at all.
     this.grade.exposure = 1.3 * this.vantageExposure;
-    if (v.gateIndex !== undefined && this.course.gates[v.gateIndex]) {
-      const gate = this.course.gates[v.gateIndex];
+    const course = this.mission.legacyCourse;
+    if (v.gateIndex !== undefined && course?.gates[v.gateIndex]) {
+      const gate = course.gates[v.gateIndex];
       this.tmpA.copy(gate.position).addScaledVector(gate.normal, -(v.gateStandoff ?? 800));
       // Nudge clear of anything the ship is parked inside. A vantage that lands touching a
       // boulder reports proximity 1.0, fills half the frame with that rock's bloom, and makes
@@ -1911,7 +1922,7 @@ export class Game {
         new THREE.Matrix4().lookAt(this.tmpA, this.terminus.position, new THREE.Vector3(0, 1, 0)),
       );
     } else {
-      this.course.poseAt(v.t, this.tmpA, this.tmpQuat);
+      this.mission.path.poseAt(v.t, this.tmpA, this.tmpQuat);
       this.clearVantageOfObstacles(this.tmpA);
     }
     this.ship.position.copy(this.tmpA);
@@ -1970,6 +1981,8 @@ export class Game {
   private updateTelemetry(dt: number): void {
     const t = this.telemetry;
     const num = Game.num;
+    const course = this.mission.legacyCourse;
+    const guidance = this.mission.objective.guidance(this.ship.position);
     t.phase = this.phase;
     t.speed = num(this.ship.speed);
     t.throttle = num(this.ship.throttleSmoothed);
@@ -1982,7 +1995,9 @@ export class Game {
     t.proximity = num(this.proximity);
     t.impactFlash = num(this.damageFlash);
     t.fps = num(this.fps, 60);
-    t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
+    t.courseRemaining = num(course
+      ? course.remainingDistance(this.ship.position)
+      : guidance.distance);
 
     // Reused scratch: this runs 60 times a second and allocating an Euler here was measurable.
     this.scratchEuler.setFromQuaternion(this.ship.quaternion, 'ZYX');
@@ -2018,12 +2033,12 @@ export class Game {
       t.velocityAnchor.distance = speed;
     }
 
-    const gate = this.course.nextGate;
-    const targetPosition = gate ? gate.position : this.terminus.position;
-    t.gate.index = this.course.nextIndex;
-    t.gate.total = this.course.gates.length;
-    t.gate.name = gate ? gate.name : this.courseDefinition.text.canonicalDestination;
-    t.gate.nameMessage = gate?.nameMessage;
+    const gate = course?.nextGate ?? null;
+    const targetPosition = gate?.position ?? guidance.anchor;
+    t.gate.index = course?.nextIndex ?? guidance.current;
+    t.gate.total = course?.gates.length ?? guidance.total;
+    t.gate.name = gate?.name ?? guidance.label;
+    t.gate.nameMessage = gate?.nameMessage ?? guidance.labelMessage;
     t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
     this.tmpA.copy(targetPosition).project(this.chase.camera);
@@ -2045,7 +2060,6 @@ export class Game {
     this.ship.getForward(this.tmpC);
     t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
 
-    const guidance = this.objective.guidance(this.ship.position);
     t.guidance.label = guidance.label;
     t.guidance.labelMessage = guidance.labelMessage;
     t.guidance.distance = num(guidance.distance);
@@ -2062,7 +2076,7 @@ export class Game {
     this.tmpB.copy(guidance.anchor).applyMatrix4(this.chase.camera.matrixWorldInverse);
     t.guidance.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
     t.guidance.anchor.distance = num(guidance.distance);
-    t.objective = this.objective.telemetry();
+    t.objective = this.mission.objective.telemetry();
 
     if (t.callout) {
       t.callout.ttl -= dt;
@@ -2109,7 +2123,7 @@ export class Game {
     this.wasBoostLocked = locked;
 
     // A rising tick as the aperture closes: the player should hear the gate arrive.
-    const gate = this.course.nextGate;
+    const gate = this.mission.legacyCourse?.nextGate ?? null;
     if (gate && this.phase === 'flying') {
       const distance = this.ship.position.distanceTo(gate.position);
       const band =
@@ -2148,7 +2162,10 @@ export class Game {
     });
     const intensity =
       this.phase === 'flying'
-        ? clamp01(0.34 + this.ship.speed01 * 0.5 + this.course.progress(this.ship.position) * 0.3)
+        ? clamp01(0.34 + this.ship.speed01 * 0.5 + (
+          this.mission.legacyCourse?.progress(this.ship.position)
+            ?? this.mission.objective.guidance(this.ship.position).progress
+        ) * 0.3)
         : this.phase === 'finished'
           ? 0.5
           : 0.22;
@@ -2175,7 +2192,9 @@ export class Game {
   // ---------------------------------------------------------------------------------
 
   private bindCourseEvents(): void {
-    this.course.onPass = (event) => {
+    const course = this.mission.legacyCourse;
+    if (!course) return;
+    course.onPass = (event) => {
       const recharge = this.ship.rechargeBoost(FLIGHT.boostCapacity * 0.25);
       this.gateHistory.push({
         index: event.index,
@@ -2186,7 +2205,7 @@ export class Game {
         boostEnergyBefore: recharge.before,
         boostEnergyAfter: recharge.after,
       });
-      this.telemetry.splits = this.course.passes.map((p) => p.time);
+      this.telemetry.splits = course.passes.map((p) => p.time);
       const precision = 1 - event.offset;
       this.audio.play('gatePass', clamp01(0.4 + precision * 0.6));
       const accuracy: GateAccuracy = precision > 0.86
@@ -2194,7 +2213,7 @@ export class Game {
         : precision > 0.6
           ? 'clean'
           : 'cleared';
-      const remaining = this.course.gates.length - this.course.nextIndex;
+      const remaining = course.gates.length - course.nextIndex;
       this.pushCallout({
         titleMessage: GATE_ACCURACY_MESSAGES[accuracy],
         sub: undefined,
@@ -2218,7 +2237,7 @@ export class Game {
       this.queueRadio(event.index + 1);
     };
 
-    this.course.onMiss = (gate, event) => {
+    course.onMiss = (gate, event) => {
       const shearBlocked = event.blockedBy === 'shear';
       // Keep the proven miss voice, but strike it at full intensity for a shutter block. The
       // differentiated callout carries the semantic truth without adding a new procedural graph.
@@ -2343,7 +2362,7 @@ export class Game {
   private applyQualityPopulations(): void {
     const profile = this.settings.profile;
     const max = qualityProfile('ultra');
-    this.world.applyQuality(profile, max);
+    this.mission.world.applyQuality(profile, max);
   }
 
   /**
@@ -2782,7 +2801,7 @@ export class Game {
     };
   }
 
-  getResult(): RunResult | null {
+  getResult(): MissionResult | null {
     return this.result;
   }
 
@@ -2860,19 +2879,21 @@ export class Game {
   }
 
   seekCourse(t: number): void {
-    this.course.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
+    this.mission.path.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
     this.ship.reset(this.tmpA, this.tmpQuat, FLIGHT.cruiseSpeed);
     this.asteroids.resetMotion();
     this.chase.snapTo(this.ship);
     for (const trail of this.trails) trail.reset();
     // Re-arm the course so gate state matches where the ship actually is.
-    this.course.reset();
-    const index = Math.min(this.course.gates.length - 1, Math.floor(clamp01(t) * this.course.gates.length));
+    const course = this.mission.legacyCourse;
+    if (!course) return;
+    course.reset();
+    const index = Math.min(course.gates.length - 1, Math.floor(clamp01(t) * course.gates.length));
     for (let i = 0; i < index; i++) {
-      this.course.gates[i].setState('cleared');
+      course.gates[i].setState('cleared');
     }
-    this.course.nextIndex = index;
-    this.course.gates[index]?.setState('armed');
+    course.nextIndex = index;
+    course.gates[index]?.setState('armed');
   }
 
   setVantage(name: string): void {
@@ -2883,15 +2904,17 @@ export class Game {
     this.asteroids.resetMotion();
     // Put the course into the state a player would actually be in at this point on the route,
     // so a screenshot shows a lit, armed cairn rather than a dormant prop.
+    const course = this.mission.legacyCourse;
+    if (!course) return;
     if (v.gateIndex !== undefined) {
-      this.course.reset();
-      for (let i = 0; i < v.gateIndex; i++) this.course.gates[i].setState('cleared');
-      this.course.nextIndex = v.gateIndex;
-      this.course.gates[v.gateIndex]?.setState('armed');
+      course.reset();
+      for (let i = 0; i < v.gateIndex; i++) course.gates[i].setState('cleared');
+      course.nextIndex = v.gateIndex;
+      course.gates[v.gateIndex]?.setState('armed');
     } else if (v.terminusStandoff !== undefined) {
-      this.course.reset();
-      for (const gate of this.course.gates) gate.setState('cleared');
-      this.course.nextIndex = this.course.gates.length;
+      course.reset();
+      for (const gate of course.gates) gate.setState('cleared');
+      course.nextIndex = course.gates.length;
     }
   }
 
@@ -2979,11 +3002,18 @@ export class Game {
 
   /** See `HazardReport`. Walks the flown line and measures the room around it. */
   getHazard(samples = 900): HazardReport {
-    const nodes = [
-      this.course.startPosition.clone(),
-      ...this.course.gates.map((g) => g.position.clone()),
-      this.course.terminusPosition.clone(),
-    ];
+    const course = this.mission.legacyCourse;
+    const nodes = course
+      ? [
+        course.startPosition.clone(),
+        ...course.gates.map((g) => g.position.clone()),
+        course.terminusPosition.clone(),
+      ]
+      : [
+        this.mission.path.startPosition.clone(),
+        ...this.mission.path.gateAnchors.map((anchor) => anchor.position.clone()),
+        this.mission.path.terminusPosition.clone(),
+      ];
     const rocks = this.asteroids.activeInstances;
     const point = new THREE.Vector3();
     const clearances: number[] = [];
@@ -3021,7 +3051,7 @@ export class Game {
   getChannelExcursion(): number {
     const pos = this.ship.position;
     let best = Infinity;
-    for (const seg of this.course.clearChannel) {
+    for (const seg of this.mission.path.clearChannel) {
       const d = distanceToSegment(pos, seg.a, seg.b) - seg.radius;
       if (d < best) best = d;
     }
@@ -3040,12 +3070,15 @@ export class Game {
     length: number;
     resolution: MissionResolution;
   } {
+    const objective = this.mission.objective.telemetry();
     return {
       courseId: this.courseDefinition.id,
-      recordId: this.course.id,
+      recordId: this.mission.recordId(this.seed),
       seed: this.seed,
-      gateCount: this.course.gates.length,
-      length: this.course.totalLength,
+      gateCount: objective.kind === 'gate-race'
+        ? objective.gatesTotal
+        : 0,
+      length: this.mission.path.totalLength,
       resolution: { ...this.missionResolution },
     };
   }
@@ -3063,7 +3096,7 @@ export class Game {
     cleared: boolean;
     blockedBy: 'aperture' | 'shear' | null;
   }[] {
-    return this.course.crossings.map((event) => ({
+    return (this.mission.legacyCourse?.crossings ?? []).map((event) => ({
       index: event.index,
       time: event.time,
       radialDistance: event.radialDistance,
@@ -3082,21 +3115,22 @@ export class Game {
    */
   stageShearBlock(): ReturnType<Game['getCrossingHistory']>[number] | null {
     if (this.phase !== 'flying') return null;
-    const gate = this.course.nextGate;
-    if (!gate || !this.course.shear || this.course.shear.phaseAt(gate.index, this.elapsed) === null) {
+    const course = this.mission.legacyCourse;
+    const gate = course?.nextGate;
+    if (!course || !gate || !course.shear || course.shear.phaseAt(gate.index, this.elapsed) === null) {
       return null;
     }
     this.tmpA.copy(gate.position).addScaledVector(gate.normal, -2);
     this.tmpB.copy(gate.position).addScaledVector(gate.normal, 2);
-    this.course.update(this.tmpA, this.ship.speed, this.elapsed);
-    this.course.update(this.tmpB, this.ship.speed, this.elapsed);
+    course.update(this.tmpA, this.ship.speed, this.elapsed);
+    course.update(this.tmpB, this.ship.speed, this.elapsed);
     const crossings = this.getCrossingHistory();
     const crossing = crossings[crossings.length - 1];
     return crossing?.blockedBy === 'shear' ? crossing : null;
   }
 
   getShearState(): ReturnType<Course['getShearDebug']> {
-    return this.course.getShearDebug(this.elapsed);
+    return this.mission.legacyCourse?.getShearDebug(this.elapsed) ?? null;
   }
 
   getStageLandmarkState(): ReturnType<StageLandmarks['getDebugState']> {
@@ -3165,6 +3199,7 @@ export class Game {
     this.audio.dispose();
     this.post.dispose();
     this.mission.dispose();
+    if (this.mission !== this.fallbackMission) this.fallbackMission.dispose();
     this.shipModel.dispose();
     this.cockpitModel.dispose();
     for (const trail of this.trails) trail.dispose();

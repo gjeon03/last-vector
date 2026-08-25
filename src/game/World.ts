@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import type { Vector3 } from 'three';
 import type { QualityProfile } from '../core/Settings.ts';
 import type { AsteroidField } from '../render/Asteroids.ts';
 import type { DustField } from '../render/Dust.ts';
@@ -8,7 +8,7 @@ import type { Star } from '../render/Star.ts';
 import type { Starfield } from '../render/Starfield.ts';
 import type { DerelictField, Terminus } from '../render/Structures.ts';
 import type { Course } from './Course.ts';
-import type { MissionWorldRuntime } from './MissionRuntime.ts';
+import type { MissionWorldRuntime, WorldPresentationFrame } from './MissionRuntime.ts';
 
 interface Disposable {
   dispose(): void;
@@ -25,20 +25,6 @@ export interface WorldComponents {
   readonly dust: DustField;
   readonly terminus: Terminus;
   readonly course: Course;
-}
-
-export interface WorldPresentationFrame {
-  readonly dt: number;
-  readonly clock: number;
-  readonly runTime: number;
-  readonly camera: THREE.PerspectiveCamera;
-  readonly farCamera: THREE.PerspectiveCamera;
-  readonly pixelScale: number;
-  readonly viewportHeight: number;
-  readonly shipPosition: THREE.Vector3;
-  readonly shipVelocity: THREE.Vector3;
-  readonly speed01: number;
-  readonly boostBlend: number;
 }
 
 /** Owns current mission render resources and world simulation, never objective or interface state. */
@@ -59,7 +45,7 @@ export class World implements MissionWorldRuntime {
     this.components.asteroids.resetMotion();
   }
 
-  updateSimulation(dt: number, shipPosition: THREE.Vector3): void {
+  updateSimulation(dt: number, shipPosition: Vector3): void {
     this.components.asteroids.updateMotion(dt, shipPosition);
   }
 

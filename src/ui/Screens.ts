@@ -7,7 +7,7 @@
  * keyboard path and the pointer path are the same path.
  */
 
-import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
+import type { HudHost, Locale, MissionResult, QualityLevel, Settings } from '../core/contracts.ts';
 import { PRECISION_MAX_OFFSET } from '../core/Courses.ts';
 import { ACTIVE_MISSION_ORDER, type MissionId } from '../core/Missions.ts';
 import type { Translator } from '../i18n/index.ts';
@@ -679,7 +679,7 @@ export class Screens {
   private writeObjectiveList(
     list: HTMLElement,
     route: CampaignMissionView,
-    result?: RunResult,
+    result?: MissionResult,
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
@@ -1703,7 +1703,11 @@ export class Screens {
     return { view, body };
   }
 
-  showResult(r: RunResult): void {
+  showResult(r: MissionResult): void {
+    if (r.kind !== 'gate-race') {
+      this.showCommonMissionResult(r);
+      return;
+    }
     const m = this.translator.messages;
     const campaignMission = this.campaignMission(r.missionId);
     const routeCopy = m.campaign.routes[campaignMission.id];
@@ -2013,6 +2017,60 @@ export class Screens {
     body.appendChild(error);
     body.appendChild(actions);
     this.syncCampaignErrors();
+
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /** Shared result shell for objective runtimes whose authored detail panels live downstream. */
+  private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
+    const m = this.translator.messages;
+    const body = this.nResultBody;
+    body.textContent = '';
+    delete body.dataset['state'];
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
+
+    const head = el('header', 'lv-res-head');
+    head.style.setProperty('--n', '0');
+    const headline = el('div', 'lv-res-headline');
+    headline.append(
+      el('div', 'lv-kicker', m.results.runComplete),
+      englishText('h2', 'lv-res-title', r.destinationName),
+    );
+    const rank = el('div', 'lv-res-rank');
+    rank.append(el('div', 'lv-res-k', m.results.rank), englishText('div', 'lv-res-letter', r.rank));
+    rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
+    head.append(headline, rank);
+
+    const main = el('div', 'lv-res-main');
+    main.style.setProperty('--n', '1');
+    const left = el('div', 'lv-res-left');
+    const time = el('div', 'lv-res-timeblock');
+    time.append(
+      el('div', 'lv-res-k', m.results.totalTime),
+      el('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
+    const stats = el('dl', 'lv-res-stats');
+    for (const [label, value] of [
+      [m.results.markers, r.objectiveSummary],
+      [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+    ]) {
+      const cell = el('div', 'lv-res-stat');
+      cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
+      stats.appendChild(cell);
+    }
+    left.append(time, stats);
+    main.appendChild(left);
+
+    const actions = el('div', 'lv-actions lv-actions--res');
+    actions.style.setProperty('--n', '2');
+    actions.append(
+      this.button(m.results.runAgain, 'is-primary', 'run-again', () => this.host.restart()),
+      this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+    );
+    body.append(head, main, actions);
 
     if (this.view === 'results') {
       this.collectNav(this.views.get('results')!);

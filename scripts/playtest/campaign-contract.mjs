@@ -23,8 +23,12 @@ import {
   ProgressStore,
 } from '../../src/core/Progress.ts';
 import { Course } from '../../src/game/Course.ts';
+import { FlightPath } from '../../src/game/FlightPath.ts';
 import { GateRaceObjective } from '../../src/game/GateRaceObjective.ts';
-import { MissionRuntime } from '../../src/game/MissionRuntime.ts';
+import {
+  createGameMissionRuntime,
+  MissionRuntime,
+} from '../../src/game/MissionRuntime.ts';
 import { createLightingUniforms } from '../../src/render/lighting.ts';
 import { Report, parseOptions, verify } from './runtime.mjs';
 
@@ -305,13 +309,19 @@ await report.check({
     CAIRN_DRIFT.defaultSeed,
     createLightingUniforms(new THREE.Vector3(...CAIRN_DRIFT.world.sunDirection)),
   );
-  const objective = new GateRaceObjective(course, CAIRN_DRIFT.destination.apertureRadius * 2.4);
+  const objective = new GateRaceObjective(
+    course,
+    CAIRN_DRIFT.destination.apertureRadius * 2.4,
+    CAIRN_MISSION,
+  );
   const calls = { reset: 0, update: 0, dispose: 0 };
   const world = {
     colliderSets: [],
     targetables: [],
     reset: () => { calls.reset += 1; },
     updateSimulation: () => { calls.update += 1; },
+    updatePresentation: () => {},
+    applyQuality: () => {},
     dispose: () => { calls.dispose += 1; },
   };
   const runtime = new MissionRuntime({ definition: CAIRN_MISSION, path: course.path, world, objective });
@@ -328,6 +338,126 @@ await report.check({
   runtime.dispose();
   verify(calls.dispose === 1, 'Mission runtime did not dispose its world exactly once.', calls);
   return { guidance: { ...guidance, anchor: [...guidance.anchor] }, telemetry, calls };
+});
+
+await report.check({
+  id: 'MISSION.objective-neutral-factory',
+  name: 'The Game-facing runtime seam accepts isolated escape and strike objectives',
+  assertion: 'Construction, PB identity, result dispatch and disposal have no gate-race rejection.',
+}, () => {
+  const observations = [];
+  for (const kind of ['escape', 'strike']) {
+    const definition = {
+      ...CAIRN_MISSION,
+      objective: kind === 'escape'
+        ? {
+          kind,
+          path: CAIRN_DRIFT.geometry,
+          shockwave: { speed: 1, startProgress: 0, catchProgress: 1 },
+        }
+        : {
+          kind,
+          path: CAIRN_DRIFT.geometry,
+          targets: [],
+          extraction: { startProgress: 0, timeoutSeconds: 1 },
+        },
+    };
+    const calls = { factory: 0, reset: 0, objectiveDispose: 0, worldDispose: 0 };
+    const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
+    const objective = {
+      kind,
+      reset: () => { calls.reset += 1; },
+      update: () => ({ status: 'running' }),
+      guidance: (position) => ({
+        label: 'MOCK OBJECTIVE',
+        anchor: path.terminusPosition,
+        distance: position.distanceTo(path.terminusPosition),
+        progress: 0,
+        current: 0,
+        total: 1,
+      }),
+      telemetry: () => kind === 'escape'
+        ? {
+          kind,
+          pathProgress: 0,
+          shockwaveProgress: 0,
+          checkpoint: 0,
+          checkpointTotal: 1,
+        }
+        : {
+          kind,
+          targetsDestroyed: 0,
+          targetsRequired: 0,
+          coreDestroyed: false,
+          extracting: false,
+        },
+      bestRunSplits: () => [],
+      buildResult: (input) => ({
+        kind,
+        missionId: definition.id,
+        rulesetVersion: definition.rulesetVersion,
+        totalTime: input.totalTime,
+        hullRemaining: input.hullRemaining,
+        objectiveSummary: 'MOCK COMPLETE',
+        topSpeed: input.topSpeed,
+        cleanRun: input.cleanRun,
+        rank: 'A',
+        destinationName: 'MOCK EXTRACTION',
+        newlyUnlockedMissionId: null,
+        ...(kind === 'escape'
+          ? { checkpointsCleared: 1, checkpointsTotal: 1, secondsAhead: 1 }
+          : {
+            targetsDestroyed: 0,
+            targetsRequired: 0,
+            shotsFired: 0,
+            shotsHit: 0,
+            coreDestroyed: true,
+          }),
+      }),
+      dispose: () => { calls.objectiveDispose += 1; },
+    };
+    const world = {
+      colliderSets: [],
+      targetables: [],
+      reset: () => {},
+      updateSimulation: () => {},
+      updatePresentation: () => {},
+      applyQuality: () => {},
+      dispose: () => { calls.worldDispose += 1; },
+    };
+    const candidate = new MissionRuntime({ definition, path, world, objective });
+    const runtime = createGameMissionRuntime({
+      definition,
+      seed: CAIRN_DRIFT.defaultSeed,
+      fallback: candidate,
+    }, () => {
+      calls.factory += 1;
+      return candidate;
+    });
+    runtime.reset();
+    const built = runtime.buildResult({
+      totalTime: 12,
+      hullRemaining: 0.75,
+      topSpeed: 900,
+      cleanRun: true,
+      bestTime: null,
+      bestSplits: [],
+      isNewBest: true,
+      cruiseSpeed: 720,
+    });
+    verify(runtime.objective.kind === kind
+      && built.kind === kind
+      && runtime.recordId(CAIRN_DRIFT.defaultSeed) === missionRecordId(definition, CAIRN_DRIFT.defaultSeed)
+      && runtime.bestRunSplits().length === 0
+      && calls.factory === 1
+      && calls.reset === 1,
+    `The ${kind} mock did not cross the common Game runtime boundary.`, { built, calls });
+    runtime.dispose();
+    verify(calls.objectiveDispose === 1 && calls.worldDispose === 1,
+      `The ${kind} mock runtime did not dispose one objective and one world.`, calls);
+    observations.push({ kind, resultKind: built.kind, recordId: runtime.recordId(CAIRN_DRIFT.defaultSeed), calls });
+  }
+  return observations;
 });
 
 await report.write();

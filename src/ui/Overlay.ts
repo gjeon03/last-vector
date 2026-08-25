@@ -7,7 +7,7 @@
 
 import './styles.css';
 
-import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
+import type { HudHost, MissionResult, Phase, Settings, Telemetry } from '../core/contracts.ts';
 import { FONT, UI } from '../core/art.ts';
 import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
@@ -202,7 +202,7 @@ export class Overlay {
     this.applyView();
   }
 
-  showResult(result: RunResult): void {
+  showResult(result: MissionResult): void {
     this.screens.showResult(result);
   }
 

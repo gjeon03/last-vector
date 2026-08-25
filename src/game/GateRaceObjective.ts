@@ -3,9 +3,11 @@ import type {
   GateRaceMissionResult,
   GateRaceObjectiveTelemetry,
 } from '../core/contracts.ts';
+import { calculateCourseRank } from '../core/Courses.ts';
+import type { MissionDefinition } from '../core/Missions.ts';
 import type { Course } from './Course.ts';
 import type {
-  GateRaceResultInput,
+  MissionResultInput,
   MissionObjectiveRuntime,
   ObjectiveGuidance,
   ObjectiveTerminalState,
@@ -18,11 +20,17 @@ export class GateRaceObjective implements MissionObjectiveRuntime {
   readonly course: Course;
 
   private readonly extractionRadius: number;
+  private readonly mission: Pick<MissionDefinition, 'id' | 'rulesetVersion'>;
   private readonly offset = new THREE.Vector3();
 
-  constructor(course: Course, extractionRadius: number) {
+  constructor(
+    course: Course,
+    extractionRadius: number,
+    mission: Pick<MissionDefinition, 'id' | 'rulesetVersion'>,
+  ) {
     this.course = course;
     this.extractionRadius = extractionRadius;
+    this.mission = mission;
   }
 
   reset(): void {
@@ -66,12 +74,16 @@ export class GateRaceObjective implements MissionObjectiveRuntime {
     };
   }
 
-  buildResult(input: GateRaceResultInput): GateRaceMissionResult {
+  bestRunSplits(): readonly number[] {
+    return this.course.passes.map((pass) => pass.time);
+  }
+
+  buildResult(input: MissionResultInput): GateRaceMissionResult {
     const splits = this.course.passes.map((pass) => pass.time);
     return {
       kind: 'gate-race',
-      missionId: input.missionId,
-      rulesetVersion: input.rulesetVersion,
+      missionId: this.mission.id,
+      rulesetVersion: this.mission.rulesetVersion,
       totalTime: input.totalTime,
       hullRemaining: input.hullRemaining,
       objectiveSummary: `${this.course.passes.length} / ${this.course.gates.length}`,
@@ -83,8 +95,14 @@ export class GateRaceObjective implements MissionObjectiveRuntime {
       gatesTotal: this.course.gates.length,
       topSpeed: input.topSpeed,
       cleanRun: input.cleanRun,
-      rank: input.rank,
-      destinationName: input.destinationName,
+      rank: calculateCourseRank(
+        this.course.definition,
+        input.totalTime,
+        this.course.totalLength,
+        input.cruiseSpeed,
+        input.cleanRun,
+      ),
+      destinationName: this.course.definition.text.canonicalDestination,
       maxGateOffset: this.course.passes.reduce(
         (maximum, pass) => Math.max(maximum, pass.offset),
         0,

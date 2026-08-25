@@ -11,6 +11,8 @@ bounded contracts. WRECKLINE, RINGFALL, and NEEDLE remain dormant recognized dat
   fixtures, deterministic 60/120 latch/reward evidence, and flight-ruleset PB partition.
 - `b3fa622d60c83949262c0a21fe3e5515ca744ef3` — FlightPath extraction, mission/runtime/world
   boundaries, mission URL/progress v2 migration, CAIRN-only campaign UI, and focused proofs.
+- Follow-up correction (this commit) — objective-neutral Game construction, result/PB lifecycle,
+  and minimal escape/strike runtime-factory contract evidence.
 
 ## Delivered contract
 
@@ -19,6 +21,10 @@ bounded contracts. WRECKLINE, RINGFALL, and NEEDLE remain dormant recognized dat
 - `MissionDefinition`, `MissionRuntime`, `GateRaceObjective`, and `World` form explicit bounded
   lifecycle seams. Common guidance plus discriminated gate-race/escape/strike telemetry and result
   unions are present without ECS, plugins, event bus, or mission-ID branches in `Game`.
+- `Game` stores only `MissionRuntime`, not concrete `Course`, `GateRaceObjective`, or `World`
+  fields. Its injected construction seam validates mission identity, ruleset, and matching
+  objective kind without rejecting escape/strike; result construction, PB identity/splits, world
+  updates, quality, reset, and disposal all cross the common runtime boundary.
 - Canonical navigation writes `?mission=cairn-drift`; `?course=cairn-drift` is the sole legacy
   alias. Unknown and dormant IDs fail closed to CAIRN, with canonical mission precedence.
 - Progress v2 keeps monotonic mission facts, migrates CAIRN clear/time/rank/clean/precision facts,
@@ -66,20 +72,31 @@ Reports: `playtest-out/boost-contract/report.json`,
 `playtest-out/campaign-contract/report.json`, `playtest-out/i18n-contract/report.json`, and
 `playtest-out/campaign/report.json`.
 
+Correction evidence in `MISSION.objective-neutral-factory` constructs isolated minimal escape and
+strike runtimes through the same exported factory used by `Game`. For both kinds the factory,
+reset, objective disposal, and world disposal each occur once; `buildResult` preserves the kind,
+PB identity resolves through `missionRecordId`, and objective-owned split facts remain empty. The
+re-run production proof retained the exact CAIRN path/gate hashes and the 60/120 finish facts above.
+
 ## Falsification self-review
 
-1. **P1, fixed:** moving debris no longer rewound when CAIRN's title/briefing flight loop reset the
-   ship after world extraction. `resetShipToStart` now preserves the historical world rewind while
-   mission reset paths avoid a double reset.
-2. **P1, fixed:** objective-neutral guidance exposed its own anchor but `Game` projected the legacy
+1. **P1, fixed:** the independent correction review found that the definition union advertised
+   escape/strike while `Game` rejected them, retained three concrete gate-race fields, and could
+   not call the common result builder. Construction, world/objective lifecycle, result dispatch,
+   and PB handling now go through the bounded runtime contract; both non-gate kinds cross the seam
+   in the focused contract.
+2. **P1, fixed:** an injected isolated runtime initially left the already-created CAIRN fallback
+   runtime outside the disposal path. `Game.dispose` now disposes the selected runtime and, only
+   when distinct, the fallback adapter, preventing leaked render/objective resources.
+3. **P1, fixed:** objective-neutral guidance exposed its own anchor but `Game` projected the legacy
    gate anchor. Guidance now projects the objective-supplied anchor; CAIRN remains numerically
    identical because its guidance target is the current gate/terminus.
-3. **P2, fixed:** the deprecated `CourseSelection` import-path shim omitted the old resolver export
-   name. It now forwards both resolver names while all production code uses `MissionSelection`.
 
 Unproven claims are deliberately bounded: no broad browser/localization/performance matrix was run;
 no manual feel verdict is claimed for the longer boost window; and escape/strike gameplay, target
-caps, future chapter UI, and multi-mission progression are contracts only, not shipped content.
+caps, authored alternative worlds, future chapter UI, and multi-mission progression are contracts
+only, not shipped content. Non-gate runtime construction is proven at the fast Game-facing factory
+seam, not as an authored browser playthrough.
 
 ## Diff scope
 
@@ -87,3 +104,7 @@ Changed only the product goal; focused playtest contracts/proof; core mission, s
 telemetry/result and harness contracts; FlightPath/course/game/runtime/world implementation; boot
 selection; and title/result/i18n adapters. No Chapter 02/03 authored mission data, flight speed,
 boost regeneration, or VFX tuning was added.
+
+The correction round changes only the common result/harness types, Game/runtime/world/objective
+boundaries, the result adapter, and the focused campaign contract/report. It adds no mission
+definition, target, shockwave, weapon, world art, speed, regeneration, or VFX content.

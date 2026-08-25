@@ -240,6 +240,8 @@ export interface MissionResultBase {
   cleanRun: boolean;
   rank: string;
   destinationName: string;
+  /** First mission made available by this finish, if any. */
+  newlyUnlockedMissionId: MissionId | null;
 }
 
 export interface GateRaceMissionResult extends MissionResultBase {
@@ -258,8 +260,6 @@ export interface GateRaceMissionResult extends MissionResultBase {
   gatesTotal: number;
   /** Largest gate offset in this run, normalized by each gate's authored radius. */
   maxGateOffset: number;
-  /** First mission made available by this finish, if any. */
-  newlyUnlockedMissionId: MissionId | null;
 }
 
 export interface EscapeMissionResult extends MissionResultBase {
