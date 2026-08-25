@@ -53,7 +53,10 @@ export class DeadSignalWorld implements MissionWorldRuntime {
       id: `target:${target.id}`,
       kind: 'target' as const,
       position: target.position,
-      radius: target.definition.radius,
+      // Weapon housings remain visibly full-size after destruction, but only the dense centre is
+      // a hull collider. A 38–72 m spherical collider around every aim point punished a correct
+      // centreline pass for dozens of consecutive frames after the weapon had already cleared it.
+      radius: Math.min(12, target.definition.radius * 0.3),
     })));
     this.contactCapacity = this.contacts.length;
   }
@@ -99,4 +102,3 @@ export class DeadSignalWorld implements MissionWorldRuntime {
     this.effects.dispose();
   }
 }
-

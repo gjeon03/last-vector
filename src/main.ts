@@ -1,5 +1,6 @@
 import './boot.css';
 import { Game } from './game/Game.ts';
+import { createActiveMissionRuntime } from './game/missions/MissionFactories.ts';
 import { UI } from './core/art.ts';
 import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
@@ -152,6 +153,7 @@ async function boot(): Promise<void> {
       progressStore,
       missionDefinition,
       missionResolution,
+      missionRuntimeFactory: createActiveMissionRuntime,
       ...(seed === undefined ? {} : { seed }),
     });
   } catch (error) {

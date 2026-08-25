@@ -428,7 +428,10 @@ await report.check({
     hullReasonless: game.includes('this.overlay.showFailure(this.elapsed);'),
     overlayThread: overlay.includes('this.screens.showFailure(elapsed, reason);'),
     stableData: screens.includes("body.dataset['failureReason'] = reason;"),
-    genericCopy: screens.includes('m.results.missionFailed'),
+    genericCopy: screens.includes("? 'insufficientNodes'")
+      && screens.includes("? 'coreWindowMissed'")
+      && screens.includes("? 'blastTimeout'")
+      && screens.includes(": 'missionFailed'"),
     hullCopy: screens.includes('m.results.hullBreach'),
   };
   verify(Object.values(facts).every(Boolean),

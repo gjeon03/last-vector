@@ -55,6 +55,7 @@ import {
   resolveAutopilotButton,
 } from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
+import { playDeadSignalWeaponFeedback } from './missions/DeadSignalAudio.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -1286,6 +1287,7 @@ export class Game {
           this.rewardEvents,
           this.weaponEvents,
         );
+        playDeadSignalWeaponFeedback(this.weaponEvents, this.audio);
         const terminal = missionFrame.terminal;
         if (terminal.status === 'failed') this.failObjective(terminal.reason);
         else if (terminal.status === 'succeeded') this.finish();

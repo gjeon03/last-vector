@@ -6,6 +6,10 @@ import { FlightPath } from '../../src/game/FlightPath.ts';
 import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
 import { DeadSignalObjective } from '../../src/game/missions/DeadSignalObjective.ts';
 import { DeadSignalState } from '../../src/game/missions/DeadSignalState.ts';
+import {
+  DEAD_SIGNAL_WEAPON,
+  DeadSignalWeapon,
+} from '../../src/game/missions/DeadSignalWeapon.ts';
 import { DeadSignalEffects } from '../../src/render/DeadSignalEffects.ts';
 import { DeadSignalFacility } from '../../src/render/DeadSignalFacility.ts';
 import { createLightingUniforms } from '../../src/render/lighting.ts';
@@ -84,6 +88,75 @@ await report.check({
       explosionCapacity: effects.explosionCapacity,
     },
   };
+});
+
+function weaponTrace(hz) {
+  const { path, state } = makeRuntime();
+  const effects = new DeadSignalEffects();
+  const weapon = new DeadSignalWeapon({ mission: DEAD_SIGNAL_MISSION, state, effects });
+  const target = state.targets.find((candidate) => candidate.id === 'shield-01');
+  verify(target, 'The first shield target is missing.');
+  const position = target.position.clone().addScaledVector(target.forward, -1_000);
+  for (let tick = 0; tick < hz; tick++) {
+    weapon.update({
+      dt: 1 / hz,
+      elapsed: (tick + 1) / hz,
+      position,
+      forward: target.forward,
+      fire: true,
+      targetables: [target],
+    });
+  }
+  const events = [];
+  const rewards = [];
+  const eventCount = weapon.drainEvents(events);
+  const rewardCount = weapon.drainRewardEvents(rewards);
+  const trace = {
+    hz,
+    pathLength: path.totalLength,
+    shotsFired: state.shotsFired,
+    shotsHit: state.shotsHit,
+    shieldDestroyed: state.shieldDestroyed,
+    eventCount,
+    events,
+    rewardCount,
+    rewards,
+  };
+  weapon.dispose();
+  effects.dispose();
+  return trace;
+}
+
+await report.check({
+  id: 'DEAD-SIGNAL.weapon-60-120',
+  name: 'The centreline pulse is fixed-rate, bounded and boost-independent',
+  assertion:
+    'One second of held fire produces the same pulse count at 60/120 Hz, destroys a 66 HP '
+    + 'shield in three hits, drains typed feedback, and awards one 25-point recharge.',
+}, () => {
+  const at60 = weaponTrace(60);
+  const at120 = weaponTrace(120);
+  for (const trace of [at60, at120]) {
+    verify(trace.shotsFired === 8 && trace.shotsHit === 3,
+      'The 8 Hz pulse cadence or destroyed-target rejection drifted.', trace);
+    verify(trace.shieldDestroyed === 1
+      && trace.rewardCount === 1
+      && trace.rewards[0]?.kind === 'boost-recharge'
+      && trace.rewards[0]?.amount === 25
+      && trace.rewards[0]?.sourceId === 'shield-01',
+    'Shield destruction did not emit exactly one typed recharge.', trace);
+    verify(trace.eventCount === trace.events.length
+      && trace.events.filter((event) => event.type === 'fire').length === 8
+      && trace.events.filter((event) => event.type === 'hit').length === 3
+      && trace.events.filter((event) => event.type === 'destroy').length === 1,
+    'The bounded fire/hit/destroy feedback stream is incomplete.', trace);
+  }
+  verify(DEAD_SIGNAL_WEAPON.fireIntervalSeconds === 0.125
+    && DEAD_SIGNAL_WEAPON.damagePerPulse === 22
+    && DEAD_SIGNAL_WEAPON.rangeMetres === 3_200
+    && DEAD_SIGNAL_WEAPON.targetableCapacity <= 16,
+  'The production weapon constants crossed the fixed strike contract.', DEAD_SIGNAL_WEAPON);
+  return { at60, at120, weapon: DEAD_SIGNAL_WEAPON };
 });
 
 function successfulTrace(hz) {

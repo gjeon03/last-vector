@@ -19,6 +19,8 @@
     "playtest:perf": "node scripts/playtest/perf-probe.mjs",
     "playtest:boost-vfx": "node scripts/playtest/boost-vfx-probe.mjs",
     "playtest:campaign": "node scripts/playtest/campaign.mjs",
+    "playtest:dead-signal-input": "node scripts/playtest/dead-signal-input.mjs",
+    "playtest:dead-signal": "node scripts/playtest/dead-signal-journey.mjs",
     "playtest:chapter-visual": "node scripts/playtest/chapter-visual.mjs",
     "playtest:chapter-perf": "node scripts/playtest/chapter-perf.mjs",
     "playtest:screenshots": "node scripts/playtest/screenshot-matrix.mjs",

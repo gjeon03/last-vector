@@ -2177,6 +2177,13 @@ export class Screens {
    */
   showFailure(elapsed: number, reason?: string): void {
     const m = this.translator.messages;
+    const reasonKey = reason === 'core-boundary-without-shields'
+      ? 'insufficientNodes'
+      : reason === 'core-window-missed'
+        ? 'coreWindowMissed'
+        : reason === 'blast-timeout'
+          ? 'blastTimeout'
+          : 'missionFailed';
     const body = this.nResultBody;
     body.textContent = '';
     body.dataset['state'] = 'failure';
@@ -2184,7 +2191,7 @@ export class Screens {
     else body.dataset['failureReason'] = reason;
     this.views.get('results')?.setAttribute(
       'aria-label',
-      reason === undefined ? m.a11y.hullBreach : m.a11y.missionFailed,
+      reason === undefined ? m.a11y.hullBreach : m.a11y[reasonKey],
     );
 
     const head = el('header', 'lv-res-head');
@@ -2192,7 +2199,7 @@ export class Screens {
     if (reason !== undefined) {
       head.append(
         englishText('div', 'lv-kicker', m.results.runComplete),
-        englishText('h2', 'lv-res-title', m.results.missionFailed),
+        englishText('h2', 'lv-res-title', m.results[reasonKey]),
       );
     } else {
       head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));

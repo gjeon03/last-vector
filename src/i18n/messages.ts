@@ -275,6 +275,9 @@ export interface ResultMessages {
   runAgain: string;
   returnToTitle: string;
   missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
   time: string;
   retry: string;
@@ -313,6 +316,9 @@ export interface A11yMessages {
   controls: string;
   runComplete: string;
   missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
 }
 
