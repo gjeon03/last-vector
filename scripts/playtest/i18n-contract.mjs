@@ -42,6 +42,10 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.cairn-drift.gateClearedLog', 2],
   ['campaign.routes.cairn-drift.gateMissedLog', 1],
   ['campaign.routes.cairn-drift.gateShearBlockedLog', 1],
+  ['campaign.routes.last-ascent.gateProgress', 1],
+  ['campaign.routes.last-ascent.gateClearedLog', 2],
+  ['campaign.routes.last-ascent.gateMissedLog', 1],
+  ['campaign.routes.last-ascent.gateShearBlockedLog', 1],
   ['campaign.routes.needle-grave.gateProgress', 1],
   ['campaign.routes.needle-grave.gateClearedLog', 2],
   ['campaign.routes.needle-grave.gateMissedLog', 1],
@@ -54,6 +58,10 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.ringfall.gateClearedLog', 2],
   ['campaign.routes.ringfall.gateMissedLog', 1],
   ['campaign.routes.ringfall.gateShearBlockedLog', 1],
+  ['campaign.routes.dead-signal.gateProgress', 1],
+  ['campaign.routes.dead-signal.gateClearedLog', 2],
+  ['campaign.routes.dead-signal.gateMissedLog', 1],
+  ['campaign.routes.dead-signal.gateShearBlockedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -282,6 +290,12 @@ await report.check(
       enCairnClear: en.campaign.routes['cairn-drift'].gateClearedLog(7, 12.34),
       koCairnMiss: ko.campaign.routes['cairn-drift'].gateMissedLog(7),
       enCairnMiss: en.campaign.routes['cairn-drift'].gateMissedLog(7),
+      koAscentProgress: ko.campaign.routes['last-ascent'].gateProgress(2),
+      enAscentProgress: en.campaign.routes['last-ascent'].gateProgress(2),
+      koAscentClear: ko.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
+      enAscentClear: en.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
+      koAscentRadio: ko.campaign.routes['last-ascent'].radio3,
+      enAscentRadio: en.campaign.routes['last-ascent'].radio3,
       koNeedleProgress: ko.campaign.routes['needle-grave'].gateProgress(2),
       enNeedleProgress: en.campaign.routes['needle-grave'].gateProgress(2),
       koNeedleClear: ko.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
@@ -300,6 +314,10 @@ await report.check(
       enRingProgress: en.campaign.routes.ringfall.gateProgress(2),
       koRingRadio: ko.campaign.routes.ringfall.radio3,
       enRingRadio: en.campaign.routes.ringfall.radio3,
+      koDeadSignalProgress: ko.campaign.routes['dead-signal'].gateProgress(2),
+      enDeadSignalProgress: en.campaign.routes['dead-signal'].gateProgress(2),
+      koDeadSignalRadio: ko.campaign.routes['dead-signal'].radio1,
+      enDeadSignalRadio: en.campaign.routes['dead-signal'].radio1,
     };
     const expectedCampaignRouteFixtures = {
       koCairnProgress: '2 CAIRNS REMAINING',
@@ -308,6 +326,12 @@ await report.check(
       enCairnClear: 'cairn 07 · 12.34s',
       koCairnMiss: 'cairn 07 missed',
       enCairnMiss: 'cairn 07 missed',
+      koAscentProgress: 'SAFE CORRIDOR 2 REMAINING',
+      enAscentProgress: '2 SAFE CORRIDORS REMAINING',
+      koAscentClear: 'safe corridor 03 · 66.93s',
+      enAscentClear: 'safe corridor 03 · 66.93s',
+      koAscentRadio: '두 번째 잔해선 통과. 충격파가 대기권을 넘었다. 거리를 계속 벌려.',
+      enAscentRadio: 'Second line clear. The front has crossed the atmosphere; keep building separation.',
       koNeedleProgress: '2 NEEDLES REMAINING',
       enNeedleProgress: '2 NEEDLES REMAINING',
       koNeedleClear: 'needle 04 · 9.87s',
@@ -326,6 +350,10 @@ await report.check(
       enRingProgress: '2 MARKERS REMAINING',
       koRingRadio: 'ORISON이 응답한다. 배열을 깨워라.',
       enRingRadio: 'ORISON is answering. Wake the array.',
+      koDeadSignalProgress: '2 SHIELD NODES REQUIRED',
+      enDeadSignalProgress: '2 SHIELD NODES REQUIRED',
+      koDeadSignalRadio: 'Kestrel, 저것이 조준 배열이다. 차폐선을 끊고 신호를 제거하라.',
+      enDeadSignalRadio: 'Kestrel, that is the targeting array. Break its shield line and kill the signal.',
     };
     verify(JSON.stringify(campaignRouteFixtures) === JSON.stringify(expectedCampaignRouteFixtures),
       'Route-specific campaign functions or radio copy differ from the canonical fixtures.', {
@@ -344,17 +372,24 @@ await report.check(
 await report.check(
   {
     id: 'I18N.chapter-stage-rail',
-    name: 'Chapter 01 uses one compact semantic stage rail with hybrid-language copy',
+    name: 'The active campaign presents CAIRN, LAST ASCENT, then DEAD SIGNAL',
     assertion:
-      'Only the three active stage IDs render; stable selectors, roving horizontal semantics, '
-      + 'nonactivating locks, result actions, and Korean narrative/English chrome stay explicit.',
+      'Three active missions share one catalog rail, dormant route copy remains recognized, and '
+      + 'Korean narrative/English chrome remain explicit.',
   },
   async () => {
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
-    const stylesSource = await readFile(new URL('../../src/ui/styles.css', import.meta.url), 'utf8');
-    const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'];
+    const missionsSource = await readFile(new URL('../../src/core/Missions.ts', import.meta.url), 'utf8');
+    const recognizedIds = [
+      'cairn-drift',
+      'last-ascent',
+      'needle-grave',
+      'wreckline',
+      'ringfall',
+      'dead-signal',
+    ];
     verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
       'Korean campaign catalog does not use the canonical recognized stage IDs.', {
         actual: Object.keys(ko.campaign.routes),
@@ -367,44 +402,30 @@ await report.check(
     const railStart = screensSource.indexOf('private buildStageRail()');
     const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
     const railSource = screensSource.slice(railStart, railEnd);
-    verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the compact stage rail.');
-    verify(railSource.includes('CHAPTER_STAGE_IDS') && !railSource.includes('needle-grave'),
-      'The player-facing rail is not driven by the active three-stage order.', { railSource });
-    for (const fixture of [
-      "dataset['stageId']",
-      "dataset['stageState']",
-      "dataset['stageSelected']",
-      "setAttribute('role', 'radiogroup')",
-      "setAttribute('role', 'radio')",
-      "setAttribute('aria-disabled'",
-    ]) {
-      verify(screensSource.includes(fixture), `Screens omits stage semantic fixture: ${fixture}`);
-    }
-    for (const action of ['next-stage', 'run-again', 'stage-select']) {
-      verify(screensSource.includes(`'${action}'`), `Results omit stable action: ${action}`);
-    }
+    verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the chapter heading.');
+    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift',\s*'last-ascent',\s*'dead-signal',?\s*\]/u.test(missionsSource),
+      'The player-facing order is not CAIRN, LAST ASCENT, then DEAD SIGNAL.', { missionsSource });
+    verify(railSource.includes('CHAPTER_STAGE_IDS'),
+      'The title rail is not driven by the active mission catalog.', { railSource });
+    verify(/if \(Number\(CHAPTER_STAGE_IDS\.length\) === 1\) return section;/u.test(railSource),
+      'The title does not suppress its selector for a one-node catalog.', { railSource });
+    verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
+      'Result mission selection is not guarded behind a multi-chapter catalog.');
+    verify(screensSource.includes("'run-again'")
+      && screensSource.includes("'stage-select'")
+      && screensSource.includes("'return'"),
+    'The campaign result path omits RUN AGAIN, CHAPTER SELECT, or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
-      'Stage mastery treats a non-S recorded rank as complete.');
-    verify(/activeStage\s*&&\s*\(key === 'ArrowLeft'/u.test(screensSource)
-      && /activeStage\s*&&\s*\(key === 'ArrowRight'/u.test(screensSource),
-    'Stage navigation does not follow the horizontal Left/Right axis.');
-    verify(/if \(activeStage\) \{[\s\S]{0,420}activeStage\.click\(\)/u.test(screensSource),
-      'Enter/Space does not terminate in stage selection.');
-    verify(/route\.state === 'locked'[\s\S]{0,180}return/u.test(railSource),
-      'Locked stages are not explicitly nonactivating.');
-    verify(/\.lv-stage-rail\s*\{[\s\S]{0,180}repeat\(3,/u.test(stylesSource),
-      'The stage rail is not a three-column single row.');
-    verify(/\.lv-stage-node\s*\{[\s\S]{0,180}min-height:\s*(?:[3-9]\d|\d{3,})px/u.test(stylesSource),
-      'Stage node targets do not retain at least 24 CSS pixels.');
-    verify(!/@media \(max-width: 520px\)[\s\S]{0,1200}\.lv-stage-rail\s*\{[\s\S]{0,100}grid-template-columns:\s*1fr/u.test(stylesSource),
-      'Compact CSS stacks the stage rail on mobile.');
+      'Mission mastery treats a non-S recorded rank as complete.');
 
     const hybridChrome = {
-      chapter: 'CHAPTER 01',
-      chapterName: 'THE CAIRN FRONTIER',
-      stageSelection: 'STAGE SELECT',
-      nextStage: 'NEXT STAGE',
-      stageSelect: 'STAGE SELECT',
+      chapter: 'FLIGHT CAMPAIGN',
+      chapterName: 'THE FALL OF ACHRA',
+      stageSelection: 'CHAPTER SELECT',
+      stageObjectives: 'MISSION MASTERY',
+      stage: 'MISSION',
+      nextStage: 'NEXT CHAPTER',
+      stageSelect: 'CHAPTER SELECT',
     };
     for (const [key, expected] of Object.entries(hybridChrome)) {
       verify(ko.campaign[key] === expected && en.campaign[key] === expected,
@@ -414,7 +435,7 @@ await report.check(
           en: en.campaign[key],
         });
     }
-    for (const id of ['wreckline', 'ringfall']) {
+    for (const id of ['last-ascent', 'wreckline', 'ringfall', 'dead-signal']) {
       const korean = ko.campaign.routes[id];
       const english = en.campaign.routes[id];
       verify(/[가-힣]/u.test(korean.tagline + korean.briefingLine1 + korean.radio1),
@@ -426,10 +447,23 @@ await report.check(
     }
     verify(/[가-힣]/u.test(ko.a11y.stageSelection + ko.a11y.stageLocked + ko.a11y.stageSelected),
       'Korean stage accessibility copy is not Korean.');
+    const lockPrerequisites = {
+      enLastAscent: en.campaign.routes['last-ascent'].lockReason,
+      koLastAscent: ko.campaign.routes['last-ascent'].lockReason,
+      enDeadSignal: en.campaign.routes['dead-signal'].lockReason,
+      koDeadSignal: ko.campaign.routes['dead-signal'].lockReason,
+    };
+    verify(lockPrerequisites.enLastAscent.includes('CAIRN DRIFT')
+      && lockPrerequisites.koLastAscent.includes('CAIRN DRIFT')
+      && lockPrerequisites.enDeadSignal.includes('LAST ASCENT')
+      && lockPrerequisites.koDeadSignal.includes('LAST ASCENT'),
+    'A campaign lock names the wrong prerequisite mission.', lockPrerequisites);
 
     return {
       recognizedIds,
-      stableActions: ['next-stage', 'run-again', 'stage-select'],
+      activeMissionIds: ['cairn-drift', 'last-ascent', 'dead-signal'],
+      stableCampaignActions: ['run-again', 'stage-select', 'return'],
+      lockPrerequisites,
       hybridChrome,
     };
   },
@@ -595,6 +629,7 @@ await report.check(
       'results.newRecord': 'NEW BEST',
       'results.runAgain': 'RUN AGAIN',
       'results.returnToTitle': 'RETURN',
+      'results.missionFailed': 'MISSION FAILED',
       'results.hullBreach': 'HULL BREACH',
       'results.retry': 'RETRY',
       'cockpit.attitude': 'ATTITUDE',
@@ -613,7 +648,7 @@ await report.check(
       'screens.briefingLine3': '순서대로 통과하라. 좁은 구간에서는 암석이 바짝 파고들며, 제동만이 선회 공간을 만든다.',
       'screens.pauseDetail': '드리프트는 계속된다. 항로는 기다려 주지 않는다.',
       'controls.mouseSteer': '조향 — 자동 복귀 가상 스틱',
-      'controls.cameraToggle': '추적 / 1인칭 조종석 전환',
+      'controls.cameraToggle': '추적 / 조종석 / 원거리 추적 순환',
       'controls.pointerLockNote': '출격하면 마우스가 고정됩니다. ESC를 누르면 마우스가 풀리고 비행이 일시정지됩니다.',
       'settings.defaultCameraHint': '비행 중 C를 눌러 시점을 전환합니다.',
       'settings.renderScaleHint': '내부 해상도입니다. 품질보다 먼저 낮추세요.',
@@ -815,15 +850,15 @@ await report.check(
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const boostFixtures = {
-      koUsable: ko.hud.boostUsable(92 / 29),
-      enUsable: en.hud.boostUsable(92 / 29),
+      koUsable: ko.hud.boostUsable(92 / 20),
+      enUsable: en.hud.boostUsable(92 / 20),
       koRecharging: ko.hud.boostRecharging(45),
       enRecharging: en.hud.boostRecharging(45),
     };
-    verify(boostFixtures.koUsable === '부스터 3.2초 사용 가능',
-      'Korean boost usable copy differs from the exact legacy fixture.', boostFixtures);
-    verify(boostFixtures.enUsable === 'Boost reserve, 3.2 seconds usable',
-      'English boost usable copy differs from the exact legacy fixture.', boostFixtures);
+    verify(boostFixtures.koUsable === '부스터 4.6초 사용 가능',
+      'Korean boost usable copy differs from the exact fixture.', boostFixtures);
+    verify(boostFixtures.enUsable === 'Boost reserve, 4.6 seconds usable',
+      'English boost usable copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.koRecharging === '부스터 잠김 · 45%까지 충전 중',
       'Korean boost recharging copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.enRecharging === 'Boost reserve locked; recharging to 45 percent',

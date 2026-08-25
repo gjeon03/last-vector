@@ -69,9 +69,11 @@ export interface ScreenMessages {
  */
 export type CampaignMessageCourseId =
   | 'cairn-drift'
+  | 'last-ascent'
   | 'needle-grave'
   | 'wreckline'
-  | 'ringfall';
+  | 'ringfall'
+  | 'dead-signal';
 
 export interface CampaignRouteMessages {
   /** Compact catalog label; canonical telemetry remains in the course definition. */
@@ -100,6 +102,8 @@ export interface CampaignRouteMessages {
     highestRank: string;
     cleanClear: string;
     precision: string;
+    allNodes?: string;
+    accuracy?: string;
   };
 }
 
@@ -134,6 +138,7 @@ export interface ControlMessages {
   throttle: string;
   roll: string;
   boost: string;
+  fire: string;
   brake: string;
   strafeHorizontal: string;
   strafeVertical: string;
@@ -174,6 +179,7 @@ export interface SettingMessages {
   raw: string;
   chase: string;
   cockpit: string;
+  farChase: string;
   low: string;
   medium: string;
   high: string;
@@ -193,6 +199,12 @@ export interface HudMessages {
   elapsed: string;
   best: string;
   nextMarker: string;
+  nextTarget: string;
+  shieldNodes: string;
+  arrayCore: string;
+  extracting: string;
+  blast: string;
+  accuracy: string;
   departure: string;
   charging: string;
   locked: string;
@@ -206,6 +218,15 @@ export interface HudMessages {
   meterPercent: (percent: number) => string;
   boostUsable: (seconds: number) => string;
   boostRecharging: (percent: number) => string;
+  shockfront: string;
+  separation: string;
+  safeCorridors: string;
+  ascentAct: string;
+  debrisAct: string;
+  escapeAct: string;
+  shockfrontClosing: string;
+  shockfrontCritical: string;
+  escapeStatus: (separationMetres: number, checkpoint: number, total: number) => string;
 }
 
 export interface EventMessages {
@@ -216,8 +237,10 @@ export interface EventMessages {
   keyboardFlightAvailable: string;
   cockpitView: string;
   chaseView: string;
+  farChaseView: string;
   pilotCameraActive: string;
   exteriorCameraActive: string;
+  farExteriorCameraActive: string;
   engage: string;
   hullImpact: string;
   boostDepletedTitle: string;
@@ -253,6 +276,9 @@ export interface ResultMessages {
   marker: string;
   topSpeed: string;
   widestMarker: string;
+  shieldNodes: string;
+  accuracy: string;
+  core: string;
   hull: string;
   clean: string;
   damaged: string;
@@ -261,6 +287,10 @@ export interface ResultMessages {
   versusBest: string;
   runAgain: string;
   returnToTitle: string;
+  missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
   time: string;
   retry: string;
@@ -269,6 +299,12 @@ export interface ResultMessages {
   terminus: string;
   splitDelta: (delta: string) => string;
   bestComparison: (delta: string, best: string) => string;
+  extractionConfirmed: string;
+  safeCorridors: string;
+  shockfrontMargin: string;
+  secondsUnit: string;
+  shockfrontOverrun: string;
+  shockfrontOverrunDetail: string;
 }
 
 export interface CockpitMessages {
@@ -298,6 +334,10 @@ export interface A11yMessages {
   settings: string;
   controls: string;
   runComplete: string;
+  missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
 }
 

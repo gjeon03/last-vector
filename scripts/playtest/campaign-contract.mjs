@@ -1,30 +1,56 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import * as THREE from 'three';
 import {
+  CAIRN_DRIFT,
   CHAPTER_ONE_STAGE_ORDER,
   KNOWN_COURSE_ORDER,
-  PRECISION_MAX_OFFSET,
-  courseRecordId,
-  getCourseDefinition,
-  getNextCourse,
   isCourseAvailable,
 } from '../../src/core/Courses.ts';
-import { en } from '../../src/i18n/en.ts';
-import { ko } from '../../src/i18n/ko.ts';
-import { formatPrecisionOffsetPercent } from '../../src/ui/precision.ts';
-import { buildCourseUrl, resolveCourseSelection } from '../../src/core/CourseSelection.ts';
-import { PROGRESS_KEY, ProgressStore, isCourseUnlocked } from '../../src/core/Progress.ts';
-import { hasBestRunPrefix } from '../../src/core/Settings.ts';
+import {
+  ACTIVE_MISSION_ORDER,
+  CAIRN_MISSION,
+  DORMANT_COURSE_ORDER,
+  LAST_ASCENT_MISSION,
+  getNextMission,
+  missionRecordId,
+} from '../../src/core/Missions.ts';
+import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
+import {
+  buildMissionUrl,
+  resolveMissionSelection,
+} from '../../src/core/MissionSelection.ts';
+import {
+  LEGACY_PROGRESS_KEY,
+  PROGRESS_KEY,
+  ProgressStore,
+} from '../../src/core/Progress.ts';
+import { Course } from '../../src/game/Course.ts';
+import { FlightPath } from '../../src/game/FlightPath.ts';
+import { GateRaceObjective } from '../../src/game/GateRaceObjective.ts';
+import {
+  buildCampaignViewModel,
+  consumeMissionFrameEvents,
+  resolveAutopilotButton,
+} from '../../src/game/GameContracts.ts';
+import {
+  createGameMissionRuntime,
+  MissionRuntime,
+} from '../../src/game/MissionRuntime.ts';
+import { createLightingUniforms } from '../../src/render/lighting.ts';
 import { Report, parseOptions, verify } from './runtime.mjs';
+
+const PATH_SIGNATURE = 'cf64cc23e6accbd750712bb2a2140d5a0ac3dc55dbdce4851166846f24f7f605';
+const GATE_SIGNATURE = '22ff40ffc12de5522e8cf83f6c8f0407201d2462d9b5e064d628c5c511c7cefc';
 
 class MemoryStorage {
   constructor(initial = {}, failures = {}) {
     this.values = new Map(Object.entries(initial));
-    this.failGet = failures.failGet === true;
     this.failSet = failures.failSet === true;
     this.writes = 0;
   }
 
   getItem(key) {
-    if (this.failGet) throw new Error('read denied');
     return this.values.get(key) ?? null;
   }
 
@@ -35,566 +61,1029 @@ class MemoryStorage {
   }
 }
 
-function progress({ version = 1, selectedCourse = 'cairn-drift', courses = {} } = {}) {
-  return { version, selectedCourse, courses };
-}
+const missionFacts = (patch = {}) => ({
+  cleared: false,
+  clearedAt: null,
+  highestRank: null,
+  cleanClear: false,
+  mastery: {},
+  ...patch,
+});
 
-function courseProgress(patch = {}) {
-  return {
-    cleared: false,
-    clearedAt: null,
-    highestRank: null,
-    cleanClear: false,
-    precisionClear: false,
-    ...patch,
+const dormantFacts = (patch = {}) => ({
+  cleared: false,
+  clearedAt: null,
+  highestRank: null,
+  cleanClear: false,
+  precisionClear: false,
+  ...patch,
+});
+
+const result = (patch = {}) => ({
+  kind: 'gate-race',
+  missionId: 'cairn-drift',
+  rulesetVersion: 2,
+  totalTime: 90,
+  hullRemaining: 1,
+  objectiveSummary: '9 / 9',
+  splits: [],
+  bestTime: null,
+  bestSplits: [],
+  isNewBest: false,
+  gatesCleared: 9,
+  gatesTotal: 9,
+  topSpeed: 1000,
+  cleanRun: true,
+  rank: 'A',
+  destinationName: 'VESPER TERMINUS',
+  maxGateOffset: 0.2,
+  newlyUnlockedMissionId: null,
+  ...patch,
+});
+
+const escapeResult = (patch = {}) => ({
+  kind: 'escape',
+  missionId: 'last-ascent',
+  rulesetVersion: 1,
+  totalTime: 103,
+  hullRemaining: 1,
+  objectiveSummary: '3 / 3 SAFE',
+  topSpeed: 898,
+  cleanRun: true,
+  rank: 'S',
+  destinationName: 'ORBITAL EXTRACTION',
+  newlyUnlockedMissionId: null,
+  checkpointsCleared: 3,
+  checkpointsTotal: 3,
+  secondsAhead: 5,
+  ...patch,
+});
+
+const strikeResult = (patch = {}) => ({
+  kind: 'strike',
+  missionId: 'dead-signal',
+  rulesetVersion: DEAD_SIGNAL_MISSION.rulesetVersion,
+  totalTime: 112,
+  bestTime: null,
+  isNewBest: true,
+  hullRemaining: 1,
+  objectiveSummary: '6 / 6 + CORE',
+  targetsDestroyed: 6,
+  targetsRequired: 3,
+  targetsTotal: 6,
+  shotsFired: 10,
+  shotsHit: 8,
+  coreDestroyed: true,
+  topSpeed: 950,
+  cleanRun: true,
+  rank: 'A',
+  destinationName: 'DEAD SIGNAL EXTRACTION',
+  newlyUnlockedMissionId: null,
+  ...patch,
+});
+
+const round = (value) => Number(value.toFixed(6));
+const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+function courseSignatures(course) {
+  const path = {
+    start: [...course.startPosition].map(round),
+    startQ: [...course.startQuaternion].map(round),
+    terminus: [...course.terminusPosition].map(round),
+    normal: [...course.terminusNormal].map(round),
+    total: round(course.totalLength),
+    spine: course.spine.map((point) => [...point].map(round)),
+    channel: course.clearChannel.map((segment) => ({
+      a: [...segment.a].map(round),
+      b: [...segment.b].map(round),
+      r: round(segment.radius),
+    })),
   };
-}
-
-function runResult(patch = {}) {
-  return {
-    courseId: 'cairn-drift',
-    totalTime: 80,
-    splits: [],
-    bestTime: null,
-    bestSplits: [],
-    isNewBest: false,
-    gatesCleared: 9,
-    gatesTotal: 9,
-    topSpeed: 900,
-    cleanRun: false,
-    rank: 'D',
-    destinationName: 'VESPER TERMINUS',
-    ...patch,
-  };
-}
-
-function authoredCourseLength(definition) {
-  return definition.geometry.legs.reduce(
-    (sum, leg) => sum + leg.length * definition.geometry.gateSpacing,
-    definition.geometry.startOffsetMetres
-      + definition.geometry.runOutSteps * definition.geometry.runOutStepMetres
-      + definition.geometry.terminusStandoff,
-  );
-}
-
-function requiredRadioWindow(line, englishText) {
-  const calloutDelay = line.afterGate === 0 ? 1.6 : 1.15;
-  const subtitleTtl = 3.2 + Math.min(englishText.length, 120) * 0.035;
-  return calloutDelay + subtitleTtl + 2;
+  const gates = course.gates.map((gate) => ({
+    p: [...gate.position].map(round),
+    n: [...gate.normal].map(round),
+    r: round(gate.radius),
+  }));
+  return { path: hash(path), gates: hash(gates) };
 }
 
 const options = parseOptions('campaign-contract', process.argv.slice(2));
 const report = new Report('campaign-contract', options);
 
 await report.check({
-  id: 'CAMPAIGN.catalog-contract',
-  name: 'Chapter 01 owns a three-stage active order beside the retained known catalog',
-  assertion: 'CAIRN, WRECKLINE and RINGFALL are the only active linear stages; NEEDLE remains recognized but inactive, and every active stage has a distinct stable PB identity and valid radio authoring.',
+  id: 'MISSION.catalog-path',
+  name: 'The campaign is CAIRN, LAST ASCENT, then DEAD SIGNAL while CAIRN stays unchanged',
+  assertion: 'The three-mission catalog is ordered, dormant courses stay quarantined, and PB identities partition by ruleset.',
 }, () => {
-  verify(
-    JSON.stringify(KNOWN_COURSE_ORDER)
-      === JSON.stringify(['cairn-drift', 'needle-grave', 'wreckline', 'ringfall']),
-    'Recognized course order changed.', { order: KNOWN_COURSE_ORDER },
-  );
-  verify(
-    JSON.stringify(CHAPTER_ONE_STAGE_ORDER)
-      === JSON.stringify(['cairn-drift', 'wreckline', 'ringfall']),
-    'Chapter 01 stage order changed.', { order: CHAPTER_ONE_STAGE_ORDER },
-  );
-  verify(CHAPTER_ONE_STAGE_ORDER.every(isCourseAvailable) && !isCourseAvailable('needle-grave'),
-    'Active availability does not match the Chapter 01 order.');
-  const cairn = getCourseDefinition('cairn-drift');
-  const needle = getCourseDefinition('needle-grave');
-  const wreckline = getCourseDefinition('wreckline');
-  const ringfall = getCourseDefinition('ringfall');
-  const authoredNeedleLength = authoredCourseLength(needle);
-  verify(cairn.geometry.legs.length === 9, 'CAIRN gate count changed.', { gateCount: cairn.geometry.legs.length });
-  verify(cairn.defaultSeed === 3139019938,
-    'CAIRN default seed changed.', { defaultSeed: cairn.defaultSeed });
-  verify(courseRecordId(cairn, 1337) === 'cairn-drift-1337', 'CAIRN PB identity changed.');
-  verify(courseRecordId(cairn, cairn.defaultSeed) === 'cairn-drift-3139019938',
-    'CAIRN default-seed PB identity changed.');
-  verify(getNextCourse('cairn-drift') === 'wreckline'
-    && getNextCourse('wreckline') === 'ringfall'
-    && getNextCourse('ringfall') === null
-    && getNextCourse('needle-grave') === null,
-  'Next-stage lookup does not follow the active linear chapter.', {
-    cairn: getNextCourse('cairn-drift'),
-    wreckline: getNextCourse('wreckline'),
-    ringfall: getNextCourse('ringfall'),
-    needle: getNextCourse('needle-grave'),
-  });
-  verify(wreckline.geometry.legs.length === 8, 'WRECKLINE must contain eight gates.');
-  verify(ringfall.geometry.legs.length === 9, 'RINGFALL must contain nine gates.');
-  verify(wreckline.world.landmarkKind === 'wreckline' && ringfall.world.landmarkKind === 'ringfall',
-    'New stages lost their definition-owned landmark identity.');
-  const pbIds = CHAPTER_ONE_STAGE_ORDER.map((id) => courseRecordId(getCourseDefinition(id), 1337));
-  verify(new Set(pbIds).size === 3
-    && JSON.stringify(pbIds) === JSON.stringify([
-      'cairn-drift-1337',
-      'wreckline-1337',
-      'ringfall-1337',
-    ]),
-  'Active stages do not have independent stable PB prefixes.', { pbIds });
+  verify(JSON.stringify(ACTIVE_MISSION_ORDER)
+    === JSON.stringify(['cairn-drift', 'last-ascent', 'dead-signal']),
+  'The active campaign is not ordered CAIRN, LAST ASCENT, then DEAD SIGNAL.', ACTIVE_MISSION_ORDER);
+  verify(JSON.stringify(CHAPTER_ONE_STAGE_ORDER) === JSON.stringify(['cairn-drift']),
+    'The legacy availability projection did not collapse with the active campaign.');
+  verify(JSON.stringify(KNOWN_COURSE_ORDER)
+    === JSON.stringify(['cairn-drift', 'needle-grave', 'wreckline', 'ringfall']),
+  'Dormant recognized definitions were lost.', KNOWN_COURSE_ORDER);
+  verify(JSON.stringify(DORMANT_COURSE_ORDER)
+    === JSON.stringify(['needle-grave', 'wreckline', 'ringfall']),
+  'Dormant recognized definitions are not partitioned from missions.', DORMANT_COURSE_ORDER);
+  verify(isCourseAvailable('cairn-drift')
+    && !isCourseAvailable('needle-grave')
+    && !isCourseAvailable('wreckline')
+    && !isCourseAvailable('ringfall'),
+  'A retired course remains release-active.');
+  verify(CAIRN_MISSION.chapter === 1
+    && CAIRN_MISSION.objective.kind === 'gate-race'
+    && CAIRN_MISSION.world.sourceCourse === CAIRN_DRIFT
+    && CAIRN_MISSION.capabilities.length === 0
+    && getNextMission('cairn-drift') === 'last-ascent',
+  'The Chapter 01 mission definition crossed a foundation boundary.', CAIRN_MISSION);
+  verify(LAST_ASCENT_MISSION.chapter === 2
+    && LAST_ASCENT_MISSION.objective.kind === 'escape'
+    && LAST_ASCENT_MISSION.capabilities.length === 0
+    && LAST_ASCENT_MISSION.mastery.includes('precision')
+    && getNextMission('last-ascent') === 'dead-signal',
+  'The Chapter 02 mission is not a bounded escape definition.', LAST_ASCENT_MISSION);
+  verify(DEAD_SIGNAL_MISSION.chapter === 3
+    && DEAD_SIGNAL_MISSION.objective.kind === 'strike'
+    && DEAD_SIGNAL_MISSION.capabilities.includes('fire')
+    && DEAD_SIGNAL_MISSION.objective.targets.length === 8
+    && getNextMission('dead-signal') === null,
+  'The DEAD SIGNAL catalog entry is incomplete.', DEAD_SIGNAL_MISSION);
+  verify(missionRecordId(CAIRN_MISSION, 1337) === 'cairn-drift-r2-1337',
+    'Ruleset 2 did not partition the current PB identity.');
+  verify(missionRecordId(LAST_ASCENT_MISSION, 1337) === 'last-ascent-r1-1337',
+    'LAST ASCENT did not receive an independent ruleset PB identity.');
+  verify(missionRecordId(DEAD_SIGNAL_MISSION, 1337)
+    === `dead-signal-r${DEAD_SIGNAL_MISSION.rulesetVersion}-1337`,
+  'DEAD SIGNAL did not receive an independent ruleset PB identity.');
 
-  const radio = {};
-  for (const definition of [wreckline, ringfall]) {
-    verify(definition.radio.length >= 2 && definition.radio.length <= 3,
-      `${definition.id} must author two or three radio lines.`, definition.radio);
-    let previousGate = -1;
-    radio[definition.id] = definition.radio.map((line) => {
-      const englishText = en.campaign.routes[definition.id]?.[line.messageKey];
-      const koreanText = ko.campaign.routes[definition.id]?.[line.messageKey];
-      verify(typeof englishText === 'string' && englishText.trim().length > 0
-        && typeof koreanText === 'string' && koreanText.trim().length > 0,
-      `${definition.id}.${line.messageKey} is missing bilingual copy.`);
-      verify(line.afterGate > previousGate && line.afterGate < definition.geometry.legs.length,
-        `${definition.id} radio triggers are unordered or outside the course.`, definition.radio);
-      const requiredWindow = requiredRadioWindow(line, englishText);
-      verify(line.safeWindowSeconds >= requiredWindow,
-        `${definition.id}.${line.messageKey} cannot clear its callout and subtitle safety margin.`, {
-          safeWindowSeconds: line.safeWindowSeconds,
-          requiredWindow,
-          englishLength: englishText.length,
-        });
-      previousGate = line.afterGate;
-      return { ...line, requiredWindow };
-    });
-  }
-  verify(needle.geometry.legs.length === 6, 'NEEDLE must contain six gates.');
-  verify(JSON.stringify(needle.shear?.gates) === JSON.stringify([2, 3, 4, 5]),
-    'NEEDLE SHEAR indices changed.', { gates: needle.shear?.gates ?? null });
-  verify(needle.text.canonicalDestination === 'NADIR RELAY', 'NEEDLE destination identity changed.');
-  verify(needle.shear.hubRadiusFraction < PRECISION_MAX_OFFSET
-    && PRECISION_MAX_OFFSET < 1 && needle.shear.halfWidthRadians < Math.PI,
-  'NEEDLE has no authored open band inside the shared precision target.', {
-    hubRadiusFraction: needle.shear.hubRadiusFraction,
-    precisionMaxOffset: PRECISION_MAX_OFFSET,
-    halfWidthRadians: needle.shear.halfWidthRadians,
-  });
-  verify(
-    formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET - 0.0001) === '39.9%'
-      && formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET) === '40.0%'
-      && formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET + 0.0001) === '40.1%',
-    'Precision result formatting is ambiguous at the strict mastery boundary.',
-    {
-      pass: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET - 0.0001),
-      boundary: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET),
-      fail: formatPrecisionOffsetPercent(PRECISION_MAX_OFFSET + 0.0001),
-    },
+  const course = new Course(
+    CAIRN_DRIFT,
+    CAIRN_DRIFT.defaultSeed,
+    createLightingUniforms(new THREE.Vector3(...CAIRN_DRIFT.world.sunDirection)),
   );
-  verify(authoredNeedleLength >= 24_000 && authoredNeedleLength <= 30_000,
-    'NEEDLE authored distances are outside the safe construction envelope.', { authoredNeedleLength });
+  const signatures = courseSignatures(course);
+  course.dispose();
+  verify(signatures.path === PATH_SIGNATURE && signatures.gates === GATE_SIGNATURE,
+    'FlightPath extraction changed the locked CAIRN route or gate signature.', signatures);
   return {
-    knownOrder: KNOWN_COURSE_ORDER,
-    activeOrder: CHAPTER_ONE_STAGE_ORDER,
-    cairn: { gates: cairn.geometry.legs.length, recordId: courseRecordId(cairn, 1337) },
-    needle: {
-      gates: needle.geometry.legs.length,
-      shearGates: needle.shear?.gates,
-      authoredNeedleLength,
-      destination: needle.text.canonicalDestination,
-    },
-    wreckline: { gates: wreckline.geometry.legs.length, authoredLength: authoredCourseLength(wreckline) },
-    ringfall: { gates: ringfall.geometry.legs.length, authoredLength: authoredCourseLength(ringfall) },
-    radio,
+    active: ACTIVE_MISSION_ORDER,
+    dormant: DORMANT_COURSE_ORDER,
+    recordId: missionRecordId(CAIRN_MISSION, 1337),
+    signatures,
   };
 });
 
 await report.check({
-  id: 'CAMPAIGN.route-resolution',
-  name: 'URL and saved selection authorize only active sequentially unlocked stages',
-  assertion: 'Unknown, inactive and locked URLs fail closed to CAIRN; valid active URLs win over saved selection without bypassing the ordered clear facts.',
+  id: 'MISSION.url-resolution',
+  name: 'Canonical mission URLs enforce sequential clear-only campaign access and fail closed',
+  assertion: 'mission takes precedence, both locks require every prior clear, and canonical URLs delete course.',
 }, () => {
-  const locked = progress({ selectedCourse: 'cairn-drift' });
-  const wrecklineUnlocked = progress({
-    selectedCourse: 'wreckline',
-    courses: { 'cairn-drift': courseProgress({ cleared: true }) },
-  });
-  const ringfallUnlocked = progress({
-    selectedCourse: 'ringfall',
-    courses: {
-      'cairn-drift': courseProgress({ cleared: true }),
-      wreckline: courseProgress({ cleared: true }),
+  const progress = { version: 2, selectedMission: 'cairn-drift', missions: {}, dormantCourses: {} };
+  const afterCairn = {
+    ...progress,
+    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
+  };
+  const afterAscent = {
+    ...progress,
+    missions: {
+      'cairn-drift': missionFacts({ cleared: true }),
+      'last-ascent': missionFacts({ cleared: true }),
     },
-  });
-  const inactive = progress({
-    selectedCourse: 'needle-grave',
-    courses: {
-      'cairn-drift': courseProgress({ cleared: true }),
-      'needle-grave': courseProgress({ cleared: true }),
-    },
-  });
+  };
   const cases = {
-    unknown: resolveCourseSelection('not-a-route', ringfallUnlocked),
-    lockedWreckline: resolveCourseSelection('wreckline', locked),
-    lockedRingfall: resolveCourseSelection('ringfall', wrecklineUnlocked),
-    inactiveNeedle: resolveCourseSelection('needle-grave', inactive),
-    wreckline: resolveCourseSelection('wreckline', wrecklineUnlocked),
-    ringfall: resolveCourseSelection('ringfall', ringfallUnlocked),
-    persistedInactive: resolveCourseSelection(null, inactive),
-    persistedRingfall: resolveCourseSelection(null, ringfallUnlocked),
+    canonical: resolveMissionSelection({ mission: 'cairn-drift', legacyCourse: null }, progress),
+    lockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, progress),
+    unlockedAscent: resolveMissionSelection(
+      { mission: 'last-ascent', legacyCourse: null },
+      afterCairn,
+    ),
+    lockedDeadSignal: resolveMissionSelection(
+      { mission: 'dead-signal', legacyCourse: null },
+      afterCairn,
+    ),
+    unlockedDeadSignal: resolveMissionSelection(
+      { mission: 'dead-signal', legacyCourse: null },
+      afterAscent,
+    ),
+    alias: resolveMissionSelection({ mission: null, legacyCourse: 'cairn-drift' }, progress),
+    retired: resolveMissionSelection({ mission: null, legacyCourse: 'wreckline' }, progress),
+    unknown: resolveMissionSelection({ mission: 'unknown-mission', legacyCourse: 'cairn-drift' }, progress),
   };
-  verify(cases.unknown.courseId === 'cairn-drift' && cases.unknown.source === 'invalid-url',
-    'Unknown URL did not fail closed.', cases);
-  verify(cases.lockedWreckline.courseId === 'cairn-drift'
-    && cases.lockedWreckline.source === 'locked-url'
-    && cases.lockedRingfall.courseId === 'cairn-drift'
-    && cases.lockedRingfall.source === 'locked-url',
-  'Locked active URL bypassed sequential progression.', cases);
-  verify(cases.inactiveNeedle.courseId === 'cairn-drift'
-    && cases.inactiveNeedle.source === 'locked-url'
-    && cases.inactiveNeedle.diagnostic?.includes('disabled'),
-  'Explicit inactive NEEDLE URL escaped the active catalog.', cases);
-  verify(cases.wreckline.courseId === 'wreckline' && cases.wreckline.source === 'url'
-    && cases.ringfall.courseId === 'ringfall' && cases.ringfall.source === 'url',
-  'Valid unlocked URL selection was rejected.', cases);
-  verify(cases.persistedInactive.courseId === 'cairn-drift' && cases.persistedInactive.source === 'default',
-    'Legacy persisted NEEDLE selection escaped the release gate.', cases);
-  verify(cases.persistedRingfall.courseId === 'ringfall' && cases.persistedRingfall.source === 'persisted',
-    'Valid active persisted stage was not restored.', cases);
-
-  const source = 'http://127.0.0.1:4173/?seed=1337&briefing=1&ref=contract#route';
-  const inactiveUrl = new URL(buildCourseUrl(source, 'needle-grave'));
-  verify(inactiveUrl.searchParams.get('course') === 'cairn-drift',
-    'Route URL builder minted a disabled NEEDLE URL.');
-  const built = new URL(buildCourseUrl(source, 'ringfall'));
-  verify(built.searchParams.get('course') === 'ringfall', 'Route URL builder lost an active stage ID.');
-  verify(!built.searchParams.has('seed'), 'Normal route navigation retained a debug seed.');
-  verify(built.searchParams.get('briefing') === '1' && built.searchParams.get('ref') === 'contract',
-    'Route URL discarded unrelated query state.', { href: built.href });
-  verify(built.hash === '#route', 'Route URL discarded the fragment.', { href: built.href });
-  const harnessUrl = new URL(buildCourseUrl(source, 'wreckline', { preserveSeed: true }));
-  verify(harnessUrl.searchParams.get('seed') === '1337', 'Harness route navigation lost its explicit seed.');
-  return { cases, routeUrl: built.href, inactiveUrl: inactiveUrl.href, harnessUrl: harnessUrl.href };
+  verify(cases.canonical.source === 'mission-url'
+    && cases.lockedAscent.source === 'invalid-mission-url'
+    && cases.lockedAscent.missionId === 'cairn-drift'
+    && cases.unlockedAscent.source === 'mission-url'
+    && cases.unlockedAscent.missionId === 'last-ascent'
+    && cases.alias.source === 'legacy-course-url'
+    && cases.lockedDeadSignal.source === 'invalid-mission-url'
+    && cases.lockedDeadSignal.missionId === 'cairn-drift'
+    && cases.unlockedDeadSignal.source === 'mission-url'
+    && cases.unlockedDeadSignal.missionId === 'dead-signal'
+    && cases.retired.source === 'invalid-course-url'
+    && cases.unknown.source === 'invalid-mission-url'
+    && [cases.canonical, cases.alias, cases.retired, cases.unknown]
+      .every((entry) => entry.missionId === 'cairn-drift'),
+  'Mission resolution did not fail closed.', cases);
+  const built = new URL(buildMissionUrl(
+    'https://example.test/game?course=cairn-drift&seed=9&briefing=1',
+    'dead-signal',
+  ));
+  verify(built.searchParams.get('mission') === 'dead-signal'
+    && !built.searchParams.has('course')
+    && !built.searchParams.has('seed')
+    && built.searchParams.get('briefing') === '1',
+  'Canonical mission navigation retained a legacy or ephemeral parameter.', built.href);
+  const ascentBuilt = new URL(buildMissionUrl(built, 'last-ascent'));
+  verify(ascentBuilt.searchParams.get('mission') === 'last-ascent'
+    && !ascentBuilt.searchParams.has('course')
+    && !ascentBuilt.searchParams.has('seed'),
+  'LAST ASCENT navigation did not write a canonical mission URL.', ascentBuilt.href);
+  return { cases, built: built.href, ascentBuilt: ascentBuilt.href };
 });
 
 await report.check({
-  id: 'CAMPAIGN.progress-merge',
-  name: 'Progress facts merge monotonically and unlocks derive only from ordered clears',
-  assertion: 'All recognized course facts survive merge, dormant NEEDLE stays inactive, and rank/clean/precision facts never substitute for clearing every prior active stage.',
+  id: 'MISSION.progress-v2',
+  name: 'Progress v2 migrates CAIRN facts and quarantines retired stage clears',
+  assertion: 'Local/session merges are monotonic and a future schema remains read-only.',
 }, () => {
-  const local = new MemoryStorage({
-    [PROGRESS_KEY]: JSON.stringify(progress({
-      selectedCourse: 'cairn-drift',
+  const legacy = new MemoryStorage({
+    [LEGACY_PROGRESS_KEY]: JSON.stringify({
+      version: 1,
+      selectedCourse: 'ringfall',
       courses: {
-        'cairn-drift': courseProgress({ cleared: true, clearedAt: 400, highestRank: 'B' }),
-        'needle-grave': courseProgress({ cleared: true, clearedAt: 500, highestRank: 'C' }),
-        wreckline: courseProgress({ cleared: true, clearedAt: 700, highestRank: 'B' }),
-        ringfall: courseProgress({ cleared: true, clearedAt: 900, highestRank: 'C' }),
-      },
-    })),
-  });
-  const session = new MemoryStorage({
-    [PROGRESS_KEY]: JSON.stringify(progress({
-      selectedCourse: 'needle-grave',
-      courses: {
-        'cairn-drift': courseProgress({
+        'cairn-drift': dormantFacts({
           cleared: true,
           clearedAt: 200,
-          highestRank: 'A',
+          highestRank: 'B',
           cleanClear: true,
           precisionClear: true,
         }),
-        wreckline: courseProgress({
-          clearedAt: 650,
-          highestRank: 'A',
-          cleanClear: true,
-          precisionClear: true,
-        }),
+        wreckline: dormantFacts({ cleared: true, highestRank: 'S' }),
+        ringfall: dormantFacts({ cleared: true, clearedAt: 300 }),
+        'needle-grave': dormantFacts({ precisionClear: true }),
       },
-    })),
+    }),
   });
-  const merged = new ProgressStore({ localStorage: local, sessionStorage: session, hasLegacyCairnBest: () => false }).snapshot();
-  const cairn = merged.courses['cairn-drift'];
-  verify(merged.selectedCourse === 'cairn-drift', 'Legacy disabled selection did not fall back.', merged);
-  verify(cairn?.clearedAt === 200 && cairn.highestRank === 'A', 'Earlier clear/better rank did not win.', merged);
-  verify(cairn.cleanClear && cairn.precisionClear, 'Monotonic mastery flags were lost.', merged);
-  verify(!isCourseUnlocked(merged, 'needle-grave'), 'Dormant NEEDLE became unlocked.', merged);
-  verify(merged.courses['needle-grave']?.cleared === true
-    && merged.courses['needle-grave']?.highestRank === 'C',
-  'Disabling campaign erased dormant NEEDLE progress facts.', merged);
-  verify(merged.courses.wreckline?.cleared === true
-    && merged.courses.wreckline.clearedAt === 650
-    && merged.courses.wreckline.highestRank === 'A'
-    && merged.courses.wreckline.cleanClear
-    && merged.courses.wreckline.precisionClear,
-  'WRECKLINE facts did not merge monotonically.', merged);
-  verify(merged.courses.ringfall?.cleared === true,
-    'RINGFALL facts were dropped during recognized-course sanitization.', merged);
-  verify(isCourseUnlocked(merged, 'wreckline') && isCourseUnlocked(merged, 'ringfall'),
-    'Ordered clear facts did not unlock the active chapter.', merged);
-
-  const clearOnly = progress({ courses: {
-    'cairn-drift': courseProgress({ cleared: true }),
-  } });
-  const allPriorClearOnly = progress({ courses: {
-    'cairn-drift': courseProgress({ cleared: true }),
-    wreckline: courseProgress({ cleared: true }),
-  } });
-  const masteryWithoutClear = progress({ courses: {
-    'cairn-drift': courseProgress({ highestRank: 'S', cleanClear: true, precisionClear: true }),
-  } });
-  verify(isCourseUnlocked(clearOnly, 'wreckline') && !isCourseUnlocked(clearOnly, 'ringfall'),
-    'Clearing CAIRN did not unlock exactly the next stage.', clearOnly);
-  verify(isCourseUnlocked(allPriorClearOnly, 'ringfall'),
-    'Clear-only facts did not unlock RINGFALL.', allPriorClearOnly);
-  verify(!isCourseUnlocked(masteryWithoutClear, 'wreckline'),
-    'Mastery facts unlocked a stage without a clear.', masteryWithoutClear);
-
   const migrated = new ProgressStore({
-    localStorage: new MemoryStorage(),
+    localStorage: legacy,
     sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => true,
+    hasLegacyCairnBest: () => false,
   }).snapshot();
-  verify(migrated.courses['cairn-drift']?.cleared === true, 'Legacy PB was not migrated to a clear.', migrated);
-  verify(migrated.courses['cairn-drift']?.highestRank === null
-    && migrated.courses['cairn-drift']?.clearedAt === null,
-  'Legacy migration invented unsupported mastery evidence.', migrated);
+  verify(migrated.version === 2
+    && migrated.selectedMission === 'cairn-drift'
+    && migrated.missions['cairn-drift']?.cleared === true
+    && migrated.missions['cairn-drift']?.highestRank === 'B'
+    && migrated.missions['cairn-drift']?.cleanClear === true
+    && migrated.missions['cairn-drift']?.mastery.precision === true,
+  'Supported CAIRN facts did not migrate to the mission record.', migrated);
+  verify(Object.keys(migrated.missions).length === 1
+    && migrated.dormantCourses.wreckline?.cleared === true
+    && migrated.dormantCourses.ringfall?.cleared === true
+    && migrated.dormantCourses['needle-grave']?.precisionClear === true,
+  'Retired stage facts were promoted or discarded.', migrated);
 
-  const corrupt = new ProgressStore({
-    localStorage: new MemoryStorage({ [PROGRESS_KEY]: '{broken' }),
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => true,
-  }).snapshot();
-  verify(corrupt.courses['cairn-drift'] === undefined,
-    'A present corrupt campaign record incorrectly triggered legacy migration.', corrupt);
-
-  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  let legacyProbe;
-  try {
-    const legacyStorage = new MemoryStorage({
-      'last-vector.best.v1': JSON.stringify({
-        'cairn-drift-corrupt': null,
-        'cairn-drift-4294967296': 70,
-        'cairn-drift-1337': { time: 72.5, splits: [] },
-      }),
-    });
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      value: legacyStorage,
-    });
-    legacyProbe = hasBestRunPrefix('cairn-drift-');
-    verify(legacyProbe === true, 'A valid legacy seeded PB was not recognized.', { legacyProbe });
-    legacyStorage.setItem('last-vector.best.v1', JSON.stringify({
-      'cairn-drift-corrupt': null,
-      'cairn-drift-4294967296': 70,
-      'cairn-drift-12': -4,
-    }));
-    verify(hasBestRunPrefix('cairn-drift-') === false,
-      'Malformed key/value pairs were accepted as a legacy clear.');
-  } finally {
-    if (previousLocalStorage) {
-      Object.defineProperty(globalThis, 'localStorage', previousLocalStorage);
-    } else {
-      delete globalThis.localStorage;
-    }
-  }
-  return { merged, migrated, corrupt, legacyProbe };
-});
-
-await report.check({
-  id: 'CAMPAIGN.progress-persistence',
-  name: 'Successful finishes persist mastery and reveal each next stage exactly once',
-  assertion: 'CAIRN and WRECKLINE clears reveal the ordered next stage independent of mastery, RINGFALL ends the chain, and inactive NEEDLE remains rejected under every storage condition.',
-}, () => {
-  const durable = new MemoryStorage();
-  const failedSession = new MemoryStorage({}, { failSet: true });
+  const durable = new MemoryStorage({
+    [PROGRESS_KEY]: JSON.stringify({
+      version: 2,
+      selectedMission: 'cairn-drift',
+      missions: {
+        'cairn-drift': missionFacts({ cleared: true, clearedAt: 300, highestRank: 'B' }),
+      },
+      dormantCourses: { wreckline: dormantFacts({ cleared: true }) },
+    }),
+  });
+  const session = new MemoryStorage({
+    [PROGRESS_KEY]: JSON.stringify({
+      version: 2,
+      selectedMission: 'cairn-drift',
+      missions: {
+        'cairn-drift': missionFacts({ clearedAt: 200, cleanClear: true, mastery: { precision: true } }),
+      },
+      dormantCourses: { wreckline: dormantFacts({ highestRank: 'A' }) },
+    }),
+  });
   const store = new ProgressStore({
     localStorage: durable,
-    sessionStorage: failedSession,
+    sessionStorage: session,
     hasLegacyCairnBest: () => false,
-    now: () => 1234,
+    now: () => 999,
   });
-  const rejectedNeedle = store.selectCourse('needle-grave');
-  const rejectedRingfall = store.selectCourse('ringfall');
-  verify(!rejectedNeedle.accepted && !rejectedRingfall.accepted,
-    'Inactive or locked stage selection was accepted.', { rejectedNeedle, rejectedRingfall });
-  const first = store.recordSuccessfulFinish('cairn-drift', runResult({
-    rank: 'D',
-    maxGateOffset: PRECISION_MAX_OFFSET,
-  }));
-  verify(first.newlyUnlocked === 'wreckline' && first.persistence.reloadSafe,
-    'CAIRN clear did not reveal and persist WRECKLINE.', first);
-  verify(first.progress.courses['cairn-drift']?.precisionClear === false,
-    'Precision boundary 0.4 must be excluded.', first.progress);
-  const second = store.recordSuccessfulFinish('cairn-drift', runResult({
-    rank: 'A',
-    maxGateOffset: PRECISION_MAX_OFFSET - 0.001,
-  }));
-  verify(second.newlyUnlocked === null, 'Unlock badge repeated after the first clear.', second);
-  verify(second.progress.courses['cairn-drift']?.highestRank === 'A'
-    && second.progress.courses['cairn-drift']?.precisionClear === true,
-  'Subsequent non-PB mastery did not aggregate.', second.progress);
-  const selectedWreckline = store.selectCourse('wreckline');
-  verify(selectedWreckline.accepted, 'Newly unlocked WRECKLINE could not be selected.', selectedWreckline);
-  const third = store.recordSuccessfulFinish('wreckline', runResult({
-    courseId: 'wreckline',
-    gatesCleared: 8,
-    gatesTotal: 8,
-    destinationName: 'NADIR RELAY',
-    rank: 'D',
-    maxGateOffset: 0.95,
-  }));
-  verify(third.newlyUnlocked === 'ringfall' && isCourseUnlocked(third.progress, 'ringfall'),
-    'WRECKLINE clear did not reveal RINGFALL.', third);
-  const fourth = store.recordSuccessfulFinish('ringfall', runResult({
-    courseId: 'ringfall',
-    destinationName: 'ORISON ARRAY',
-  }));
-  verify(fourth.newlyUnlocked === null, 'Chapter-final clear invented another stage.', fourth);
-  verify(!store.selectCourse('needle-grave').accepted,
-    'Completing Chapter 01 activated dormant NEEDLE.');
+  const merged = store.snapshot();
+  verify(merged.missions['cairn-drift']?.cleared
+    && merged.missions['cairn-drift']?.clearedAt === 200
+    && merged.missions['cairn-drift']?.highestRank === 'B'
+    && merged.missions['cairn-drift']?.cleanClear
+    && merged.missions['cairn-drift']?.mastery.precision
+    && merged.dormantCourses.wreckline?.cleared
+    && merged.dormantCourses.wreckline?.highestRank === 'A',
+  'Progress facts did not merge monotonically.', merged);
+  const finish = store.recordSuccessfulFinish('cairn-drift', result({ rank: 'S' }));
+  verify(finish.newlyUnlocked === null
+    && finish.progress.missions['cairn-drift']?.cleared
+    && finish.progress.missions['cairn-drift']?.highestRank === 'S',
+  'A repeated CAIRN finish re-announced an unlock or lost a better rank.', finish);
+  const unlockStore = new ProgressStore({
+    localStorage: new MemoryStorage(),
+    sessionStorage: new MemoryStorage(),
+    hasLegacyCairnBest: () => false,
+    now: () => 1001,
+  });
+  const firstFinish = unlockStore.recordSuccessfulFinish('cairn-drift', result({ rank: 'A' }));
+  verify(firstFinish.firstClear
+    && firstFinish.newlyUnlocked === 'last-ascent'
+    && firstFinish.progress.missions['cairn-drift']?.cleared,
+  'A first CAIRN finish did not clear-only unlock LAST ASCENT.', firstFinish);
+  const ascentFinish = unlockStore.recordSuccessfulFinish('last-ascent', escapeResult());
+  verify(ascentFinish.firstClear
+    && ascentFinish.newlyUnlocked === 'dead-signal'
+    && ascentFinish.progress.missions['last-ascent']?.cleared
+    && ascentFinish.progress.missions['last-ascent']?.mastery.precision,
+  'A complete LAST ASCENT clear did not record precision or unlock DEAD SIGNAL.', ascentFinish);
 
-  const sharedDurable = new MemoryStorage({
-    [PROGRESS_KEY]: JSON.stringify(progress({
-      courses: {
-        'cairn-drift': courseProgress({
-          cleared: true,
-          clearedAt: 100,
-          highestRank: 'B',
-        }),
-      },
-    })),
-  });
-  const tabA = new ProgressStore({
-    localStorage: sharedDurable,
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => false,
-    now: () => 200,
-  });
-  const staleTabB = new ProgressStore({
-    localStorage: sharedDurable,
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => false,
-    now: () => 300,
-  });
-  const tabAWreckline = tabA.recordSuccessfulFinish('wreckline', runResult({
-    courseId: 'wreckline',
-    gatesCleared: 8,
-    gatesTotal: 8,
-    destinationName: 'NADIR RELAY',
-    rank: 'A',
-    cleanRun: true,
-    maxGateOffset: 0.2,
+  const allNodesFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
+    shotsFired: 10,
+    shotsHit: 5,
   }));
-  const staleTabBCairn = staleTabB.recordSuccessfulFinish('cairn-drift', runResult({ rank: 'S' }));
-  const afterStaleWrite = new ProgressStore({
-    localStorage: sharedDurable,
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => false,
-  }).snapshot();
-  verify(tabAWreckline.progress.courses.wreckline?.cleared === true
-    && staleTabBCairn.progress.courses.wreckline?.cleared === true
-    && afterStaleWrite.courses.wreckline?.cleared === true
-    && afterStaleWrite.courses.wreckline.clearedAt === 200
-    && afterStaleWrite.courses.wreckline.highestRank === 'A'
-    && afterStaleWrite.courses.wreckline.cleanClear
-    && afterStaleWrite.courses.wreckline.precisionClear
-    && isCourseUnlocked(afterStaleWrite, 'ringfall'),
-  'A stale tab finish erased a later-stage clear written by another tab.', {
-    tabAWreckline,
-    staleTabBCairn,
-    afterStaleWrite,
-    stored: sharedDurable.getItem(PROGRESS_KEY),
-  });
+  verify(allNodesFinish.progress.missions['dead-signal']?.mastery['all-nodes']
+    && allNodesFinish.progress.missions['dead-signal']?.mastery.accuracy !== true,
+  'DEAD SIGNAL all-nodes mastery was not recorded independently.', allNodesFinish);
+  const accuracyFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
+    targetsDestroyed: 3,
+    shotsFired: 4,
+    shotsHit: 3,
+  }));
+  verify(accuracyFinish.progress.missions['dead-signal']?.mastery['all-nodes']
+    && accuracyFinish.progress.missions['dead-signal']?.mastery.accuracy,
+  'DEAD SIGNAL accuracy mastery did not merge independently with all-nodes.', accuracyFinish);
 
-  const futureRaw = JSON.stringify(progress({ version: 2, courses: {
-    'cairn-drift': courseProgress({ cleared: true }),
-  } }));
+  const futureRaw = JSON.stringify({
+    version: 3,
+    selectedMission: 'cairn-drift',
+    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
+    dormantCourses: {},
+  });
   const future = new MemoryStorage({ [PROGRESS_KEY]: futureRaw });
   const futureStore = new ProgressStore({
     localStorage: future,
     sessionStorage: new MemoryStorage({}, { failSet: true }),
     hasLegacyCairnBest: () => false,
   });
-  const futureWrite = futureStore.selectCourse('wreckline');
-  verify(futureWrite.accepted && !futureWrite.persistence.localWritten,
-    'A valid selection did not respect the newer read-only durable schema.', futureWrite);
-  verify(future.getItem(PROGRESS_KEY) === futureRaw && future.writes === 0,
-    'A newer durable schema was overwritten.', { stored: future.getItem(PROGRESS_KEY), writes: future.writes });
-
-  const lateFuture = new MemoryStorage();
-  const lateFutureStore = new ProgressStore({
-    localStorage: lateFuture,
-    sessionStorage: new MemoryStorage({}, { failSet: true }),
-    hasLegacyCairnBest: () => false,
-  });
-  const lateFutureRaw = JSON.stringify(progress({ version: 2, courses: {
-    'cairn-drift': courseProgress({ cleared: true, highestRank: 'A' }),
-  } }));
-  lateFuture.setItem(PROGRESS_KEY, lateFutureRaw);
-  const lateFutureFinish = lateFutureStore.recordSuccessfulFinish(
-    'cairn-drift',
-    runResult({ rank: 'S' }),
-  );
-  verify(lateFutureFinish.persistence.localReadOnly
-    && !lateFutureFinish.persistence.localWritten
-    && !lateFutureFinish.persistence.reloadSafe
-    && lateFuture.getItem(PROGRESS_KEY) === lateFutureRaw
-    && lateFuture.writes === 1,
-  'A future durable schema arriving after construction was overwritten during a stale write.', {
-    lateFutureFinish,
-    stored: lateFuture.getItem(PROGRESS_KEY),
-    writes: lateFuture.writes,
-  });
-
-  const nowhere = new ProgressStore({
-    localStorage: new MemoryStorage({}, { failSet: true }),
-    sessionStorage: new MemoryStorage({}, { failSet: true }),
-    hasLegacyCairnBest: () => false,
-  });
-  const inMemory = nowhere.recordSuccessfulFinish('cairn-drift', runResult({ rank: 'C', maxGateOffset: 0.9 }));
-  verify(!inMemory.persistence.reloadSafe && isCourseUnlocked(inMemory.progress, 'wreckline')
-    && !isCourseUnlocked(inMemory.progress, 'needle-grave')
-    && inMemory.newlyUnlocked === 'wreckline',
-  'Dual write failure corrupted in-memory unlock truth or claimed reload safety.', inMemory);
-
-  const installLocal = new MemoryStorage();
-  const installSession = new MemoryStorage();
-  const installStore = new ProgressStore({
-    localStorage: installLocal,
-    sessionStorage: installSession,
-    hasLegacyCairnBest: () => false,
-  });
-  const installed = installStore.install(progress({ courses: {
-    'cairn-drift': courseProgress({ cleared: true }),
-  } }));
-  verify(installed.sessionWritten && !installed.localWritten
-    && installSession.writes === 2 && installLocal.writes === 0,
-  'Test installation was not isolated to ephemeral session storage.', {
-    installed,
-    sessionWrites: installSession.writes,
-    localWrites: installLocal.writes,
-  });
-  installStore.recordSuccessfulFinish('cairn-drift', runResult({ rank: 'A' }));
-  const reloadedInstallStore = new ProgressStore({
-    localStorage: installLocal,
-    sessionStorage: installSession,
-    hasLegacyCairnBest: () => false,
-  });
-  const installedSelection = reloadedInstallStore.selectCourse('wreckline');
-  verify(installedSelection.accepted, 'Session-installed CAIRN clear did not authorize WRECKLINE.');
-  verify(installLocal.writes === 0,
-    'A later write or reload leaked harness-installed progress into durable storage.', {
-      sessionWrites: installSession.writes,
-      localWrites: installLocal.writes,
-      reloaded: reloadedInstallStore.snapshot(),
-    });
+  const outcome = futureStore.recordSuccessfulFinish('cairn-drift', result());
+  verify(outcome.persistence.localReadOnly
+    && !outcome.persistence.localWritten
+    && future.getItem(PROGRESS_KEY) === futureRaw
+    && future.writes === 0,
+  'A future progress schema was overwritten.', { outcome, stored: future.getItem(PROGRESS_KEY) });
   return {
-    first,
-    second,
-    third,
-    fourth,
-    futureWrite,
-    tabAWreckline,
-    staleTabBCairn,
-    afterStaleWrite,
-    lateFutureFinish,
-    inMemory,
-    installed,
-    installLocalWrites: installLocal.writes,
+    migrated,
+    merged,
+    finish,
+    firstFinish,
+    ascentFinish,
+    allNodesFinish,
+    accuracyFinish,
+    future: outcome.persistence,
   };
+});
+
+await report.check({
+  id: 'MISSION.campaign-view-catalog',
+  name: 'Catalog-driven campaign projection presents all three sequential chapters',
+  assertion: 'Empty progress locks Chapters 02/03; each clear exposes only its immediate successor.',
+}, () => {
+  const empty = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'cairn-drift',
+    missions: {},
+    dormantCourses: {},
+  }, 'cairn-drift');
+  const expected = {
+    activeMissionId: 'cairn-drift',
+    nextMissionId: null,
+    newlyUnlockedMissionId: null,
+    navigationError: null,
+    missions: [
+      {
+        id: 'cairn-drift',
+        chapter: 1,
+        capabilities: [],
+        mastery: [{ id: 'precision', complete: false }],
+        state: 'available',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+      {
+        id: 'last-ascent',
+        chapter: 2,
+        capabilities: [],
+        mastery: [{ id: 'precision', complete: false }],
+        state: 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+      {
+        id: 'dead-signal',
+        chapter: 3,
+        capabilities: ['fire'],
+        mastery: [
+          { id: 'all-nodes', complete: false },
+          { id: 'accuracy', complete: false },
+        ],
+        state: 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+    ],
+  };
+  verify(JSON.stringify(empty) === JSON.stringify(expected),
+    'The empty campaign projection did not expose the locked three-node rail.', { empty, expected });
+
+  const afterCairn = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'cairn-drift',
+    missions: {
+      'cairn-drift': missionFacts({
+        cleared: true,
+        highestRank: 'A',
+        cleanClear: true,
+        mastery: { precision: true },
+      }),
+    },
+    dormantCourses: {},
+  }, 'cairn-drift');
+  verify(afterCairn.nextMissionId === 'last-ascent'
+    && afterCairn.missions.length === 3
+    && afterCairn.missions[0]?.state === 'cleared'
+    && afterCairn.missions[0]?.highestRank === 'A'
+    && afterCairn.missions[0]?.mastery[0]?.id === 'precision'
+    && afterCairn.missions[0]?.mastery[0]?.complete === true
+    && afterCairn.missions[0]?.objectives.firstClear
+    && afterCairn.missions[0]?.objectives.cleanClear
+    && afterCairn.missions[0]?.objectives.precision
+    && afterCairn.missions[1]?.id === 'last-ascent'
+    && afterCairn.missions[1]?.chapter === 2
+    && afterCairn.missions[1]?.state === 'available'
+    && afterCairn.missions[1]?.capabilities.length === 0
+    && afterCairn.missions[2]?.id === 'dead-signal'
+    && afterCairn.missions[2]?.state === 'locked',
+  'A CAIRN clear did not expose only LAST ASCENT.', afterCairn);
+
+  const afterAscent = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'last-ascent',
+    missions: {
+      'cairn-drift': missionFacts({ cleared: true }),
+      'last-ascent': missionFacts({ cleared: true, mastery: { precision: true } }),
+    },
+    dormantCourses: {},
+  }, 'last-ascent');
+  verify(afterAscent.nextMissionId === 'dead-signal'
+    && afterAscent.missions[1]?.state === 'cleared'
+    && afterAscent.missions[1]?.mastery[0]?.complete === true
+    && afterAscent.missions[2]?.state === 'available'
+    && afterAscent.missions[2]?.chapter === 3
+    && afterAscent.missions[2]?.capabilities[0] === 'fire'
+    && afterAscent.missions[2]?.mastery[0]?.id === 'all-nodes'
+    && afterAscent.missions[2]?.mastery[1]?.id === 'accuracy',
+  'A LAST ASCENT clear did not expose DEAD SIGNAL with independent mastery rows.', afterAscent);
+  return { empty, afterCairn, afterAscent };
+});
+
+await report.check({
+  id: 'MISSION.objective-failure-reason',
+  name: 'Objective failure reasons remain distinct from hull breach presentation',
+  assertion: 'Reason codes cross Game and Overlay into stable generic failure UI; hull failure stays reasonless.',
+}, async () => {
+  const game = await readFile(new URL('../../src/game/Game.ts', import.meta.url), 'utf8');
+  const overlay = await readFile(new URL('../../src/ui/Overlay.ts', import.meta.url), 'utf8');
+  const screens = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
+  const facts = {
+    terminalReason: game.includes('this.failObjective(terminal.reason);'),
+    objectiveReason: game.includes('this.overlay.showFailure(this.elapsed, reason);'),
+    hullReasonless: game.includes('this.overlay.showFailure(this.elapsed);'),
+    overlayThread: overlay.includes('this.screens.showFailure(elapsed, reason);'),
+    stableData: screens.includes("body.dataset['failureReason'] = reason;"),
+    genericCopy: screens.includes("? 'insufficientNodes'")
+      && screens.includes("? 'coreWindowMissed'")
+      && screens.includes("? 'blastTimeout'")
+      && screens.includes(": 'missionFailed'"),
+    hullCopy: screens.includes('m.results.hullBreach'),
+  };
+  verify(Object.values(facts).every(Boolean),
+    'The objective reason seam collapsed into hull-breach presentation.', facts);
+  return facts;
+});
+
+await report.check({
+  id: 'MISSION.generic-autopilot-buttons',
+  name: 'Generic autopilot preserves independent flight buttons only during active flight',
+  assertion: 'Nonlegacy boost/brake pass through in flight while attract phases remain neutral.',
+}, () => {
+  const facts = {
+    genericFlight: resolveAutopilotButton(undefined, true, true),
+    genericAttract: resolveAutopilotButton(undefined, true, false),
+    legacyTrue: resolveAutopilotButton(true, false, false),
+    legacyFalse: resolveAutopilotButton(false, true, true),
+  };
+  verify(facts.genericFlight === true
+    && facts.genericAttract === false
+    && facts.legacyTrue === true
+    && facts.legacyFalse === false,
+    'Generic autopilot buttons were dropped or leaked into attract flight.', facts);
+  return facts;
+});
+
+await report.check({
+  id: 'MISSION.runtime-boundaries',
+  name: 'GateRaceObjective and MissionRuntime own bounded objective/world lifecycles',
+  assertion: 'Objective state has no UI/storage dependency and runtime disposes one objective/world.',
+}, () => {
+  const course = new Course(
+    CAIRN_DRIFT,
+    CAIRN_DRIFT.defaultSeed,
+    createLightingUniforms(new THREE.Vector3(...CAIRN_DRIFT.world.sunDirection)),
+  );
+  const objective = new GateRaceObjective(
+    course,
+    CAIRN_DRIFT.destination.apertureRadius * 2.4,
+    CAIRN_MISSION,
+  );
+  const calls = { reset: 0, update: 0, dispose: 0 };
+  const world = {
+    contacts: [],
+    contactCapacity: 0,
+    targetables: [],
+    reset: () => { calls.reset += 1; },
+    updateSimulation: () => { calls.update += 1; },
+    updatePresentation: () => {},
+    applyQuality: () => {},
+    dispose: () => { calls.dispose += 1; },
+  };
+  const runtime = new MissionRuntime({ definition: CAIRN_MISSION, path: course.path, world, objective });
+  runtime.reset();
+  const guidance = objective.guidance(course.startPosition);
+  const telemetry = objective.telemetry();
+  const rewardEvents = [];
+  verify(guidance.current === 0
+    && guidance.total === 9
+    && telemetry.kind === 'gate-race'
+    && telemetry.gatesTotal === 9
+    && runtime.path === course.path
+    && objective.drainRewardEvents(rewardEvents) === 0
+    && rewardEvents.length === 0
+    && calls.reset === 1,
+  'Mission runtime did not expose the current objective/path boundary.', { guidance, telemetry, calls });
+  runtime.dispose();
+  verify(calls.dispose === 1, 'Mission runtime did not dispose its world exactly once.', calls);
+  return { guidance: { ...guidance, anchor: [...guidance.anchor] }, telemetry, calls };
+});
+
+await report.check({
+  id: 'MISSION.extension-events',
+  name: 'Reward and optional weapon events preserve bounded terminal ordering',
+  assertion: 'Surviving frames run weapon before objective and drain reusable events; lethal frames do neither.',
+}, () => {
+  const definition = {
+    ...CAIRN_MISSION,
+    capabilities: ['fire'],
+  };
+  const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
+  const contacts = [];
+  const targetables = [{ id: 'target:stable' }];
+  const order = [];
+  const calls = {
+    worldReset: 0,
+    worldUpdate: 0,
+    worldDispose: 0,
+    weaponReset: 0,
+    weaponUpdate: 0,
+    weaponEventDrain: 0,
+    weaponRewardDrain: 0,
+    weaponDispose: 0,
+    objectiveReset: 0,
+    objectiveUpdate: 0,
+    objectiveRewardDrain: 0,
+    objectiveDispose: 0,
+    impacts: 0,
+  };
+  const weaponReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: 10,
+    sourceId: 'shield-node-a',
+  });
+  const objectiveReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: 999,
+    sourceIndex: 2,
+  });
+  const invalidReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: Number.NaN,
+    sourceId: 'invalid-proof',
+  });
+  const weaponEvent = Object.freeze({
+    type: 'hit',
+    intensity: 0.75,
+    sourceId: 'shield-node-a',
+  });
+  let weaponRewardQueued = false;
+  let weaponEventQueued = false;
+  let objectiveRewardsQueued = false;
+  let weaponFrame = null;
+
+  const world = {
+    contacts,
+    contactCapacity: 1,
+    targetables,
+    reset: () => { calls.worldReset += 1; },
+    updateSimulation: () => {
+      calls.worldUpdate += 1;
+      order.push('world');
+    },
+    updatePresentation: () => {},
+    applyQuality: () => {},
+    dispose: () => { calls.worldDispose += 1; },
+  };
+  const weapon = {
+    reset: () => {
+      calls.weaponReset += 1;
+      weaponRewardQueued = false;
+      weaponEventQueued = false;
+    },
+    update: (frame) => {
+      calls.weaponUpdate += 1;
+      order.push('weapon');
+      weaponFrame = frame;
+      weaponRewardQueued = frame.fire;
+      weaponEventQueued = frame.fire;
+    },
+    drainEvents: (out) => {
+      calls.weaponEventDrain += 1;
+      if (!weaponEventQueued) return 0;
+      weaponEventQueued = false;
+      out.push(weaponEvent);
+      return 1;
+    },
+    drainRewardEvents: (out) => {
+      calls.weaponRewardDrain += 1;
+      if (!weaponRewardQueued) return 0;
+      weaponRewardQueued = false;
+      out.push(weaponReward);
+      return 1;
+    },
+    dispose: () => { calls.weaponDispose += 1; },
+  };
+  const objective = {
+    kind: 'gate-race',
+    reset: () => {
+      calls.objectiveReset += 1;
+      objectiveRewardsQueued = false;
+    },
+    update: () => {
+      calls.objectiveUpdate += 1;
+      order.push('objective');
+      objectiveRewardsQueued = true;
+      return { status: 'failed', reason: 'mock-window-expired' };
+    },
+    drainRewardEvents: (out) => {
+      calls.objectiveRewardDrain += 1;
+      if (!objectiveRewardsQueued) return 0;
+      objectiveRewardsQueued = false;
+      out.push(objectiveReward, invalidReward);
+      return 2;
+    },
+    guidance: () => ({
+      label: 'MOCK',
+      anchor: path.terminusPosition,
+      distance: 0,
+      progress: 0,
+      current: 0,
+      total: 1,
+    }),
+    telemetry: () => ({
+      kind: 'gate-race',
+      gatesCleared: 0,
+      gatesTotal: 1,
+      misses: 0,
+      complete: false,
+    }),
+    bestRunSplits: () => [],
+    buildResult: () => result(),
+    dispose: () => { calls.objectiveDispose += 1; },
+  };
+  const runtime = new MissionRuntime({ definition, path, world, objective, weapon });
+  runtime.reset();
+
+  const body = {
+    position: new THREE.Vector3(),
+    radius: 1,
+    speed: 900,
+    hull: 1,
+    applyImpact: () => {
+      calls.impacts += 1;
+      body.hull = 0;
+      return 1;
+    },
+  };
+  const forward = new THREE.Vector3(0, 0, -1);
+  const live = runtime.simulate({
+    dt: 1 / 60,
+    elapsed: 4,
+    body,
+    forward,
+    fire: true,
+    proximityRange: 40,
+    resolveContacts: true,
+    resolveObjective: true,
+  });
+  const rewardEvents = [];
+  const weaponEvents = [];
+  const recharges = [];
+  consumeMissionFrameEvents(runtime, live, {
+    rechargeBoost: (amount) => {
+      recharges.push(amount);
+      return { before: 0, after: amount / 100 };
+    },
+  }, rewardEvents, weaponEvents);
+
+  verify(JSON.stringify(order) === JSON.stringify(['world', 'weapon', 'objective'])
+    && live.hullFailed === false
+    && live.terminal?.status === 'failed'
+    && live.terminal.reason === 'mock-window-expired'
+    && weaponFrame?.position !== body.position
+    && weaponFrame?.position.equals(body.position)
+    && weaponFrame?.forward !== forward
+    && weaponFrame?.forward.equals(forward)
+    && weaponFrame?.targetables === targetables
+    && weaponFrame?.fire === true
+    && rewardEvents[0] === weaponReward
+    && rewardEvents[1] === objectiveReward
+    && rewardEvents[2] === invalidReward
+    && weaponEvents[0] === weaponEvent
+    && JSON.stringify(recharges) === JSON.stringify([10, 100]),
+  'The surviving-frame extension order, identities, or reward validation changed.', {
+    order,
+    live,
+    weaponFrame,
+    rewardEvents,
+    weaponEvents,
+    recharges,
+  });
+
+  contacts.push({
+    id: 'lethal-contact',
+    kind: 'hazard',
+    position: new THREE.Vector3(1.5, 0, 0),
+    radius: 1,
+  });
+  body.hull = 0.1;
+  order.length = 0;
+  rewardEvents.length = 0;
+  weaponEvents.length = 0;
+  const lethal = runtime.simulate({
+    dt: 1 / 60,
+    elapsed: 5,
+    body,
+    forward,
+    fire: true,
+    proximityRange: 40,
+    resolveContacts: true,
+    resolveObjective: true,
+  });
+  consumeMissionFrameEvents(runtime, lethal, {
+    rechargeBoost: (amount) => {
+      recharges.push(amount);
+      return { before: 0, after: amount / 100 };
+    },
+  }, rewardEvents, weaponEvents);
+  verify(lethal.hullFailed
+    && lethal.terminal === null
+    && JSON.stringify(order) === JSON.stringify(['world'])
+    && calls.impacts === 1
+    && calls.weaponUpdate === 1
+    && calls.objectiveUpdate === 1
+    && calls.weaponEventDrain === 1
+    && calls.weaponRewardDrain === 1
+    && calls.objectiveRewardDrain === 1
+    && recharges.length === 2
+    && rewardEvents.length === 0
+    && weaponEvents.length === 0,
+  'A lethal frame updated/drained the weapon or objective or applied a queued reward.', {
+    lethal,
+    order,
+    calls,
+    recharges,
+  });
+
+  runtime.dispose();
+  verify(calls.worldReset === 1
+    && calls.weaponReset === 1
+    && calls.objectiveReset === 1
+    && calls.weaponDispose === 1
+    && calls.objectiveDispose === 1
+    && calls.worldDispose === 1,
+  'MissionRuntime did not reset/dispose its optional weapon exactly once.', calls);
+  return { live, lethal, order: ['world', 'weapon', 'objective'], calls, recharges };
+});
+
+await report.check({
+  id: 'MISSION.objective-neutral-factory',
+  name: 'The Game-facing seam runs one escape/strike world through common contacts',
+  assertion: 'One selected world constructs/adds/disposes; lethal contact wins before objective success.',
+}, () => {
+  const observations = [];
+  for (const kind of ['escape', 'strike']) {
+    const definition = {
+      ...CAIRN_MISSION,
+      objective: kind === 'escape'
+        ? {
+          kind,
+          path: CAIRN_DRIFT.geometry,
+          shockwave: { speed: 1, startProgress: 0, catchProgress: 1 },
+        }
+        : {
+          kind,
+          path: CAIRN_DRIFT.geometry,
+          targets: [],
+          extraction: { startProgress: 0, timeoutSeconds: 1 },
+        },
+    };
+    const calls = {
+      factory: 0,
+      worldConstructed: 0,
+      worldReset: 0,
+      worldUpdate: 0,
+      mainAdds: 0,
+      farAdds: 0,
+      objectiveReset: 0,
+      objectiveUpdate: 0,
+      bodyImpact: 0,
+      contactFeedback: 0,
+      objectiveDispose: 0,
+      worldDispose: 0,
+    };
+    const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
+    const objective = {
+      kind,
+      reset: () => { calls.objectiveReset += 1; },
+      update: () => {
+        calls.objectiveUpdate += 1;
+        return { status: 'succeeded' };
+      },
+      guidance: (position) => ({
+        label: 'MOCK OBJECTIVE',
+        anchor: path.terminusPosition,
+        distance: position.distanceTo(path.terminusPosition),
+        progress: 0,
+        current: 0,
+        total: 1,
+      }),
+      telemetry: () => kind === 'escape'
+        ? {
+          kind,
+          pathProgress: 0,
+          shockwaveProgress: 0,
+          checkpoint: 0,
+          checkpointTotal: 1,
+        }
+        : {
+          kind,
+          targetsDestroyed: 0,
+          targetsRequired: 0,
+          coreDestroyed: false,
+          extracting: false,
+        },
+      bestRunSplits: () => [],
+      drainRewardEvents: () => 0,
+      buildResult: (input) => ({
+        kind,
+        missionId: definition.id,
+        rulesetVersion: definition.rulesetVersion,
+        totalTime: input.totalTime,
+        hullRemaining: input.hullRemaining,
+        objectiveSummary: 'MOCK COMPLETE',
+        topSpeed: input.topSpeed,
+        cleanRun: input.cleanRun,
+        rank: 'A',
+        destinationName: 'MOCK EXTRACTION',
+        newlyUnlockedMissionId: null,
+        ...(kind === 'escape'
+          ? { checkpointsCleared: 1, checkpointsTotal: 1, secondsAhead: 1 }
+          : {
+            targetsDestroyed: 0,
+            targetsRequired: 0,
+            shotsFired: 0,
+            shotsHit: 0,
+            coreDestroyed: true,
+          }),
+      }),
+      dispose: () => { calls.objectiveDispose += 1; },
+    };
+    const mainScene = {
+      add: () => { calls.mainAdds += 1; },
+    };
+    const farScene = {
+      add: () => { calls.farAdds += 1; },
+    };
+    const runtime = createGameMissionRuntime({
+      definition,
+      seed: CAIRN_DRIFT.defaultSeed,
+      renderer: {},
+      mainScene,
+      farScene,
+      lighting: {},
+      initialQuality: {},
+      maximumQuality: {},
+    }, (context) => {
+      calls.factory += 1;
+      calls.worldConstructed += 1;
+      context.mainScene.add({ kind });
+      const world = {
+        contacts: [{
+          id: `${kind}:contact`,
+          kind: 'hazard',
+          position: new THREE.Vector3(1.5, 0, 0),
+          radius: 1,
+        }],
+        contactCapacity: 1,
+        targetables: [],
+        reset: () => { calls.worldReset += 1; },
+        updateSimulation: () => { calls.worldUpdate += 1; },
+        updatePresentation: () => {},
+        applyQuality: () => {},
+        dispose: () => { calls.worldDispose += 1; },
+      };
+      return new MissionRuntime({ definition, path, world, objective });
+    });
+    runtime.reset();
+    const body = {
+      position: new THREE.Vector3(0, 0, 0),
+      radius: 1,
+      speed: 900,
+      hull: 0.1,
+      applyImpact: () => {
+        calls.bodyImpact += 1;
+        body.hull = 0;
+        return 1;
+      },
+    };
+    const simulation = runtime.simulate({
+      dt: 1 / 60,
+      elapsed: 12,
+      body,
+      forward: new THREE.Vector3(0, 0, -1),
+      fire: false,
+      proximityRange: 40,
+      resolveContacts: true,
+      resolveObjective: true,
+      onContact: () => { calls.contactFeedback += 1; },
+    });
+    const built = runtime.buildResult({
+      totalTime: 12,
+      hullRemaining: 0.75,
+      topSpeed: 900,
+      cleanRun: true,
+      bestTime: null,
+      bestSplits: [],
+      isNewBest: true,
+      cruiseSpeed: 720,
+    });
+    verify(runtime.objective.kind === kind
+      && built.kind === kind
+      && runtime.recordId(CAIRN_DRIFT.defaultSeed) === missionRecordId(definition, CAIRN_DRIFT.defaultSeed)
+      && runtime.bestRunSplits().length === 0
+      && calls.factory === 1
+      && calls.worldConstructed === 1
+      && calls.mainAdds === 1
+      && calls.farAdds === 0
+      && calls.worldReset === 1
+      && calls.objectiveReset === 1
+      && calls.worldUpdate === 1
+      && calls.bodyImpact === 1
+      && calls.contactFeedback === 1
+      && body.hull === 0
+      && simulation.hullFailed
+      && simulation.terminal === null
+      && simulation.proximity > 0
+      && calls.objectiveUpdate === 0,
+    `The ${kind} mock did not cross the common Game world/contact boundary.`, {
+      built,
+      simulation,
+      calls,
+    });
+    runtime.dispose();
+    verify(calls.objectiveDispose === 1 && calls.worldDispose === 1,
+      `The ${kind} mock runtime did not dispose one objective and one world.`, calls);
+    observations.push({
+      kind,
+      resultKind: built.kind,
+      recordId: runtime.recordId(CAIRN_DRIFT.defaultSeed),
+      simulation,
+      calls,
+    });
+  }
+  return observations;
 });
 
 await report.write();

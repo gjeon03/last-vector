@@ -285,7 +285,7 @@ const HUD_COPY = {
     labels: ['THR', 'BOOST', 'HULL', 'SPLIT', 'ELAPSED', 'BEST', 'NEXT MARKER', 'DEPARTURE'],
     meterLabels: { throttle: 'THR', hull: 'HULL' },
     capacityTitle: '완전 충전 시 사용 가능한 추진 시간',
-    usableAria: '부스터 3.2초 사용 가능',
+    usableAria: '부스터 4.6초 사용 가능',
     lockedCaption: 'LOCK',
     lockedAria: '부스터 잠김 · 45%까지 충전 중',
   },
@@ -294,7 +294,7 @@ const HUD_COPY = {
     labels: ['THR', 'BOOST', 'HULL', 'SPLIT', 'ELAPSED', 'BEST', 'NEXT MARKER', 'DEPARTURE'],
     meterLabels: { throttle: 'THR', hull: 'HULL' },
     capacityTitle: 'Usable drive time from a full reserve',
-    usableAria: 'Boost reserve, 3.2 seconds usable',
+    usableAria: 'Boost reserve, 4.6 seconds usable',
     lockedCaption: 'LOCK',
     lockedAria: 'Boost reserve locked; recharging to 45 percent',
   },
@@ -3264,10 +3264,10 @@ function assertHudStatic(locale, hidden, available, locked) {
     && JSON.stringify(available.labels) === JSON.stringify(expected.labels),
   `${locale} static HUD labels differ from independent fixtures.`, evidence);
   verify(available.boost.title === expected.capacityTitle
-    && available.boost.caption === '3.2S'
+    && available.boost.caption === '4.6S'
     && available.boost.captionLang === 'en'
     && available.boost.aria === expected.usableAria
-    && available.boost.usableSeconds === String(92 / 29)
+    && available.boost.usableSeconds === String(92 / 20)
     && available.boost.rearmPercent === '45'
     && available.boost.availability === 'available',
   `${locale} usable boost caption/title/ARIA differs.`, evidence);

@@ -10,13 +10,14 @@ import type {
   Locale,
   LocaleFontStatus,
   Phase,
-  RunResult,
+  MissionResult,
   Settings,
   Telemetry,
 } from './contracts.ts';
 import type { CourseId, ObjectiveId } from './Courses.ts';
-import type { CourseResolution } from './CourseSelection.ts';
-import type { ProgressV1, ProgressWriteOutcome } from './Progress.ts';
+import type { MissionId } from './Missions.ts';
+import type { MissionResolution } from './MissionSelection.ts';
+import type { ProgressV2, ProgressWriteOutcome } from './Progress.ts';
 
 export interface HarnessInput {
   /**
@@ -40,6 +41,7 @@ export interface HarnessInput {
   strafeX?: number;
   /** -1..1 vertical strafe, positive = up. */
   strafeY?: number;
+  fire?: boolean;
   boost?: boolean;
   brake?: boolean;
 }
@@ -228,13 +230,13 @@ export interface HarnessCourseState {
   seed: number;
   gateCount: number;
   length: number;
-  resolution: CourseResolution;
+  resolution: MissionResolution;
 }
 
 /** Dependency-free catalog projection; it deliberately excludes render/world objects. */
 export interface HarnessCatalogState {
-  /** Player-facing Chapter 01 sequence. */
-  order: readonly CourseId[];
+  /** Player-facing active mission sequence. */
+  order: readonly MissionId[];
   /** Sanitized identities, including dormant definitions retained for migration. */
   recognizedOrder: readonly CourseId[];
   courses: ReadonlyArray<{
@@ -243,7 +245,7 @@ export interface HarnessCatalogState {
     defaultSeed: number;
     recordId: string;
     active: boolean;
-    nextCourseId: CourseId | null;
+    nextCourseId: MissionId | null;
     gateCount: number;
     sector: string;
     destination: string;
@@ -318,13 +320,13 @@ export interface HarnessApi {
   telemetry(): Telemetry;
   phase(): Phase;
   /** Non-null once the run has finished successfully; failures deliberately keep this null. */
-  result(): RunResult | null;
+  result(): MissionResult | null;
   /** Active boot-built route identity and URL-resolution evidence. */
   course(): HarnessCourseState;
   /** Immutable route authoring projected to a compact JSON-safe catalog. */
   catalog(): HarnessCatalogState;
   /** Sanitized campaign progress, kept separate from per-seed PB storage. */
-  progress(): ProgressV1;
+  progress(): ProgressV2;
   /** Current route's moving-barrier phases, or null for a route without SHEAR. */
   shear(): HarnessShearState | null;
   /** Read-only signature and bounded resource counts for the selected stage landmarks. */
@@ -339,7 +341,7 @@ export interface HarnessApi {
   /** Test-only validated progress installation. Raw storage stays encapsulated. */
   installProgress(value: unknown): ProgressWriteOutcome;
   /** Build navigation data only. This never changes location or simulation state. */
-  routeUrl(courseId: CourseId): string;
+  routeUrl(missionId: MissionId): string;
   /**
    * Apply normalised structural damage for deterministic terminal-state tests.
    *

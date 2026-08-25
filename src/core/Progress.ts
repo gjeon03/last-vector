@@ -1,16 +1,20 @@
-import type { RunResult } from './contracts.ts';
+import type { MissionResult } from './contracts.ts';
 import type { CourseId, RankLetter } from './Courses.ts';
+import { KNOWN_COURSE_ORDER, PRECISION_MAX_OFFSET, isCourseId } from './Courses.ts';
 import {
-  CHAPTER_ONE_STAGE_ORDER,
-  KNOWN_COURSE_ORDER,
-  isCourseAvailable,
-  isCourseId,
-  PRECISION_MAX_OFFSET,
-} from './Courses.ts';
+  ACTIVE_MISSION_ORDER,
+  DEFAULT_MISSION_ID,
+  DORMANT_COURSE_ORDER,
+  getMissionDefinition,
+  isMissionId,
+  type MasteryId,
+  type MissionId,
+} from './Missions.ts';
 import { hasBestRunPrefix } from './Settings.ts';
 
-export const PROGRESS_KEY = 'last-vector.progress.v1';
-const HARNESS_SESSION_KEY = 'last-vector.progress.harness-session.v1';
+export const PROGRESS_KEY = 'last-vector.progress.v2';
+export const LEGACY_PROGRESS_KEY = 'last-vector.progress.v1';
+const HARNESS_SESSION_KEY = 'last-vector.progress.harness-session.v2';
 
 const RANK_ORDER: readonly RankLetter[] = ['S', 'A', 'B', 'C', 'D'];
 
@@ -19,7 +23,17 @@ interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-export interface CourseProgress {
+export interface MissionProgress {
+  cleared: boolean;
+  /** Earliest known successful finish timestamp; null when legacy data cannot establish it. */
+  clearedAt: number | null;
+  highestRank: RankLetter | null;
+  cleanClear: boolean;
+  mastery: Partial<Record<MasteryId, true>>;
+}
+
+/** Recognized retired facts. They never participate in mission clear or unlock derivation. */
+export interface DormantCourseProgress {
   cleared: boolean;
   clearedAt: number | null;
   highestRank: RankLetter | null;
@@ -27,10 +41,11 @@ export interface CourseProgress {
   precisionClear: boolean;
 }
 
-export interface ProgressV1 {
-  version: 1;
-  selectedCourse: CourseId;
-  courses: Partial<Record<CourseId, CourseProgress>>;
+export interface ProgressV2 {
+  version: 2;
+  selectedMission: MissionId;
+  missions: Partial<Record<MissionId, MissionProgress>>;
+  dormantCourses: Partial<Record<Exclude<CourseId, MissionId>, DormantCourseProgress>>;
 }
 
 export interface ProgressWriteOutcome {
@@ -43,20 +58,20 @@ export interface ProgressWriteOutcome {
 
 export interface FinishProgressOutcome {
   firstClear: boolean;
-  newlyUnlocked: CourseId | null;
-  progress: ProgressV1;
+  newlyUnlocked: MissionId | null;
+  progress: ProgressV2;
   persistence: ProgressWriteOutcome;
 }
 
-export interface SelectCourseOutcome {
+export interface SelectMissionOutcome {
   accepted: boolean;
-  progress: ProgressV1;
+  progress: ProgressV2;
   persistence: ProgressWriteOutcome;
 }
 
 interface StoredProgress {
   present: boolean;
-  parsed: ProgressV1 | null;
+  parsed: ProgressV2 | null;
   newerVersion: boolean;
 }
 
@@ -67,7 +82,15 @@ export interface ProgressStoreOptions {
   now?: () => number;
 }
 
-const emptyCourseProgress = (): CourseProgress => ({
+const emptyMissionProgress = (): MissionProgress => ({
+  cleared: false,
+  clearedAt: null,
+  highestRank: null,
+  cleanClear: false,
+  mastery: {},
+});
+
+const emptyDormantProgress = (): DormantCourseProgress => ({
   cleared: false,
   clearedAt: null,
   highestRank: null,
@@ -75,10 +98,11 @@ const emptyCourseProgress = (): CourseProgress => ({
   precisionClear: false,
 });
 
-const emptyProgress = (): ProgressV1 => ({
-  version: 1,
-  selectedCourse: 'cairn-drift',
-  courses: {},
+const emptyProgress = (): ProgressV2 => ({
+  version: 2,
+  selectedMission: DEFAULT_MISSION_ID,
+  missions: {},
+  dormantCourses: {},
 });
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -87,56 +111,112 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isRank = (value: unknown): value is RankLetter =>
   typeof value === 'string' && RANK_ORDER.includes(value as RankLetter);
 
-function sanitizeCourseProgress(value: unknown): CourseProgress | null {
+function clearedAt(value: unknown): number | null {
+  return value === null || value === undefined
+    ? null
+    : typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+}
+
+function sanitizeMissionProgress(missionId: MissionId, value: unknown): MissionProgress | null {
+  if (!isRecord(value)) return null;
+  const mastery: Partial<Record<MasteryId, true>> = {};
+  const rawMastery = value['mastery'];
+  if (isRecord(rawMastery)) {
+    for (const id of getMissionDefinition(missionId).mastery) {
+      if (rawMastery[id] === true) mastery[id] = true;
+    }
+  }
+  return {
+    cleared: value['cleared'] === true,
+    clearedAt: clearedAt(value['clearedAt']),
+    highestRank: isRank(value['highestRank']) ? value['highestRank'] : null,
+    cleanClear: value['cleanClear'] === true,
+    mastery,
+  };
+}
+
+function sanitizeDormantProgress(value: unknown): DormantCourseProgress | null {
   if (!isRecord(value)) return null;
   return {
     cleared: value['cleared'] === true,
-    clearedAt:
-      value['clearedAt'] === null || value['clearedAt'] === undefined
-        ? null
-        : typeof value['clearedAt'] === 'number' && Number.isFinite(value['clearedAt']) && value['clearedAt'] >= 0
-          ? value['clearedAt']
-          : null,
+    clearedAt: clearedAt(value['clearedAt']),
     highestRank: isRank(value['highestRank']) ? value['highestRank'] : null,
     cleanClear: value['cleanClear'] === true,
     precisionClear: value['precisionClear'] === true,
   };
 }
 
-function sanitizeProgress(value: unknown): { progress: ProgressV1 | null; newerVersion: boolean } {
+function sanitizeV2(value: unknown): { progress: ProgressV2 | null; newerVersion: boolean } {
+  if (!isRecord(value)) return { progress: null, newerVersion: false };
+  const version = value['version'];
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 2) {
+    return { progress: null, newerVersion: false };
+  }
+  const progress = emptyProgress();
+  const rawMissions = value['missions'];
+  if (isRecord(rawMissions)) {
+    for (const [id, raw] of Object.entries(rawMissions)) {
+      if (!isMissionId(id)) continue;
+      const parsed = sanitizeMissionProgress(id, raw);
+      if (parsed) progress.missions[id] = parsed;
+    }
+  }
+  const rawDormant = value['dormantCourses'];
+  if (isRecord(rawDormant)) {
+    for (const [id, raw] of Object.entries(rawDormant)) {
+      if (!isCourseId(id) || isMissionId(id)) continue;
+      const parsed = sanitizeDormantProgress(raw);
+      if (parsed) progress.dormantCourses[id] = parsed;
+    }
+  }
+  progress.selectedMission = isMissionId(value['selectedMission'])
+    ? value['selectedMission']
+    : DEFAULT_MISSION_ID;
+  return { progress, newerVersion: version > 2 };
+}
+
+function migrateV1(value: unknown): { progress: ProgressV2 | null; newerVersion: boolean } {
   if (!isRecord(value)) return { progress: null, newerVersion: false };
   const version = value['version'];
   if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
     return { progress: null, newerVersion: false };
   }
-
-  const courses: Partial<Record<CourseId, CourseProgress>> = {};
-  const rawCourses = value['courses'];
-  if (isRecord(rawCourses)) {
-    for (const [id, raw] of Object.entries(rawCourses)) {
-      if (!isCourseId(id)) continue;
-      const parsed = sanitizeCourseProgress(raw);
-      if (parsed) courses[id] = parsed;
+  if (version > 1) return { progress: null, newerVersion: true };
+  const progress = emptyProgress();
+  const courses = value['courses'];
+  if (isRecord(courses)) {
+    const cairn = sanitizeDormantProgress(courses[DEFAULT_MISSION_ID]);
+    if (cairn) {
+      progress.missions[DEFAULT_MISSION_ID] = {
+        cleared: cairn.cleared,
+        clearedAt: cairn.clearedAt,
+        highestRank: cairn.highestRank,
+        cleanClear: cairn.cleanClear,
+        mastery: cairn.precisionClear ? { precision: true } : {},
+      };
+    }
+    for (const id of DORMANT_COURSE_ORDER) {
+      const dormant = sanitizeDormantProgress(courses[id]);
+      if (dormant) progress.dormantCourses[id] = dormant;
     }
   }
-
-  return {
-    progress: {
-      version: 1,
-      selectedCourse: isCourseId(value['selectedCourse']) ? value['selectedCourse'] : 'cairn-drift',
-      courses,
-    },
-    newerVersion: version > 1,
-  };
+  return { progress, newerVersion: false };
 }
 
 function readStored(storage: StorageLike | null): StoredProgress {
   if (!storage) return { present: false, parsed: null, newerVersion: false };
   try {
-    const raw = storage.getItem(PROGRESS_KEY);
-    if (raw === null) return { present: false, parsed: null, newerVersion: false };
-    const sanitized = sanitizeProgress(JSON.parse(raw) as unknown);
-    return { present: true, parsed: sanitized.progress, newerVersion: sanitized.newerVersion };
+    const current = storage.getItem(PROGRESS_KEY);
+    if (current !== null) {
+      const sanitized = sanitizeV2(JSON.parse(current) as unknown);
+      return { present: true, parsed: sanitized.progress, newerVersion: sanitized.newerVersion };
+    }
+    const legacy = storage.getItem(LEGACY_PROGRESS_KEY);
+    if (legacy === null) return { present: false, parsed: null, newerVersion: false };
+    const migrated = migrateV1(JSON.parse(legacy) as unknown);
+    return { present: true, parsed: migrated.progress, newerVersion: migrated.newerVersion };
   } catch {
     return { present: true, parsed: null, newerVersion: false };
   }
@@ -162,10 +242,34 @@ function earlierTime(a: number | null, b: number | null): number | null {
   return Math.min(a, b);
 }
 
-function mergeCourse(a?: CourseProgress, b?: CourseProgress): CourseProgress | undefined {
+function mergeMission(
+  missionId: MissionId,
+  a?: MissionProgress,
+  b?: MissionProgress,
+): MissionProgress | undefined {
   if (!a && !b) return undefined;
-  const left = a ?? emptyCourseProgress();
-  const right = b ?? emptyCourseProgress();
+  const left = a ?? emptyMissionProgress();
+  const right = b ?? emptyMissionProgress();
+  const mastery: Partial<Record<MasteryId, true>> = {};
+  for (const id of getMissionDefinition(missionId).mastery) {
+    if (left.mastery[id] || right.mastery[id]) mastery[id] = true;
+  }
+  return {
+    cleared: left.cleared || right.cleared,
+    clearedAt: earlierTime(left.clearedAt, right.clearedAt),
+    highestRank: betterRank(left.highestRank, right.highestRank),
+    cleanClear: left.cleanClear || right.cleanClear,
+    mastery,
+  };
+}
+
+function mergeDormant(
+  a?: DormantCourseProgress,
+  b?: DormantCourseProgress,
+): DormantCourseProgress | undefined {
+  if (!a && !b) return undefined;
+  const left = a ?? emptyDormantProgress();
+  const right = b ?? emptyDormantProgress();
   return {
     cleared: left.cleared || right.cleared,
     clearedAt: earlierTime(left.clearedAt, right.clearedAt),
@@ -175,13 +279,18 @@ function mergeCourse(a?: CourseProgress, b?: CourseProgress): CourseProgress | u
   };
 }
 
-function cloneProgress(progress: ProgressV1): ProgressV1 {
-  const courses: Partial<Record<CourseId, CourseProgress>> = {};
-  for (const id of KNOWN_COURSE_ORDER) {
-    const source = progress.courses[id];
-    if (source) courses[id] = { ...source };
+function cloneProgress(progress: ProgressV2): ProgressV2 {
+  const clone = emptyProgress();
+  clone.selectedMission = progress.selectedMission;
+  for (const id of ACTIVE_MISSION_ORDER) {
+    const source = progress.missions[id];
+    if (source) clone.missions[id] = { ...source, mastery: { ...source.mastery } };
   }
-  return { version: 1, selectedCourse: progress.selectedCourse, courses };
+  for (const id of DORMANT_COURSE_ORDER) {
+    const source = progress.dormantCourses[id];
+    if (source) clone.dormantCourses[id] = { ...source };
+  }
+  return clone;
 }
 
 function defaultStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | null {
@@ -192,14 +301,11 @@ function defaultStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | 
   }
 }
 
-export function isCourseUnlocked(progress: ProgressV1, courseId: CourseId): boolean {
-  if (!isCourseAvailable(courseId)) return false;
-  const stageIndex = CHAPTER_ONE_STAGE_ORDER.indexOf(
-    courseId as typeof CHAPTER_ONE_STAGE_ORDER[number],
-  );
-  if (stageIndex < 0) return false;
-  for (let index = 0; index < stageIndex; index++) {
-    if (progress.courses[CHAPTER_ONE_STAGE_ORDER[index]!]?.cleared !== true) return false;
+export function isMissionUnlocked(progress: ProgressV2, missionId: MissionId): boolean {
+  const index = ACTIVE_MISSION_ORDER.indexOf(missionId);
+  if (index < 0) return false;
+  for (let prior = 0; prior < index; prior++) {
+    if (progress.missions[ACTIVE_MISSION_ORDER[prior]!]?.cleared !== true) return false;
   }
   return true;
 }
@@ -216,103 +322,98 @@ export class ProgressStore {
 
   constructor(options: ProgressStoreOptions = {}) {
     this.local = options.localStorage === undefined ? defaultStorage('localStorage') : options.localStorage;
-    this.session =
-      options.sessionStorage === undefined ? defaultStorage('sessionStorage') : options.sessionStorage;
+    this.session = options.sessionStorage === undefined
+      ? defaultStorage('sessionStorage')
+      : options.sessionStorage;
     this.legacyProbe = options.hasLegacyCairnBest ?? (() => hasBestRunPrefix('cairn-drift-'));
     this.now = options.now ?? (() => Date.now());
     this.reload();
   }
 
-  reload(): ProgressV1 {
+  reload(): ProgressV2 {
     this.sessionOnly = hasHarnessSession(this.session);
     const local = readStored(this.local);
     const session = readStored(this.session);
     this.localReadOnly = local.newerVersion;
     this.sessionReadOnly = session.newerVersion;
-
-    const merged = emptyProgress();
-    for (const id of KNOWN_COURSE_ORDER) {
-      const course = mergeCourse(local.parsed?.courses[id], session.parsed?.courses[id]);
-      if (course) merged.courses[id] = course;
-    }
-
+    const merged = this.merge(local.parsed, session.parsed);
     if (!local.present && !session.present && this.legacyProbe()) {
-      merged.courses['cairn-drift'] = { ...emptyCourseProgress(), cleared: true };
+      merged.missions[DEFAULT_MISSION_ID] = { ...emptyMissionProgress(), cleared: true };
     }
-
-    const requested = session.parsed?.selectedCourse ?? local.parsed?.selectedCourse ?? 'cairn-drift';
-    merged.selectedCourse = isCourseUnlocked(merged, requested) ? requested : 'cairn-drift';
+    const requested = session.parsed?.selectedMission
+      ?? local.parsed?.selectedMission
+      ?? DEFAULT_MISSION_ID;
+    merged.selectedMission = isMissionUnlocked(merged, requested) ? requested : DEFAULT_MISSION_ID;
     this.current = merged;
     return this.snapshot();
   }
 
-  snapshot(): ProgressV1 {
+  snapshot(): ProgressV2 {
     return cloneProgress(this.current);
   }
 
-  isUnlocked(courseId: CourseId): boolean {
-    return isCourseUnlocked(this.current, courseId);
+  isUnlocked(missionId: MissionId): boolean {
+    return isMissionUnlocked(this.current, missionId);
   }
 
-  selectCourse(courseId: CourseId): SelectCourseOutcome {
-    if (!this.isUnlocked(courseId)) {
+  selectMission(missionId: MissionId): SelectMissionOutcome {
+    if (!this.isUnlocked(missionId)) {
       return { accepted: false, progress: this.snapshot(), persistence: this.noWriteOutcome() };
     }
-    this.current.selectedCourse = courseId;
+    this.current.selectedMission = missionId;
     const persistence = this.persist();
     return { accepted: true, progress: this.snapshot(), persistence };
   }
 
-  recordSuccessfulFinish(courseId: CourseId, result: RunResult): FinishProgressOutcome {
-    const unlockedBefore = new Set(
-      CHAPTER_ONE_STAGE_ORDER.filter((id) => this.isUnlocked(id)),
-    );
-    const previous = this.current.courses[courseId] ?? emptyCourseProgress();
-    const firstClear = !previous.cleared;
+  recordSuccessfulFinish(missionId: MissionId, result: MissionResult): FinishProgressOutcome {
+    const unlockedBefore = new Set(ACTIVE_MISSION_ORDER.filter((id) => this.isUnlocked(id)));
+    const previous = this.current.missions[missionId] ?? emptyMissionProgress();
     const rank = isRank(result.rank) ? result.rank : null;
-    const precise =
-      typeof result.maxGateOffset === 'number' &&
-      Number.isFinite(result.maxGateOffset) &&
-      result.maxGateOffset < PRECISION_MAX_OFFSET;
-    this.current.courses[courseId] = {
+    const mastery = { ...previous.mastery };
+    if (result.kind === 'gate-race'
+      && result.maxGateOffset < PRECISION_MAX_OFFSET
+      && getMissionDefinition(missionId).mastery.includes('precision')) {
+      mastery.precision = true;
+    }
+    if (result.kind === 'escape'
+      && result.checkpointsCleared === result.checkpointsTotal
+      && getMissionDefinition(missionId).mastery.includes('precision')) {
+      mastery.precision = true;
+    }
+    if (result.kind === 'strike') {
+      const definition = getMissionDefinition(missionId);
+      if (definition.mastery.includes('all-nodes') && result.targetsDestroyed >= 6) {
+        mastery['all-nodes'] = true;
+      }
+      const accuracy = result.shotsFired > 0 ? result.shotsHit / result.shotsFired : 0;
+      if (definition.mastery.includes('accuracy') && accuracy >= 0.75) {
+        mastery.accuracy = true;
+      }
+    }
+    this.current.missions[missionId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),
       highestRank: betterRank(previous.highestRank, rank),
       cleanClear: previous.cleanClear || result.cleanRun,
-      precisionClear: previous.precisionClear || precise,
+      mastery,
     };
     const persistence = this.persist();
-    const newlyUnlocked = CHAPTER_ONE_STAGE_ORDER.find(
+    const newlyUnlocked = ACTIVE_MISSION_ORDER.find(
       (id) => !unlockedBefore.has(id) && this.isUnlocked(id),
     ) ?? null;
-    return {
-      firstClear,
-      newlyUnlocked,
-      progress: this.snapshot(),
-      persistence,
-    };
+    return { firstClear: !previous.cleared, newlyUnlocked, progress: this.snapshot(), persistence };
   }
 
-  /**
-   * Test-only validated installation. It is deliberately session-only: automation can prove a
-   * reload without gaining a console-callable path that overwrites a player's durable progress.
-   */
   install(value: unknown): ProgressWriteOutcome {
-    const sanitized = sanitizeProgress(value).progress;
+    const sanitized = sanitizeV2(value).progress;
     this.current = sanitized ?? emptyProgress();
-    if (!this.isUnlocked(this.current.selectedCourse)) this.current.selectedCourse = 'cairn-drift';
+    if (!this.isUnlocked(this.current.selectedMission)) {
+      this.current.selectedMission = DEFAULT_MISSION_ID;
+    }
     this.sessionOnly = true;
-    const markerWritten = this.write(
-      this.session,
-      '1',
-      this.sessionReadOnly,
-      HARNESS_SESSION_KEY,
-    );
-    const sessionWritten = markerWritten && this.write(
-      this.session,
-      JSON.stringify(this.current),
-      this.sessionReadOnly,
-    );
+    const markerWritten = this.write(this.session, '1', this.sessionReadOnly, HARNESS_SESSION_KEY);
+    const sessionWritten = markerWritten
+      && this.write(this.session, JSON.stringify(this.current), this.sessionReadOnly);
     return {
       sessionWritten,
       localWritten: false,
@@ -320,6 +421,19 @@ export class ProgressStore {
       sessionReadOnly: this.sessionReadOnly,
       localReadOnly: this.localReadOnly,
     };
+  }
+
+  private merge(a: ProgressV2 | null, b: ProgressV2 | null): ProgressV2 {
+    const merged = emptyProgress();
+    for (const id of ACTIVE_MISSION_ORDER) {
+      const mission = mergeMission(id, a?.missions[id], b?.missions[id]);
+      if (mission) merged.missions[id] = mission;
+    }
+    for (const id of DORMANT_COURSE_ORDER) {
+      const dormant = mergeDormant(a?.dormantCourses[id], b?.dormantCourses[id]);
+      if (dormant) merged.dormantCourses[id] = dormant;
+    }
+    return merged;
   }
 
   private noWriteOutcome(): ProgressWriteOutcome {
@@ -348,11 +462,6 @@ export class ProgressStore {
     };
   }
 
-  /**
-   * Storage is shared with other ProgressStore instances and, for localStorage, other tabs.
-   * Reconcile immediately before the synchronous writes so an older in-memory snapshot cannot
-   * erase a clear or mastery fact that another writer committed after this store was created.
-   */
   private mergeLatestForPersist(): void {
     this.sessionOnly = this.sessionOnly || hasHarnessSession(this.session);
     const local = this.sessionOnly
@@ -361,16 +470,10 @@ export class ProgressStore {
     const session = readStored(this.session);
     this.localReadOnly = this.localReadOnly || local.newerVersion;
     this.sessionReadOnly = this.sessionReadOnly || session.newerVersion;
-
-    const merged = emptyProgress();
-    for (const id of KNOWN_COURSE_ORDER) {
-      const stored = mergeCourse(local.parsed?.courses[id], session.parsed?.courses[id]);
-      const course = mergeCourse(stored, this.current.courses[id]);
-      if (course) merged.courses[id] = course;
-    }
-
-    const requested = this.current.selectedCourse;
-    merged.selectedCourse = isCourseUnlocked(merged, requested) ? requested : 'cairn-drift';
+    const stored = this.merge(local.parsed, session.parsed);
+    const merged = this.merge(stored, this.current);
+    const requested = this.current.selectedMission;
+    merged.selectedMission = isMissionUnlocked(merged, requested) ? requested : DEFAULT_MISSION_ID;
     this.current = merged;
   }
 
@@ -388,4 +491,13 @@ export class ProgressStore {
       return false;
     }
   }
+}
+
+// Only active missions backed by a legacy CourseId participate in this historical partition.
+// Chapter-only missions must never erase dormant legacy course facts.
+const activeLegacyCourseIds = ACTIVE_MISSION_ORDER.filter(
+  (id): id is Extract<MissionId, CourseId> => isCourseId(id),
+);
+if (KNOWN_COURSE_ORDER.length !== activeLegacyCourseIds.length + DORMANT_COURSE_ORDER.length) {
+  throw new Error('Mission and dormant course catalogs do not partition recognized data');
 }

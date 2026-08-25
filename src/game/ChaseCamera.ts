@@ -21,6 +21,7 @@ export interface CameraShakeSource {
 }
 
 const BASE_OFFSET = new THREE.Vector3(0, 2.3, 13.4);
+const FAR_OFFSET = new THREE.Vector3(0, 5.1, 27.6);
 const COCKPIT_OFFSET = new THREE.Vector3(0, 1.05, -2.15);
 const CHASE_NEAR = 1.5;
 const COCKPIT_NEAR = 0.1;
@@ -59,7 +60,7 @@ export class ChaseCamera {
   snapTo(ship: Ship): void {
     this.boomPosition.copy(ship.position);
     this.boomQuaternion.copy(ship.quaternion);
-    this.offset.copy(BASE_OFFSET);
+    this.offset.copy(this.mode === 'far-chase' ? FAR_OFFSET : BASE_OFFSET);
     this.relative.copy(this.offset).applyQuaternion(this.boomQuaternion);
     this.camera.position.copy(ship.position).add(this.relative);
     ship.getForward(this.scratch);
@@ -101,10 +102,12 @@ export class ChaseCamera {
       const orientationTau = lerp(0.16, 0.085, speed01);
       this.boomQuaternion.slerp(ship.quaternion, 1 - Math.exp(-dt / orientationTau));
 
+      const baseOffset = mode === 'far-chase' ? FAR_OFFSET : BASE_OFFSET;
+      const distanceScale = mode === 'far-chase' ? 1.55 : 1;
       this.offset.set(
-        BASE_OFFSET.x,
-        BASE_OFFSET.y + speed01 * 0.35,
-        BASE_OFFSET.z + speed01 * 2.2 + boost * 1.2,
+        baseOffset.x,
+        baseOffset.y + speed01 * 0.35 * distanceScale,
+        baseOffset.z + (speed01 * 2.2 + boost * 1.2) * distanceScale,
       );
       this.desiredPosition.copy(this.offset).applyQuaternion(this.boomQuaternion);
 
@@ -177,9 +180,10 @@ export class ChaseCamera {
     this.mode = mode;
     this.camera.near = mode === 'cockpit' ? COCKPIT_NEAR : CHASE_NEAR;
     this.camera.updateProjectionMatrix();
-    // The chase follower's last relative pose is stale after time in a rigid cockpit. Re-snap
-    // before resuming its springs so switching back cannot sweep the camera through the hull.
-    if (mode === 'chase') this.initialised = false;
+    // Every exterior mode has a distinct spring-arm length. Re-snap when entering either one so
+    // cockpit's rigid pose and the other chase mode's relative offset cannot sweep through the
+    // hull or spend the first seconds at the wrong distance.
+    if (mode !== 'cockpit') this.initialised = false;
   }
 
   getCameraMode(): CameraMode {

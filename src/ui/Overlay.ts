@@ -7,7 +7,7 @@
 
 import './styles.css';
 
-import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
+import type { HudHost, MissionResult, Phase, Settings, Telemetry } from '../core/contracts.ts';
 import { FONT, UI } from '../core/art.ts';
 import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
@@ -130,10 +130,10 @@ export class Overlay {
         this.paused = false;
         host.quitToTitle();
       },
-      selectRoute: (courseId) => host.selectRoute(courseId),
-      showRouteSelect: () => {
+      selectMission: (missionId) => host.selectMission(missionId),
+      showMissionSelect: () => {
         this.paused = false;
-        host.showRouteSelect();
+        host.showMissionSelect();
       },
       pause: () => host.pause(),
       requestLocale: (locale) => host.requestLocale(locale),
@@ -202,12 +202,12 @@ export class Overlay {
     this.applyView();
   }
 
-  showResult(result: RunResult): void {
+  showResult(result: MissionResult): void {
     this.screens.showResult(result);
   }
 
-  showFailure(elapsed: number): void {
-    this.screens.showFailure(elapsed);
+  showFailure(elapsed: number, reason?: string): void {
+    this.screens.showFailure(elapsed, reason);
   }
 
   setCountdown(value: number | null): void {

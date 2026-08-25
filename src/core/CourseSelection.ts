@@ -1,63 +1,9 @@
-import type { CourseId } from './Courses.ts';
-import { DEFAULT_COURSE_ID, isCourseAvailable, isCourseId } from './Courses.ts';
-import type { ProgressV1 } from './Progress.ts';
-import { isCourseUnlocked } from './Progress.ts';
-
-export type CourseResolutionSource =
-  | 'url'
-  | 'persisted'
-  | 'default'
-  | 'invalid-url'
-  | 'locked-url';
-
-export interface CourseResolution {
-  courseId: CourseId;
-  source: CourseResolutionSource;
-  diagnostic: string | null;
-}
-
-export function resolveCourseSelection(
-  rawCourseParam: string | null,
-  progress: ProgressV1,
-): CourseResolution {
-  if (rawCourseParam !== null) {
-    if (!isCourseId(rawCourseParam)) {
-      return {
-        courseId: DEFAULT_COURSE_ID,
-        source: 'invalid-url',
-        diagnostic: `unknown course parameter: ${rawCourseParam}`,
-      };
-    }
-    if (!isCourseAvailable(rawCourseParam) || !isCourseUnlocked(progress, rawCourseParam)) {
-      return {
-        courseId: DEFAULT_COURSE_ID,
-        source: 'locked-url',
-        diagnostic: `${isCourseAvailable(rawCourseParam) ? 'locked' : 'disabled'} course parameter: ${rawCourseParam}`,
-      };
-    }
-    return { courseId: rawCourseParam, source: 'url', diagnostic: null };
-  }
-
-  if (isCourseUnlocked(progress, progress.selectedCourse)) {
-    return { courseId: progress.selectedCourse, source: 'persisted', diagnostic: null };
-  }
-  return { courseId: DEFAULT_COURSE_ID, source: 'default', diagnostic: null };
-}
-
-export interface BuildCourseUrlOptions {
-  preserveSeed?: boolean;
-}
-
-/** Returns navigation data only; callers retain ownership of reload and error handling. */
-export function buildCourseUrl(
-  current: string | URL,
-  courseId: CourseId,
-  options: BuildCourseUrlOptions = {},
-): string {
-  const base = typeof window === 'undefined' ? 'http://localhost/' : window.location.href;
-  const url = current instanceof URL ? new URL(current.href) : new URL(current, base);
-  // Never mint a shareable/navigation URL for an authored route that is release-disabled.
-  url.searchParams.set('course', isCourseAvailable(courseId) ? courseId : DEFAULT_COURSE_ID);
-  if (options.preserveSeed !== true) url.searchParams.delete('seed');
-  return url.href;
-}
+/** @deprecated Import MissionSelection. This module preserves the old import path during v2. */
+export {
+  buildMissionUrl as buildCourseUrl,
+  resolveMissionSelection,
+  resolveMissionSelection as resolveCourseSelection,
+  type BuildMissionUrlOptions as BuildCourseUrlOptions,
+  type MissionResolution as CourseResolution,
+  type MissionResolutionSource as CourseResolutionSource,
+} from './MissionSelection.ts';

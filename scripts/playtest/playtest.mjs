@@ -215,8 +215,8 @@ async function runPlaytest({ report, session, options }) {
     criteria: [criterion('M7', 'partial', 'Drives the shipped mouse pipeline — lock gate, virtual stick, sensitivity/expo, button mapping — via a pointerLockElement override; trusted lock acquisition and raw OS deltas remain human-only.')],
     assertion:
       'With document.pointerLockElement faked to the canvas, synthetic mousemove deflects pitch/yaw '
-      + 'through the virtual stick, LMB sets boost; on lock loss WITHOUT a mouseup the mouse boost '
-      + 'clears (the Esc-latch regression), while a physically held keyboard boost survives it.',
+      + 'through the virtual stick, CAIRN LMB is inert, and a physically held Shift boost survives '
+      + 'pointer-lock loss while mouse-button state is cleared.',
   }, async () => {
     /* GOAL.md carried "the mouse half needs a human... Nothing else will do it" for six rounds.
        Disproved by construction in round 9: everything except trusted lock ACQUISITION and raw OS
@@ -261,8 +261,9 @@ async function runPlaytest({ report, session, options }) {
 
     await mouse('mousedown', { button: 0 });
     await callHarness(page, 'step', [2]);
-    const boosting = await callHarness(page, 'activeInput');
-    verify(boosting.boost === true, 'LMB did not engage boost through the mouse pipeline.', boosting);
+    const inactiveLmb = await callHarness(page, 'activeInput');
+    verify(inactiveLmb.fire === false && inactiveLmb.boost === false,
+      'CAIRN LMB unexpectedly produced a flight action.', inactiveLmb);
 
     /* The latch: drop the lock with the button still down — the mouseup after Esc is exactly the
        event the guard drops. Boost must clear anyway, from the lock transition itself. */
@@ -288,7 +289,7 @@ async function runPlaytest({ report, session, options }) {
 
     return {
       steered: { yaw: steered.yaw, pitch: steered.pitch },
-      mouseBoostEngaged: boosting.boost,
+      inactiveLmb: { fire: inactiveLmb.fire, boost: inactiveLmb.boost },
       clearedOnLockLoss: released.boost === false,
       keyboardSurvivedLockLoss: keyboardHeld.boost === true,
       notCovered: ['trusted pointer-lock acquisition', 'raw OS mouse delta delivery', 'real Esc keystroke ordering'],
@@ -773,7 +774,7 @@ async function runPlaytest({ report, session, options }) {
     ));
     const requiredPrimerRows = [
       { control: 'mouse-steer', keys: ['MOUSE'] },
-      { control: 'boost', keys: ['SHIFT', 'LMB'] },
+      { control: 'boost', keys: ['SHIFT'] },
       { control: 'brake', keys: ['SPACE', 'RMB'] },
       { control: 'keyboard-steer', keys: ['↑', '↓', '←', '→'] },
       { control: 'camera-toggle', keys: ['C'] },
@@ -1068,10 +1069,10 @@ async function runPlaytest({ report, session, options }) {
     verify(gaps.length > 0 && Math.min(...gaps) <= 2.6,
       `Fast recovery was not observed; gaps were ${gaps.join(', ')} s.`, evidence);
     const usableSeconds = Number(hudScale.usableSeconds);
-    verify(Math.abs(usableSeconds - 3.1724137931034484) <= 1e-12
+    verify(Math.abs(usableSeconds - 4.6) <= 1e-12
       && hudScale.rearmPercent === '45' && hudScale.availability === 'available',
     'The boost HUD does not expose its initial raw numeric and availability contracts.', evidence);
-    verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.3700', '0.6600', '0.9500']),
+    verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.2800', '0.4800', '0.6800', '0.8800']),
       'The boost HUD one-second marks do not match the latch floor plus drain rate.', evidence);
     verify(lockedHud?.availability === 'unavailable'
       && Math.abs(Number(lockedHud.usableSeconds) - usableSeconds) <= 1e-12

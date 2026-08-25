@@ -7,12 +7,16 @@
  * keyboard path and the pointer path are the same path.
  */
 
-import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
+import type { HudHost, Locale, MissionResult, QualityLevel, Settings } from '../core/contracts.ts';
+import { PRECISION_MAX_OFFSET } from '../core/Courses.ts';
 import {
-  CHAPTER_ONE_STAGE_ORDER,
-  PRECISION_MAX_OFFSET,
-  type CourseId,
-} from '../core/Courses.ts';
+  ACTIVE_MISSION_ORDER,
+  getMissionDefinition,
+  type MasteryId,
+  type MissionCapability,
+  type MissionChapter,
+  type MissionId,
+} from '../core/Missions.ts';
 import type { Translator } from '../i18n/index.ts';
 import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
@@ -53,12 +57,15 @@ export type ScreenAction =
   | 'run-again'
   | 'stage-select';
 
-export type CampaignRouteState = 'locked' | 'available' | 'cleared';
+export type CampaignMissionState = 'locked' | 'available' | 'cleared';
 export type CampaignNavigationError = 'navigation-failed' | 'storage-unavailable';
 
-export interface CampaignCourseView {
-  readonly id: CourseId;
-  readonly state: CampaignRouteState;
+export interface CampaignMissionView {
+  readonly id: MissionId;
+  readonly chapter: MissionChapter;
+  readonly capabilities: readonly MissionCapability[];
+  readonly mastery: readonly { readonly id: MasteryId; readonly complete: boolean }[];
+  readonly state: CampaignMissionState;
   readonly highestRank: string | null;
   readonly objectives: {
     readonly firstClear: boolean;
@@ -69,11 +76,11 @@ export interface CampaignCourseView {
 
 /** Complete, presentation-ready campaign state. Screens never reads storage or derives unlocks. */
 export interface CampaignViewModel {
-  readonly activeCourseId: CourseId;
-  readonly routes: readonly CampaignCourseView[];
-  /** Next active stage already authorised by Progress; Screens never infers an unlock. */
-  readonly nextStageId?: CourseId | null;
-  readonly newlyUnlockedCourseId?: CourseId | null;
+  readonly activeMissionId: MissionId;
+  readonly missions: readonly CampaignMissionView[];
+  /** Next active mission already authorised by Progress; Screens never infers an unlock. */
+  readonly nextMissionId?: MissionId | null;
+  readonly newlyUnlockedMissionId?: MissionId | null;
   readonly navigationError?: CampaignNavigationError | null;
 }
 
@@ -82,10 +89,10 @@ export interface ScreenFocusToken {
   action?: ScreenAction;
   nav?: string;
   locale?: Locale;
-  stage?: CourseId;
+  stage?: MissionId;
 }
 
-const CHAPTER_STAGE_IDS = CHAPTER_ONE_STAGE_ORDER;
+const CHAPTER_STAGE_IDS: readonly MissionId[] = ACTIVE_MISSION_ORDER;
 const CAMPAIGN_BRIEF_KEYS = [
   'briefingLine1',
   'briefingLine2',
@@ -93,31 +100,24 @@ const CAMPAIGN_BRIEF_KEYS = [
 ] as const;
 
 function defaultCampaignView(): CampaignViewModel {
+  const activeMissionId = ACTIVE_MISSION_ORDER[0]!;
   return {
-    activeCourseId: 'cairn-drift',
-    nextStageId: null,
-    newlyUnlockedCourseId: null,
+    activeMissionId,
+    nextMissionId: null,
+    newlyUnlockedMissionId: null,
     navigationError: null,
-    routes: [
-      {
-        id: 'cairn-drift',
-        state: 'available',
+    missions: ACTIVE_MISSION_ORDER.map((id, index) => {
+      const definition = getMissionDefinition(id);
+      return {
+        id,
+        chapter: definition.chapter,
+        capabilities: definition.capabilities,
+        mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+        state: index === 0 ? 'available' : 'locked',
         highestRank: null,
         objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-      {
-        id: 'wreckline',
-        state: 'locked',
-        highestRank: null,
-        objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-      {
-        id: 'ringfall',
-        state: 'locked',
-        highestRank: null,
-        objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-    ],
+      };
+    }),
   };
 }
 
@@ -126,6 +126,7 @@ export type ControlId =
   | 'throttle'
   | 'roll'
   | 'boost'
+  | 'fire'
   | 'brake'
   | 'strafe-horizontal'
   | 'strafe-vertical'
@@ -139,7 +140,7 @@ interface ControlRow {
   readonly id: ControlId;
   /**
    * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
-   * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
+   * groups are alternatives and render with an "or" between them ("SPACE or RMB").
    */
   readonly groups: readonly (readonly string[])[];
   readonly action: keyof ControlMessages;
@@ -151,6 +152,7 @@ interface ControlRow {
    * attention; the primer has neither.
    */
   readonly short?: keyof ControlMessages;
+  readonly capability?: MissionCapability;
 }
 
 /**
@@ -162,7 +164,8 @@ const CONTROLS: readonly ControlRow[] = [
   { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
   { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
   { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
-  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
+  { id: 'boost', groups: [['SHIFT']], action: 'boost', primer: true },
+  { id: 'fire', groups: [['LMB']], action: 'fire', primer: true, capability: 'fire' },
   { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
   { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
   { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
@@ -316,6 +319,7 @@ const SETTING_GROUPS = [
         options: [
           ['chase', 'chase'],
           ['cockpit', 'cockpit'],
+          ['far-chase', 'farChase'],
         ],
       },
       {
@@ -463,8 +467,9 @@ export class Screens {
   private nBriefTitle: HTMLElement | null = null;
   private nBriefTransit: HTMLElement | null = null;
   private readonly nBriefLines: HTMLElement[] = [];
-  private readonly stageNodes = new Map<CourseId, {
+  private readonly stageNodes = new Map<MissionId, {
     button: HTMLButtonElement;
+    chapter: HTMLElement;
     status: HTMLElement;
     selected: HTMLElement;
     lock: HTMLElement;
@@ -548,7 +553,7 @@ export class Screens {
    */
   focusStageSelection(): void {
     if (this.view !== 'title') return;
-    const button = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+    const button = this.stageNodes.get(this.campaign.activeMissionId)?.button;
     const title = this.views.get('title');
     if (!button || !title || button.closest('[hidden]')) return;
 
@@ -568,17 +573,18 @@ export class Screens {
    * authority for unlock and persistence rules; this layer only renders the supplied states.
    */
   syncCampaign(viewModel: CampaignViewModel): void {
-    const active = viewModel.routes.find(
-      (route) => route.id === viewModel.activeCourseId && route.state !== 'locked',
+    const active = viewModel.missions.find(
+      (mission) => mission.id === viewModel.activeMissionId && mission.state !== 'locked',
     );
-    const fallback = viewModel.routes.find(
-      (route) => route.id === 'cairn-drift' && route.state !== 'locked',
+    const fallback = viewModel.missions.find(
+      (mission) => mission.id === ACTIVE_MISSION_ORDER[0] && mission.state !== 'locked',
     );
-    const activeCourseId = active?.id ?? fallback?.id ?? 'cairn-drift';
-    this.campaign = { ...viewModel, activeCourseId };
+    const activeMissionId = active?.id ?? fallback?.id ?? ACTIVE_MISSION_ORDER[0]!;
+    this.campaign = { ...viewModel, activeMissionId };
+    this.syncControlCapabilities();
 
     const m = this.translator.messages;
-    const routeCopy = m.campaign.routes[activeCourseId];
+    const routeCopy = m.campaign.routes[activeMissionId];
     if (this.nTitleSector) this.nTitleSector.textContent = routeCopy.sectorName;
     if (this.nTitleTagline) {
       writeEnglishTokens(
@@ -592,6 +598,8 @@ export class Screens {
           'ENGINE SPINE',
           'VECTOR',
           'ORISON ARRAY',
+          'LAST ASCENT',
+          'ORBITAL EXTRACTION',
         ],
       );
     }
@@ -619,19 +627,24 @@ export class Screens {
           'TWIN SPIRES',
           'ORISON ARCH',
           'ORISON ARRAY',
+          'LAST ASCENT',
+          'SHOCKFRONT',
+          'SAFE CORRIDOR',
         ],
       );
     }
 
     for (const id of CHAPTER_STAGE_IDS) {
-      const route = viewModel.routes.find((candidate) => candidate.id === id);
+      const route = viewModel.missions.find((candidate) => candidate.id === id);
       const nodes = this.stageNodes.get(id);
       if (!nodes) continue;
-      const state = route?.state ?? (id === 'cairn-drift' ? 'available' : 'locked');
-      const selected = id === activeCourseId;
+      const state = route?.state
+        ?? (ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked');
+      const selected = id === activeMissionId;
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
       nodes.button.dataset['stageState'] = state;
+      nodes.chapter.textContent = `CH ${String(route?.chapter ?? 1).padStart(2, '0')}`;
       nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
       nodes.button.tabIndex = selected ? 0 : -1;
       nodes.button.setAttribute('aria-checked', selected ? 'true' : 'false');
@@ -652,22 +665,30 @@ export class Screens {
       writeEnglishTokens(
         nodes.lock,
         state === 'locked' ? m.campaign.routes[id].lockReason : '',
-        ['CAIRN DRIFT', 'WRECKLINE'],
+        ['CAIRN DRIFT', 'LAST ASCENT'],
       );
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
       nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route?.objectives.precision ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route !== undefined
+        && route.mastery.length > 0
+        && route.mastery.every((entry) => entry.complete) ? '1' : '0';
     }
 
     this.syncCampaignErrors();
     this.syncObjectiveLists();
   }
 
-  private campaignCourse(id: CourseId = this.campaign.activeCourseId): CampaignCourseView {
-    return this.campaign.routes.find((route) => route.id === id) ?? {
+  private campaignMission(id: MissionId = this.campaign.activeMissionId): CampaignMissionView {
+    const mission = this.campaign.missions.find((candidate) => candidate.id === id);
+    if (mission) return mission;
+    const definition = getMissionDefinition(id);
+    return {
       id,
-      state: id === 'cairn-drift' ? 'available' : 'locked',
+      chapter: definition.chapter,
+      capabilities: definition.capabilities,
+      mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+      state: ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked',
       highestRank: null,
       objectives: { firstClear: false, cleanClear: false, precision: false },
     };
@@ -686,18 +707,23 @@ export class Screens {
   }
 
   private syncObjectiveLists(): void {
-    const route = this.campaignCourse();
+    const route = this.campaignMission();
     const lists = this.el.querySelectorAll<HTMLElement>('[data-objective-list]');
     for (let i = 0; i < lists.length; i++) this.writeObjectiveList(lists[i]!, route);
   }
 
   private writeObjectiveList(
     list: HTMLElement,
-    route: CampaignCourseView,
-    result?: RunResult,
+    route: CampaignMissionView,
+    result?: MissionResult,
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
+    const masteryLabel = (id: MasteryId): string => id === 'all-nodes'
+      ? copy.allNodes ?? copy.precision
+      : id === 'accuracy'
+        ? copy.accuracy ?? copy.precision
+        : copy.precision;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
       {
@@ -708,7 +734,13 @@ export class Screens {
         target: true,
       },
       { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
+      ...route.mastery.map((entry) => ({
+        id: entry.id,
+        label: masteryLabel(entry.id),
+        complete: entry.complete,
+        value: '',
+        target: true,
+      })),
     ];
     const focusId = result
       ? rows.find((row) => row.target && !row.complete)?.id ?? null
@@ -726,7 +758,7 @@ export class Screens {
       const name = writeEnglishTokens(
         el('span', 'lv-objective-name'),
         label,
-        ['CAIRN DRIFT', 'WRECKLINE', 'RINGFALL'],
+        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
       );
       name.lang = 'en';
       if (id === focusId) {
@@ -753,7 +785,7 @@ export class Screens {
       action: active.dataset['action'] as ScreenAction | undefined,
       nav: nav?.dataset['nav'],
       locale: active.dataset['locale'] as Locale | undefined,
-      stage: active.dataset['stageId'] as CourseId | undefined,
+      stage: active.dataset['stageId'] as MissionId | undefined,
     };
   }
 
@@ -904,7 +936,7 @@ export class Screens {
     } else if (idx < 0 && item.dataset['nav'] === 'stage') {
       /* Non-selected stage nodes are intentionally absent from Tab order, but pointer and arrow
          discovery still focus them. Locked is aria-disabled, never the native disabled state. */
-      const selected = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+      const selected = this.stageNodes.get(this.campaign.activeMissionId)?.button;
       const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
       if (selectedIndex >= 0) this.navIndex = selectedIndex;
       item.focus({ preventScroll: true });
@@ -913,13 +945,13 @@ export class Screens {
   };
 
   private moveStageArrow(active: HTMLElement, dir: -1 | 1): void {
-    const id = active.dataset['stageId'] as CourseId | undefined;
+    const id = active.dataset['stageId'] as MissionId | undefined;
     if (!id) return;
     const current = CHAPTER_STAGE_IDS.findIndex((candidate) => candidate === id);
     if (current < 0) return;
     const next = clamp(current + dir, 0, CHAPTER_STAGE_IDS.length - 1);
     if (next === current) return;
-    const selected = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+    const selected = this.stageNodes.get(this.campaign.activeMissionId)?.button;
     const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
     if (selectedIndex >= 0) this.navIndex = selectedIndex;
     this.stageNodes.get(CHAPTER_STAGE_IDS[next]!)?.button.focus({ preventScroll: true });
@@ -1093,6 +1125,16 @@ export class Screens {
     return node;
   }
 
+  private syncControlCapabilities(): void {
+    const mission = this.campaignMission();
+    const nodes = this.el.querySelectorAll<HTMLElement>('[data-control-capability]');
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]!;
+      const capability = node.dataset['controlCapability'] as MissionCapability | undefined;
+      node.hidden = capability === undefined || !mission.capabilities.includes(capability);
+    }
+  }
+
   private buildStageRail(): HTMLElement {
     const m = this.translator.messages;
     const section = el('section', 'lv-stage-select');
@@ -1102,6 +1144,7 @@ export class Screens {
       englishText('span', 'lv-stage-chapter', m.campaign.chapterName),
     );
     section.appendChild(heading);
+    if (Number(CHAPTER_STAGE_IDS.length) === 1) return section;
 
     const group = el('div', 'lv-stage-rail');
     group.setAttribute('role', 'radiogroup');
@@ -1110,7 +1153,7 @@ export class Screens {
     for (let index = 0; index < CHAPTER_STAGE_IDS.length; index++) {
       const id = CHAPTER_STAGE_IDS[index]!;
       const copy = m.campaign.routes[id];
-      const isFirst = id === 'cairn-drift';
+      const isFirst = index === 0;
       const button = el('button', 'lv-stage-node');
       button.type = 'button';
       button.dataset['nav'] = 'stage';
@@ -1124,8 +1167,13 @@ export class Screens {
       button.setAttribute('aria-disabled', isFirst ? 'false' : 'true');
 
       const top = el('span', 'lv-stage-top');
+      const chapter = englishText(
+        'span',
+        'lv-stage-index',
+        `CH ${String(this.campaignMission(id).chapter ?? (index + 1)).padStart(2, '0')}`,
+      );
       top.append(
-        englishText('span', 'lv-stage-index', `01-${index + 1}`),
+        chapter,
         el('span', 'lv-stage-dot'),
       );
       top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
@@ -1152,25 +1200,26 @@ export class Screens {
       const lock = writeEnglishTokens(
         el('span', 'lv-a11y'),
         isFirst ? '' : copy.lockReason,
-        ['CAIRN DRIFT', 'WRECKLINE'],
+        ['CAIRN DRIFT', 'LAST ASCENT'],
       );
       lock.id = `lv-stage-lock-${id}`;
       lock.hidden = isFirst;
       button.setAttribute('aria-describedby', lock.id);
       button.append(top, name, mastery, status, selected, lock);
       button.addEventListener('click', () => {
-        const route = this.campaignCourse(id);
+        const route = this.campaignMission(id);
         if (
           route.state === 'locked' ||
-          id === this.campaign.activeCourseId ||
+          id === this.campaign.activeMissionId ||
           this.campaign.navigationError === 'storage-unavailable'
         ) return;
         this.opts.onSound('click');
-        this.host.selectRoute(id);
+        this.host.selectMission(id);
       });
       group.appendChild(button);
       this.stageNodes.set(id, {
         button,
+        chapter,
         status,
         selected,
         lock,
@@ -1297,7 +1346,7 @@ export class Screens {
 
   private buildBriefing(): HTMLElement {
     const m = this.translator.messages;
-    const routeCopy = m.campaign.routes[this.campaign.activeCourseId];
+    const routeCopy = m.campaign.routes[this.campaign.activeMissionId];
     const view = this.makeView('briefing', m.a11y.runBriefing);
     const panel = Screens.frame(el('div', 'lv-brief'));
 
@@ -1346,7 +1395,7 @@ export class Screens {
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'briefing';
     objectives.appendChild(objectiveList);
-    this.writeObjectiveList(objectiveList, this.campaignCourse());
+    this.writeObjectiveList(objectiveList, this.campaignMission());
 
     const meta = el('div', 'lv-brief-meta');
     meta.append(stats, objectives);
@@ -1382,6 +1431,7 @@ export class Screens {
       if (!row.primer) continue;
       const li = el('li');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.append(
         keyChips(row, m.controls.or),
         el('span', '', m.controls[row.short ?? row.action]),
@@ -1691,6 +1741,7 @@ export class Screens {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.style.setProperty('--n', String(i));
       li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
@@ -1717,13 +1768,18 @@ export class Screens {
     return { view, body };
   }
 
-  showResult(r: RunResult): void {
+  showResult(r: MissionResult): void {
+    if (r.kind !== 'gate-race') {
+      this.showCommonMissionResult(r);
+      return;
+    }
     const m = this.translator.messages;
-    const campaignCourse = this.campaignCourse(r.courseId ?? this.campaign.activeCourseId);
-    const routeCopy = m.campaign.routes[campaignCourse.id];
+    const campaignMission = this.campaignMission(r.missionId);
+    const routeCopy = m.campaign.routes[campaignMission.id];
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
+    delete body.dataset['failureReason'];
     this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
@@ -1752,22 +1808,20 @@ export class Screens {
     /* Explicit null means "this finish unlocked nothing". Do not null-coalesce it to the
        campaign snapshot: Game retains the last reveal for title hydration, and doing so would
        make every replay look like another first clear. Undefined alone denotes an older fixture. */
-    const newlyUnlocked = r.newlyUnlockedCourseId !== undefined
-      ? r.newlyUnlockedCourseId
-      : this.campaign.newlyUnlockedCourseId;
+    const newlyUnlocked = r.newlyUnlockedMissionId;
     const revealedStage = newlyUnlocked
-      ? this.campaign.routes.find((route) => route.id === newlyUnlocked)
+      ? this.campaign.missions.find((mission) => mission.id === newlyUnlocked)
       : undefined;
-    const nextStageId = this.campaign.nextStageId !== undefined
-      ? this.campaign.nextStageId
+    const nextStageId = this.campaign.nextMissionId !== undefined
+      ? this.campaign.nextMissionId
       : newlyUnlocked;
     const nextStage = nextStageId
-      ? this.campaign.routes.find((route) => route.id === nextStageId)
+      ? this.campaign.missions.find((mission) => mission.id === nextStageId)
       : undefined;
     const advanceStage =
       nextStage !== undefined &&
       nextStage.state !== 'locked' &&
-      nextStage.id !== campaignCourse.id &&
+      nextStage.id !== campaignMission.id &&
       this.campaign.navigationError !== 'storage-unavailable'
         ? nextStage
         : undefined;
@@ -1854,7 +1908,7 @@ export class Screens {
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'results';
     objectives.appendChild(objectiveList);
-    this.writeObjectiveList(objectiveList, campaignCourse, r);
+    this.writeObjectiveList(objectiveList, campaignMission, r);
     left.appendChild(objectives);
 
     /*
@@ -1987,7 +2041,7 @@ export class Screens {
         m.campaign.nextStage,
         primary ? 'is-primary' : '',
         'next-stage',
-        () => this.host.selectRoute(advanceStage.id),
+        () => this.host.selectMission(advanceStage.id),
         m.campaign.routes[advanceStage.id].destination,
       );
       button.dataset['stageId'] = advanceStage.id;
@@ -1998,20 +2052,20 @@ export class Screens {
       const next = nextStageButton(true);
       if (next) actions.appendChild(next);
     }
-    actions.append(
-      this.button(
-        m.results.runAgain,
-        firstClearAdvance ? '' : 'is-primary',
-        'run-again',
-        () => this.host.restart(),
-      ),
-      this.button(
+    actions.append(this.button(
+      m.results.runAgain,
+      firstClearAdvance ? '' : 'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
         m.campaign.stageSelect,
         'is-ghost',
         'stage-select',
-        () => this.host.showRouteSelect(),
-      ),
-    );
+        () => this.host.showMissionSelect(),
+      ));
+    }
     if (!firstClearAdvance && advanceStage) {
       const next = nextStageButton(false);
       if (next) actions.appendChild(next);
@@ -2036,21 +2090,213 @@ export class Screens {
     }
   }
 
-  /**
-   * Reuses the results shell for a terminal hull breach without presenting a failed run as a
-   * result. Retry remains primary and the route strip is the only alternate exit. The N chip
-   * matches Input's real restart binding, so the visible shortcut and action path agree.
-   */
-  showFailure(elapsed: number): void {
+  /** Shared result shell for objective runtimes whose authored detail panels live downstream. */
+  private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
     const m = this.translator.messages;
+    const campaignMission = this.campaignMission(r.missionId);
     const body = this.nResultBody;
     body.textContent = '';
-    body.dataset['state'] = 'failure';
-    this.views.get('results')?.setAttribute('aria-label', m.a11y.hullBreach);
+    delete body.dataset['state'];
+    delete body.dataset['failureReason'];
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
+    const headline = el('div', 'lv-res-headline');
+    headline.append(
+      el(
+        'div',
+        'lv-kicker',
+        r.kind === 'escape' ? m.results.extractionConfirmed : m.results.runComplete,
+      ),
+      englishText('h2', 'lv-res-title', r.destinationName),
+    );
+    const rank = el('div', 'lv-res-rank');
+    rank.append(el('div', 'lv-res-k', m.results.rank), englishText('div', 'lv-res-letter', r.rank));
+    rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
+    head.append(headline, rank);
+
+    const main = el('div', 'lv-res-main');
+    main.style.setProperty('--n', '1');
+    const left = el('div', 'lv-res-left');
+    const newlyUnlocked = r.newlyUnlockedMissionId;
+    const revealedStage = newlyUnlocked
+      ? this.campaign.missions.find((mission) => mission.id === newlyUnlocked)
+      : undefined;
+    const nextStageId = this.campaign.nextMissionId !== undefined
+      ? this.campaign.nextMissionId
+      : newlyUnlocked;
+    const nextStage = nextStageId
+      ? this.campaign.missions.find((mission) => mission.id === nextStageId)
+      : undefined;
+    const advanceStage = nextStage !== undefined
+      && nextStage.state !== 'locked'
+      && nextStage.id !== campaignMission.id
+      && this.campaign.navigationError !== 'storage-unavailable'
+        ? nextStage
+        : undefined;
+    const firstClearAdvance = advanceStage !== undefined && revealedStage?.id === advanceStage.id;
+    if (revealedStage && revealedStage.state !== 'locked') {
+      const unlock = el('div', 'lv-stage-unlock');
+      unlock.dataset['stageId'] = revealedStage.id;
+      unlock.dataset['stageState'] = revealedStage.state;
+      const unlockText = writeEnglishTokens(
+        el('span'),
+        m.campaign.routes[revealedStage.id].unlockNotice,
+        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
+      );
+      unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
+        ? this.translator.locale
+        : 'en';
+      unlock.append(el('i', 'lv-stage-unlock-mark'), unlockText);
+      left.appendChild(unlock);
+    }
+    const time = el('div', 'lv-res-timeblock');
+    time.append(
+      el('div', 'lv-res-k', m.results.totalTime),
+      el('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
+    if (r.isNewBest) {
+      const badge = el('div', 'lv-newbest');
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
+      time.appendChild(badge);
+    } else if (r.bestTime != null) {
+      const deltaSeconds = r.totalTime - r.bestTime;
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(deltaSeconds), formatTime(r.bestTime)),
+      );
+      delta.dataset['tone'] = deltaSeconds <= 0 ? 'good' : 'bad';
+      time.appendChild(delta);
+    }
+    const stats = el('dl', 'lv-res-stats');
+    const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'escape'
+      ? [
+          [m.results.safeCorridors, `${r.checkpointsCleared} / ${r.checkpointsTotal}`],
+          [m.results.shockfrontMargin, `+${r.secondsAhead.toFixed(1)} ${m.results.secondsUnit}`],
+          [m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`],
+          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+        ]
+      : [
+          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsTotal ?? r.targetsRequired}`],
+          [m.results.core, r.coreDestroyed ? 'DESTROYED' : 'ACTIVE'],
+          [m.results.accuracy, r.shotsFired > 0
+            ? `${Math.round(r.shotsHit / r.shotsFired * 100)}%`
+            : '0%'],
+          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+        ];
+    for (const [label, value] of objectiveStats) {
+      const cell = el('div', 'lv-res-stat');
+      cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
+      stats.appendChild(cell);
+    }
+    left.append(time, stats);
+    if (r.kind === 'strike') {
+      const objectives = el('section', 'lv-objectives lv-objectives--result');
+      objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+      const objectiveList = el('ul', 'lv-objective-list');
+      objectiveList.dataset['objectiveList'] = 'results';
+      objectives.appendChild(objectiveList);
+      this.writeObjectiveList(objectiveList, campaignMission, r);
+      left.appendChild(objectives);
+    }
+    main.appendChild(left);
+
+    const actions = el('div', 'lv-actions lv-actions--res');
+    actions.style.setProperty('--n', '2');
+    const nextStageButton = (primary: boolean): HTMLElement | null => {
+      if (!advanceStage) return null;
+      const button = this.button(
+        m.campaign.nextStage,
+        primary ? 'is-primary' : '',
+        'next-stage',
+        () => this.host.selectMission(advanceStage.id),
+        m.campaign.routes[advanceStage.id].destination,
+      );
+      button.dataset['stageId'] = advanceStage.id;
+      button.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      return button;
+    };
+    if (firstClearAdvance) {
+      const next = nextStageButton(true);
+      if (next) actions.appendChild(next);
+    }
+    actions.append(this.button(
+      m.results.runAgain,
+      firstClearAdvance ? '' : 'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    }
+    if (!firstClearAdvance && advanceStage) {
+      const next = nextStageButton(false);
+      if (next) actions.appendChild(next);
+    } else if (!advanceStage) {
+      actions.appendChild(
+        this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      );
+    }
+    const error = el('p', 'lv-campaign-error lv-campaign-error--result');
+    error.lang = this.translator.locale;
+    error.dataset['campaignError'] = '1';
+    error.setAttribute('role', 'status');
+    error.setAttribute('aria-live', 'polite');
+    error.hidden = true;
+    body.append(head, main, error, actions);
+    this.syncCampaignErrors();
+
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /**
+   * Reuses the results shell for terminal failure without presenting a failed run as a result.
+   * An objective reason selects generic mission-failure copy; no reason preserves hull breach.
+   */
+  showFailure(elapsed: number, reason?: string): void {
+    const m = this.translator.messages;
+    const reasonKey = reason === 'core-boundary-without-shields'
+      ? 'insufficientNodes'
+      : reason === 'core-window-missed'
+        ? 'coreWindowMissed'
+        : reason === 'blast-timeout'
+          ? 'blastTimeout'
+          : 'missionFailed';
+    const body = this.nResultBody;
+    body.textContent = '';
+    body.dataset['state'] = 'failure';
+    if (reason === undefined) delete body.dataset['failureReason'];
+    else body.dataset['failureReason'] = reason;
+    this.views.get('results')?.setAttribute(
+      'aria-label',
+      reason === undefined ? m.a11y.hullBreach : m.a11y[reasonKey],
+    );
+
+    const head = el('header', 'lv-res-head');
+    head.style.setProperty('--n', '0');
+    if (reason === 'shockfront-catch') {
+      head.append(
+        englishText('div', 'lv-kicker', m.results.missionFailed),
+        englishText('h2', 'lv-res-title', m.results.shockfrontOverrun),
+      );
+    } else if (reason !== undefined) {
+      head.append(
+        englishText('div', 'lv-kicker', m.results.runComplete),
+        englishText('h2', 'lv-res-title', m.results[reasonKey]),
+      );
+    } else {
+      head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
+    }
 
     const timeBlock = el('div', 'lv-res-timeblock');
     timeBlock.style.setProperty('--n', '1');
@@ -2058,13 +2304,41 @@ export class Screens {
       el('div', 'lv-res-k', m.results.time),
       el('div', 'lv-res-time', formatTime(elapsed)),
     );
+    if (reason === 'shockfront-catch') {
+      const detail = writeEnglishTokens(
+        el('p', 'lv-res-failure-detail'),
+        m.results.shockfrontOverrunDetail,
+        ['SHOCKFRONT', 'VECTOR'],
+      );
+      detail.lang = this.translator.locale;
+      timeBlock.appendChild(detail);
+    }
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
-    actions.append(
-      this.button(m.results.retry, 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
-      this.button(m.campaign.stageSelect, 'is-ghost', 'stage-select', () => this.host.showRouteSelect()),
-    );
+    actions.append(this.button(
+      m.results.retry,
+      'is-primary',
+      'retry',
+      () => this.host.restart(),
+      undefined,
+      'N',
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    } else {
+      actions.appendChild(this.button(
+        m.results.returnToTitle,
+        'is-ghost',
+        'return',
+        () => this.host.quitToTitle(),
+      ));
+    }
 
     body.append(head, timeBlock, actions);
 
