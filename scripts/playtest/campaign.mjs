@@ -39,6 +39,7 @@ await runManagedSuite({
 
 async function runMissionProof({ report, session, options }) {
   const page = session.page;
+  const cairnResultActions = [];
 
   await report.check({
     id: 'MISSION.three-chapter-title',
@@ -109,6 +110,12 @@ async function runMissionProof({ report, session, options }) {
         result: await callHarness(page, 'result'),
         telemetry: await callHarness(page, 'telemetry'),
         errors: await callHarness(page, 'errors'),
+        actions: await page.locator(
+          '[data-view="results"][data-open="1"] [data-action]',
+        ).evaluateAll((nodes) => nodes.map((node) => ({
+          action: node.getAttribute('data-action'),
+          text: node.textContent?.trim() ?? '',
+        }))),
       };
       verify(run.phase === 'finished'
         && run.result?.kind === 'gate-race'
@@ -123,6 +130,7 @@ async function runMissionProof({ report, session, options }) {
         && run.errors.length === 0,
       `CAIRN production proof failed at ${fps} Hz.`, run);
       runs.push(run);
+      cairnResultActions.push(run.actions);
     }
     return runs;
   });
@@ -132,15 +140,15 @@ async function runMissionProof({ report, session, options }) {
     name: 'A first CAIRN clear offers the newly unlocked LAST ASCENT',
     assertion: 'NEXT CHAPTER, RUN AGAIN, and CHAPTER SELECT render without a terminal RETURN.',
   }, async () => {
-    const actions = await page.locator(
-      '[data-view="results"][data-open="1"] [data-action]',
-    ).evaluateAll((nodes) => nodes.map((node) => ({
-      action: node.getAttribute('data-action'),
-      text: node.textContent?.trim() ?? '',
-    })));
-    verify(JSON.stringify(actions.map((entry) => entry.action))
-      === JSON.stringify(['next-stage', 'run-again', 'stage-select']),
-    'First-clear results did not expose the authorised next chapter.', actions);
-    return actions;
+    const [firstClear, repeatClear] = cairnResultActions;
+    verify(JSON.stringify(firstClear?.map((entry) => entry.action))
+      === JSON.stringify(['next-stage', 'run-again', 'stage-select'])
+      && JSON.stringify(repeatClear?.map((entry) => entry.action))
+        === JSON.stringify(['run-again', 'stage-select', 'next-stage']),
+    'First-clear and repeat-clear results did not expose one ordered action set each.', {
+      firstClear,
+      repeatClear,
+    });
+    return { firstClear, repeatClear };
   });
 }
