@@ -49,15 +49,10 @@ export class DeadSignalWorld implements MissionWorldRuntime {
     this.facility = options.facility;
     this.effects = options.effects;
     this.targetables = options.state.targets;
-    this.contacts = Object.freeze(options.state.targets.map((target) => Object.freeze({
-      id: `target:${target.id}`,
-      kind: 'target' as const,
-      position: target.position,
-      // Weapon housings remain visibly full-size after destruction, but only the dense centre is
-      // a hull collider. A 38–72 m spherical collider around every aim point punished a correct
-      // centreline pass for dozens of consecutive frames after the weapon had already cleared it.
-      radius: Math.min(12, target.definition.radius * 0.3),
-    })));
+    // Target housings sit on the authored centreline so a clean pulse pass can read and hit them.
+    // Making that same centre point a hull collider turns correct aim into a mandatory collision;
+    // the fixed facility is therefore presentation/weapon geometry, not a rigid-body field.
+    this.contacts = Object.freeze([]);
     this.contactCapacity = this.contacts.length;
   }
 
@@ -74,7 +69,7 @@ export class DeadSignalWorld implements MissionWorldRuntime {
     this.starfield.update(frame.clock);
     this.star.update(frame.clock, frame.farCamera);
     this.planet.update(frame.clock);
-    this.facility.update(frame.clock, frame.camera.position);
+    this.facility.update(frame.clock, frame.camera.position, frame.shipPosition);
     this.effects.update(frame.dt);
     const stretch = 0.012 + frame.speed01 * 0.035 + frame.boostBlend * 0.06;
     const opacity = 0.035 + frame.speed01 * 0.28 + frame.boostBlend * 0.3;

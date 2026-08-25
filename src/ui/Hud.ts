@@ -282,6 +282,7 @@ interface VecState {
   time: number;
   alpha: number;
   reduced: boolean;
+  coreHot: boolean;
 }
 
 /* ------------------------------------------------------------------- the HUD */
@@ -454,6 +455,7 @@ export class Hud {
     time: 0,
     alpha: 0,
     reduced: false,
+    coreHot: false,
   };
 
   constructor(translator: Translator) {
@@ -912,6 +914,9 @@ export class Hud {
     }
 
     const strike = t.objective.kind === 'strike' ? t.objective : null;
+    this.vs.coreHot = strike?.act === 'core'
+      && strike.coreExposed === true
+      && strike.coreDestroyed !== true;
     const objectiveKind = strike ? 'strike' : t.objective.kind;
     if (objectiveKind !== this.pObjectiveKind) {
       this.pObjectiveKind = objectiveKind;
@@ -921,7 +926,7 @@ export class Hud {
       this.nStrikeStatus.hidden = strike === null;
     }
     /* Gate-race uses accepted splits; strike uses shield destruction only. */
-    const total = Math.max(1, strike?.targetsRequired ?? t.gate.total);
+    const total = Math.max(1, strike?.shieldNodesTotal ?? strike?.targetsRequired ?? t.gate.total);
     const cleared = clamp(strike?.targetsDestroyed ?? t.splits.length, 0, total);
     const current = strike ? cleared : Math.min(cleared + 1, total);
     if (current !== this.pGateCur) {
@@ -953,7 +958,7 @@ export class Hud {
         ? `${this.messages.hud.extracting} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
         : strike.act === 'core'
           ? `${this.messages.hud.arrayCore} · ${strike.coreExposed ? 'EXPOSED' : 'LOCKED'}`
-          : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.targetsRequired} · ${this.messages.hud.accuracy} ${accuracy}%`;
+          : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.shieldNodesTotal ?? strike.targetsRequired} · ${strike.targetsRequired} REQUIRED · ${this.messages.hud.accuracy} ${accuracy}%`;
       if (status !== this.pStrikeStatus) {
         this.pStrikeStatus = status;
         this.nStrikeStatus.textContent = status;
@@ -1495,6 +1500,24 @@ export class Hud {
     ctx.save();
     ctx.translate(vs.gateX, vs.gateY);
     ctx.globalAlpha = a;
+
+    if (vs.coreHot) {
+      const pulse = vs.reduced ? 0.5 : 0.5 + 0.5 * Math.sin(vs.time * 8);
+      const coreRadius = vmin * (0.021 + pulse * 0.004);
+      ctx.globalAlpha = a * (0.58 + pulse * 0.24);
+      ctx.fillStyle = 'rgba(255,55,28,0.58)';
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = a;
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 1.35, 0, Math.PI * 2);
+      casedStroke(ctx, 'rgba(255,174,62,0.98)', Math.max(2.4, vmin * 0.003));
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 0.34, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,235,174,0.98)';
+      ctx.fill();
+    }
 
     if (r < small) {
       /* far: a fixed-size acquisition diamond keeps the target findable at a glance */

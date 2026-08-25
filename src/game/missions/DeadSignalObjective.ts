@@ -151,9 +151,10 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
       rulesetVersion: this.mission.rulesetVersion,
       totalTime: input.totalTime,
       hullRemaining: input.hullRemaining,
-      objectiveSummary: `${this.state.shieldDestroyed} / ${this.mission.objective.shieldRequired} + CORE`,
+      objectiveSummary: `${this.state.shieldDestroyed} / ${this.state.shieldTotal} + CORE`,
       targetsDestroyed: this.state.shieldDestroyed,
       targetsRequired: this.mission.objective.shieldRequired,
+      targetsTotal: this.state.shieldTotal,
       shotsFired: this.state.shotsFired,
       shotsHit: this.state.shotsHit,
       coreDestroyed: this.state.coreDestroyed,
@@ -182,12 +183,15 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
 
   private guidanceTarget(): DeadSignalTargetState | null {
     const required = this.mission.objective.shieldRequired;
+    // Once the threshold is met, keep the flight director moving forward to the core. Remaining
+    // node halos stay targetable for mastery, but the director never asks the pilot to turn back
+    // or loiter on a fourth node.
+    if (!this.state.coreDestroyed && this.state.shieldDestroyed >= required) {
+      return this.state.targets.find((target) => target.kind === 'core') ?? null;
+    }
     for (const target of this.state.targets) {
       if (target.destroyed || target.kind === 'core') continue;
       if (target.definition.pathT >= this.progress - 0.025) return target;
-    }
-    if (!this.state.coreDestroyed && this.state.shieldDestroyed >= required) {
-      return this.state.targets.find((target) => target.kind === 'core') ?? null;
     }
     return null;
   }

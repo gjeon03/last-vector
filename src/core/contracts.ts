@@ -282,6 +282,8 @@ export interface StrikeMissionResult extends MissionResultBase {
   kind: 'strike';
   targetsDestroyed: number;
   targetsRequired: number;
+  /** Authored target count when the success threshold is smaller than the mastery total. */
+  targetsTotal?: number;
   shotsFired: number;
   shotsHit: number;
   coreDestroyed: boolean;

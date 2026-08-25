@@ -42,16 +42,23 @@ async function runJourney({ report, session, options }) {
   const captures = [];
   let profiles = null;
 
-  const capture = async (name) => {
+  const capture = async (name, captureOptions = {}) => {
     if (!captureJourney) return null;
-    await callHarness(page, 'setPaused', [true]);
+    const pauseSimulation = captureOptions.pauseSimulation !== false;
+    if (pauseSimulation) await callHarness(page, 'setPaused', [true]);
     // Callouts use real UI time while the production journey advances deterministically. Let
     // transient pointer-lock/contact cards settle before preserving an authored scene.
     await page.waitForTimeout(5_000);
     await callHarness(page, 'present');
+    if (captureOptions.visibleSelector) {
+      await page.waitForSelector(captureOptions.visibleSelector, {
+        state: 'visible',
+        timeout: 10_000,
+      });
+    }
     const path = join(options.out, `${name}-dpr${options.deviceScaleFactor}.png`);
     await page.screenshot({ path, type: 'png', scale: 'device' });
-    await callHarness(page, 'setPaused', [false]);
+    if (pauseSimulation) await callHarness(page, 'setPaused', [false]);
     report.addArtifact('screenshot', path, { name, dpr: options.deviceScaleFactor });
     captures.push(path);
     return path;
@@ -97,6 +104,19 @@ async function runJourney({ report, session, options }) {
     }]);
     await callHarness(page, 'setDriven', [true]);
     await callHarness(page, 'setFixedTimestep', [1 / hz]);
+    await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Missing game canvas');
+      Object.defineProperty(document, 'pointerLockElement', {
+        get: () => canvas,
+        configurable: true,
+      });
+      canvas.requestPointerLock = () => {
+        document.dispatchEvent(new Event('pointerlockchange'));
+        return Promise.resolve();
+      };
+      document.exitPointerLock = () => undefined;
+    });
     const ui = await page.evaluate(() => ({
       href: location.href,
       stageNodes: [...document.querySelectorAll('.lv-stage-node')].map((node) => ({
@@ -116,11 +136,61 @@ async function runJourney({ report, session, options }) {
   });
 
   await report.check({
+    id: 'DEAD-SIGNAL.production-failure-reason',
+    name: 'The production objective exposes its authored failure reason',
+    assertion:
+      'A real pass that breaks three nodes but withholds core fire fails at the end of the core '
+      + 'window and the results surface presents its dedicated technical copy.',
+  }, async () => {
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+    let failurePhase = await callHarness(page, 'phase');
+    let failureIterations = 0;
+    while (failurePhase === 'flying' && failureIterations < 420) {
+      const failureTelemetry = await callHarness(page, 'telemetry');
+      const boost = Math.floor(failureTelemetry.elapsed) % 5 === 0;
+      const strike = failureTelemetry.objective;
+      const targetInRange = failureTelemetry.guidance?.distance <= 3_050;
+      const label = failureTelemetry.guidance?.label ?? '';
+      const fire = targetInRange && (
+        label === 'CALIBRATION TARGET'
+        || (label.startsWith('SHIELD-') && (strike?.targetsDestroyed ?? 0) < 3)
+      );
+      await callHarness(page, 'setInput', [{ throttle: 1, fire, boost, brake: false }]);
+      await callHarness(page, 'stepSimulation', [30, 1 / hz], 120_000);
+      failureIterations++;
+      failurePhase = await callHarness(page, 'phase');
+    }
+    const failureUi = await page.evaluate(() => {
+      const body = document.querySelector('.lv-res-body');
+      const view = document.querySelector('[data-view="results"]');
+      return {
+        viewOpen: view?.getAttribute('data-open'),
+        reason: body?.getAttribute('data-failure-reason'),
+        title: body?.querySelector('.lv-res-title')?.textContent?.trim() ?? '',
+        retry: body?.querySelector('[data-action="retry"]')?.textContent?.trim() ?? '',
+      };
+    });
+    verify(failurePhase === 'failed'
+      && failureUi.viewOpen === '1'
+      && failureUi.reason === 'core-window-missed'
+      && failureUi.title === 'CORE WINDOW MISSED'
+      && failureUi.retry.length > 0,
+    'The no-fire production pass lost its distinct objective failure presentation.', {
+      failurePhase,
+      failureIterations,
+      failureUi,
+    });
+    return { failurePhase, failureIterations, failureUi };
+  });
+
+  await report.check({
     id: 'DEAD-SIGNAL.production-journey',
     name: 'One focused production journey clears the fixed-target attack run',
     assertion:
-      'Real flight/autopilot steering with the production fire/boost command destroys at least '
-      + 'three nodes and the core, completes both extraction turns, preserves hull, and persists clear.',
+      'Real flight/autopilot steering with the production fire/boost command destroys exactly '
+      + 'three of six nodes and the core, completes both extraction turns, keeps at least 35% hull, '
+      + 'and persists clear.',
   }, async () => {
     await callHarness(page, 'startRun', [{ skipIntro: true }]);
     await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
@@ -136,8 +206,15 @@ async function runJourney({ report, session, options }) {
       const elapsed = telemetry.elapsed;
       const label = telemetry.guidance?.label ?? '';
       const targetInRange = telemetry.guidance?.distance <= 3_050;
-      const coreHeldForAuthoredWindow = label !== 'ARRAY CORE' || elapsed >= 85;
-      const fire = targetInRange && coreHeldForAuthoredWindow && objective?.coreDestroyed !== true;
+      const calibration = label === 'CALIBRATION TARGET';
+      const shield = label.startsWith('SHIELD-');
+      const core = label === 'ARRAY CORE';
+      const fire = targetInRange && objective?.coreDestroyed !== true && (
+        calibration
+        || (shield && (objective?.targetsDestroyed ?? 0) < 3
+          && (!captureJourney || shieldCaptured))
+        || (core && elapsed >= 85 && coreCaptured)
+      );
       const boost = elapsed >= 25
         && (objective?.coreDestroyed === true
           ? Math.floor(elapsed) % 4 === 0
@@ -149,12 +226,21 @@ async function runJourney({ report, session, options }) {
       const after = await callHarness(page, 'telemetry');
       const strike = after.objective;
       if (!shieldCaptured && strike?.kind === 'strike' && strike.act === 'shield-run'
-        && strike.targetsDestroyed >= 1 && after.guidance?.distance < 2_500) {
+        && after.guidance?.label.startsWith('SHIELD-')
+        && after.guidance.distance < 2_800
+        && after.guidance.anchor.onScreen) {
         await capture('01-shield-run');
         shieldCaptured = true;
       }
       if (!coreCaptured && strike?.kind === 'strike' && strike.act === 'core'
-        && strike.coreExposed && !strike.coreDestroyed) {
+        && strike.coreExposed && !strike.coreDestroyed
+        && after.guidance?.label === 'ARRAY CORE'
+        && after.guidance.distance < 1_800
+        && after.guidance.anchor.onScreen) {
+        // The third node can fall after the world render update in the same fixed step. Advance
+        // one fire-safe frame so the newly exposed red-orange core is the scene being preserved.
+        await callHarness(page, 'setInput', [{ throttle: 1, fire: false, boost: false, brake: false }]);
+        await callHarness(page, 'stepSimulation', [1, 1 / hz], 120_000);
         await capture('02-array-core');
         coreCaptured = true;
 
@@ -180,9 +266,9 @@ async function runJourney({ report, session, options }) {
     verify(phase === 'finished'
       && result?.kind === 'strike'
       && result?.missionId === 'dead-signal'
-      && result.targetsDestroyed >= 3
+      && result.targetsDestroyed === 3
       && result.coreDestroyed === true
-      && result.hullRemaining > 0
+      && result.hullRemaining >= 0.35
       && telemetry.objective?.kind === 'strike'
       && telemetry.objective.coreDestroyed === true
       && progress.missions?.['dead-signal']?.cleared === true
@@ -201,7 +287,10 @@ async function runJourney({ report, session, options }) {
         profiles,
         telemetry,
       });
-    await capture('04-result');
+    await capture('04-result', {
+      pauseSimulation: false,
+      visibleSelector: '[data-view="results"][data-open="1"] .lv-res-stat',
+    });
     const resultUi = await page.evaluate(() => ({
       stats: [...document.querySelectorAll('.lv-res-stat')].map((node) => node.textContent?.trim()),
       actions: [...document.querySelectorAll('[data-view="results"][data-open="1"] [data-action]')]
@@ -243,10 +332,21 @@ async function runJourney({ report, session, options }) {
       'The core scene exceeded a global renderer ceiling.', profiles);
     verify(first.programs === second.programs,
       'The settled core scene compiled a late shader program.', profiles);
-    verify(second.drawingBufferWidth === options.viewport.width * options.deviceScaleFactor
-      && second.drawingBufferHeight === options.viewport.height * options.deviceScaleFactor,
-    'The profile did not measure the requested DPR backing store.', {
+    const fillBudgetPixels = 2_500_000;
+    const budgetedDpr = Math.min(
+      options.deviceScaleFactor,
+      2,
+      Math.sqrt(fillBudgetPixels / (options.viewport.width * options.viewport.height)),
+    );
+    const expectedWidth = Math.max(320, Math.round(options.viewport.width * budgetedDpr));
+    const expectedHeight = Math.max(240, Math.round(options.viewport.height * budgetedDpr));
+    verify(second.drawingBufferWidth === expectedWidth
+      && second.drawingBufferHeight === expectedHeight,
+    'The profile did not measure the renderer fill-budget DPR policy.', {
       requested: options,
+      budgetedDpr,
+      expectedWidth,
+      expectedHeight,
       profile: second,
     });
     verify(second.fps >= 30 && second.p95FrameMs <= 40,

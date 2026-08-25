@@ -220,6 +220,8 @@ await report.check({
       && trace.telemetry.targetsRequired === 3
       && trace.telemetry.coreDestroyed
       && trace.result.coreDestroyed
+      && trace.result.targetsTotal === 6
+      && trace.result.objectiveSummary === '6 / 6 + CORE'
       && trace.result.hullRemaining > 0,
     'The successful trace omitted a success condition.', trace);
   }

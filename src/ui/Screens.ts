@@ -2117,7 +2117,7 @@ export class Screens {
     const stats = el('dl', 'lv-res-stats');
     const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'strike'
       ? [
-          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsRequired}`],
+          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsTotal ?? r.targetsRequired}`],
           [m.results.core, r.coreDestroyed ? 'DESTROYED' : 'ACTIVE'],
           [m.results.accuracy, r.shotsFired > 0
             ? `${Math.round(r.shotsHit / r.shotsFired * 100)}%`
