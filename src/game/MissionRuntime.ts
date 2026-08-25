@@ -4,9 +4,16 @@ import type {
   MissionResult,
   ObjectiveTelemetry,
 } from '../core/contracts.ts';
+import type { VantageDefinition } from '../core/Courses.ts';
 import { missionRecordId, type MissionDefinition } from '../core/Missions.ts';
 import type { QualityProfile } from '../core/Settings.ts';
-import type { Course } from './Course.ts';
+import type {
+  HarnessCourseCrossing,
+  HarnessShearState,
+  HarnessStageLandmarkState,
+  HazardReport,
+} from '../core/harness.ts';
+import type { LightingUniforms } from '../render/lighting.ts';
 import type { FlightPath } from './FlightPath.ts';
 
 export type ObjectiveTerminalState =
@@ -67,9 +74,19 @@ export interface WorldPresentationFrame {
   readonly boostBlend: number;
 }
 
+/** One stable, allocation-bounded spherical contact owned by the selected mission world. */
+export interface WorldContact {
+  readonly id: string;
+  readonly kind: 'debris' | 'landmark' | 'target' | 'hazard';
+  /** Mutable positions are allowed for moving hazards; the Vector3 identity remains stable. */
+  readonly position: THREE.Vector3;
+  readonly radius: number;
+}
+
 export interface MissionWorldRuntime {
-  /** Stable source arrays; quality may change contents, never their identities. */
-  readonly colliderSets: readonly (readonly unknown[])[];
+  /** Stable array identity; contents never exceed contactCapacity and change only in place. */
+  readonly contacts: readonly WorldContact[];
+  readonly contactCapacity: number;
   readonly targetables: readonly unknown[];
   reset(): void;
   updateSimulation(dt: number, shipPosition: THREE.Vector3): void;
@@ -78,27 +95,131 @@ export interface MissionWorldRuntime {
   dispose(): void;
 }
 
+export interface LegacyStagedContact {
+  readonly id: string | number;
+  readonly kind: 'debris' | 'landmark';
+  readonly position: THREE.Vector3;
+  readonly radius: number;
+}
+
+export interface LegacyGateFrame {
+  readonly position: THREE.Vector3;
+  readonly radius: number;
+  alignment(forward: THREE.Vector3): number;
+}
+
+export interface LegacyGatePassEvent {
+  readonly index: number;
+  readonly time: number;
+  readonly radialDistance: number;
+  readonly speed: number;
+  readonly offset: number;
+}
+
+export interface LegacyGateMissEvent {
+  readonly gateIndex: number;
+  readonly blockedBy: 'aperture' | 'shear' | null;
+}
+
+export interface LegacyAutopilotFrame {
+  readonly position: THREE.Vector3;
+  readonly speed: number;
+  readonly energy: number;
+  readonly skill: number;
+  readonly alignment: number;
+  readonly targetDistance: number;
+}
+
+export interface LegacyAutopilotControls {
+  readonly brake: boolean;
+  readonly boost: boolean;
+}
+
+/** Optional CAIRN-only capture/debug adapter. Common simulation never reads this surface. */
+export interface LegacyMissionAdapter {
+  autopilotTarget(
+    position: THREE.Vector3,
+    target: THREE.Vector3,
+    elapsed: number,
+    speed: number,
+  ): THREE.Vector3;
+  currentGate(): LegacyGateFrame | null;
+  remainingDistance(position: THREE.Vector3): number;
+  autopilotControls(frame: LegacyAutopilotFrame): LegacyAutopilotControls;
+  vantages(): readonly VantageDefinition[];
+  bindGateEvents(handlers: {
+    onPass(event: LegacyGatePassEvent): void;
+    onMiss(event: LegacyGateMissEvent): void;
+  }): void;
+  resetMotion(): void;
+  clearVantage(point: THREE.Vector3, shipRadius: number, margin: number): void;
+  poseGate(
+    index: number,
+    standoff: number,
+    position: THREE.Vector3,
+    quaternion: THREE.Quaternion,
+  ): boolean;
+  seek(t: number): void;
+  setVantageState(gateIndex: number | undefined, atTerminus: boolean): void;
+  stageContact(kind: LegacyStagedContact['kind']): LegacyStagedContact | null;
+  hazard(samples: number, consumedContacts: readonly WorldContact[] | null): HazardReport;
+  crossings(): HarnessCourseCrossing[];
+  stageShearBlock(elapsed: number, speed: number): HarnessCourseCrossing | null;
+  shearState(elapsed: number): HarnessShearState | null;
+  landmarkState(): HarnessStageLandmarkState;
+}
+
+export interface MissionContactBody {
+  readonly position: THREE.Vector3;
+  readonly radius: number;
+  readonly speed: number;
+  readonly hull: number;
+  applyImpact(normal: THREE.Vector3, penetration: number): number;
+}
+
+export interface MissionSimulationFrame {
+  readonly dt: number;
+  readonly elapsed: number;
+  readonly body: MissionContactBody;
+  readonly proximityRange: number;
+  readonly resolveContacts: boolean;
+  readonly resolveObjective: boolean;
+  readonly onContact?: (
+    contact: WorldContact,
+    penetration: number,
+    severity: number,
+  ) => void;
+}
+
+export interface MissionSimulationOutcome {
+  readonly proximity: number;
+  readonly hullFailed: boolean;
+  /** Null when hull failure wins or the objective is not active in this phase. */
+  readonly terminal: ObjectiveTerminalState | null;
+}
+
 /** One page-load runtime: one definition, one path, one world and one objective. */
 export class MissionRuntime {
   readonly definition: MissionDefinition;
   readonly path: FlightPath;
   readonly world: MissionWorldRuntime;
   readonly objective: MissionObjectiveRuntime;
-  /** CAIRN-only compatibility surface for legacy harness/visual adapters; absent on new runtimes. */
-  readonly legacyCourse: Course | null;
+  readonly legacy: LegacyMissionAdapter | null;
+
+  private readonly contactNormal = new THREE.Vector3();
 
   constructor(options: {
     definition: MissionDefinition;
     path: FlightPath;
     world: MissionWorldRuntime;
     objective: MissionObjectiveRuntime;
-    legacyCourse?: Course | null;
+    legacy?: LegacyMissionAdapter | null;
   }) {
     this.definition = options.definition;
     this.path = options.path;
     this.world = options.world;
     this.objective = options.objective;
-    this.legacyCourse = options.legacyCourse ?? null;
+    this.legacy = options.legacy ?? null;
   }
 
   reset(): void {
@@ -108,6 +229,46 @@ export class MissionRuntime {
 
   update(frame: ObjectiveUpdateFrame): ObjectiveTerminalState {
     return this.objective.update(frame);
+  }
+
+  /** Common frame order: world motion -> all contacts -> hull priority -> objective. */
+  simulate(frame: MissionSimulationFrame): MissionSimulationOutcome {
+    this.world.updateSimulation(frame.dt, frame.body.position);
+    let nearest = Infinity;
+    const contacts = this.world.contacts;
+    if (contacts.length > this.world.contactCapacity) {
+      throw new Error('Mission world exceeded its declared contact capacity');
+    }
+    for (const contact of contacts) {
+      const dx = contact.position.x - frame.body.position.x;
+      const dy = contact.position.y - frame.body.position.y;
+      const dz = contact.position.z - frame.body.position.z;
+      const distanceSq = dx * dx + dy * dy + dz * dz;
+      const reach = contact.radius + frame.body.radius + frame.proximityRange;
+      if (distanceSq > reach * reach) continue;
+
+      const distance = Math.sqrt(distanceSq);
+      nearest = Math.min(nearest, distance - contact.radius - frame.body.radius);
+      const penetration = contact.radius + frame.body.radius - distance;
+      if (!frame.resolveContacts || penetration <= 0 || distance <= 1e-3) continue;
+
+      this.contactNormal.set(-dx / distance, -dy / distance, -dz / distance);
+      const severity = frame.body.applyImpact(this.contactNormal, penetration);
+      frame.onContact?.(contact, penetration, severity);
+    }
+
+    const proximity = nearest === Infinity
+      ? 0
+      : Math.min(1, Math.max(0, 1 - nearest / frame.proximityRange));
+    const hullFailed = frame.body.hull <= 0;
+    const terminal = frame.resolveObjective && !hullFailed
+      ? this.objective.update({
+        position: frame.body.position,
+        speed: frame.body.speed,
+        elapsed: frame.elapsed,
+      })
+      : null;
+    return { proximity, hullFailed, terminal };
   }
 
   recordId(seed: number): string {
@@ -131,8 +292,12 @@ export class MissionRuntime {
 export interface GameMissionRuntimeFactoryContext {
   readonly definition: MissionDefinition;
   readonly seed: number;
-  /** Current CAIRN adapter. A chapter factory may ignore it and return an isolated runtime. */
-  readonly fallback: MissionRuntime;
+  readonly renderer: THREE.WebGLRenderer;
+  readonly farScene: THREE.Scene;
+  readonly mainScene: THREE.Scene;
+  readonly lighting: LightingUniforms;
+  readonly initialQuality: QualityProfile;
+  readonly maximumQuality: QualityProfile;
 }
 
 export type GameMissionRuntimeFactory = (
@@ -142,7 +307,7 @@ export type GameMissionRuntimeFactory = (
 /** The only Game-facing construction seam; validation is objective-kind neutral. */
 export function createGameMissionRuntime(
   context: GameMissionRuntimeFactoryContext,
-  factory: GameMissionRuntimeFactory = ({ fallback }) => fallback,
+  factory: GameMissionRuntimeFactory,
 ): MissionRuntime {
   const runtime = factory(context);
   if (runtime.definition.id !== context.definition.id) {

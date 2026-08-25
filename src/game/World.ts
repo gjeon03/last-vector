@@ -1,6 +1,6 @@
-import type { Vector3 } from 'three';
+import * as THREE from 'three';
 import type { QualityProfile } from '../core/Settings.ts';
-import type { AsteroidField } from '../render/Asteroids.ts';
+import type { AsteroidField, AsteroidInstance } from '../render/Asteroids.ts';
 import type { DustField } from '../render/Dust.ts';
 import type { Planet } from '../render/Planet.ts';
 import type { StageLandmarks } from '../render/StageLandmarks.ts';
@@ -8,7 +8,11 @@ import type { Star } from '../render/Star.ts';
 import type { Starfield } from '../render/Starfield.ts';
 import type { DerelictField, Terminus } from '../render/Structures.ts';
 import type { Course } from './Course.ts';
-import type { MissionWorldRuntime, WorldPresentationFrame } from './MissionRuntime.ts';
+import type {
+  MissionWorldRuntime,
+  WorldContact,
+  WorldPresentationFrame,
+} from './MissionRuntime.ts';
 
 interface Disposable {
   dispose(): void;
@@ -29,23 +33,48 @@ export interface WorldComponents {
 
 /** Owns current mission render resources and world simulation, never objective or interface state. */
 export class World implements MissionWorldRuntime {
-  readonly colliderSets: readonly (readonly unknown[])[];
+  readonly contacts: WorldContact[] = [];
+  readonly contactCapacity: number;
   readonly targetables: readonly unknown[] = Object.freeze([]);
   readonly components: WorldComponents;
 
+  private readonly asteroidContacts = new Map<AsteroidInstance, WorldContact>();
+  private readonly landmarkContacts: readonly WorldContact[];
+
   constructor(components: WorldComponents) {
     this.components = components;
-    this.colliderSets = Object.freeze([
-      components.asteroids.activeInstances,
-      components.landmarks.colliders,
-    ]);
+    for (const asteroid of components.asteroids.instances) {
+      this.asteroidContacts.set(asteroid, {
+        id: `debris:${asteroid.id}`,
+        kind: 'debris',
+        position: asteroid.position,
+        radius: asteroid.radius,
+      });
+    }
+    this.landmarkContacts = components.landmarks.colliders.map((collider) => ({
+      id: `landmark:${collider.id}`,
+      kind: 'landmark',
+      position: new THREE.Vector3(collider.center[0], collider.center[1], collider.center[2]),
+      radius: collider.radius,
+    }));
+    this.contactCapacity = components.asteroids.instances.length + this.landmarkContacts.length;
+    this.syncContacts();
+  }
+
+  private syncContacts(): void {
+    this.contacts.length = 0;
+    for (const asteroid of this.components.asteroids.activeInstances) {
+      const contact = this.asteroidContacts.get(asteroid);
+      if (contact) this.contacts.push(contact);
+    }
+    this.contacts.push(...this.landmarkContacts);
   }
 
   reset(): void {
     this.components.asteroids.resetMotion();
   }
 
-  updateSimulation(dt: number, shipPosition: Vector3): void {
+  updateSimulation(dt: number, shipPosition: THREE.Vector3): void {
     this.components.asteroids.updateMotion(dt, shipPosition);
   }
 
@@ -84,6 +113,7 @@ export class World implements MissionWorldRuntime {
     this.components.starfield.setVisibleCount(profile.starCount);
     this.components.dust.setVisibleCount(profile.dustCount);
     this.components.asteroids.setVisibleFraction(profile.asteroidCount / maximum.asteroidCount);
+    this.syncContacts();
   }
 
   dispose(): void {

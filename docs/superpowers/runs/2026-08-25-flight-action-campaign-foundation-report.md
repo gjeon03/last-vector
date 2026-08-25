@@ -11,8 +11,10 @@ bounded contracts. WRECKLINE, RINGFALL, and NEEDLE remain dormant recognized dat
   fixtures, deterministic 60/120 latch/reward evidence, and flight-ruleset PB partition.
 - `b3fa622d60c83949262c0a21fe3e5515ca744ef3` — FlightPath extraction, mission/runtime/world
   boundaries, mission URL/progress v2 migration, CAIRN-only campaign UI, and focused proofs.
-- Follow-up correction (this commit) — objective-neutral Game construction, result/PB lifecycle,
-  and minimal escape/strike runtime-factory contract evidence.
+- `3418a44690a8514bbe69fad8dbf9c0925ce7214f` — final foundation evidence and falsification report.
+- `43e5666f6e5df486c9dee7e6688fa4f87c0ef96c` — objective-neutral result and PB lifecycle.
+- World-boundary correction (this commit) — sole selected-world construction, bounded common contact
+  simulation, and isolated CAIRN capture/debug adapter.
 
 ## Delivered contract
 
@@ -22,9 +24,16 @@ bounded contracts. WRECKLINE, RINGFALL, and NEEDLE remain dormant recognized dat
   lifecycle seams. Common guidance plus discriminated gate-race/escape/strike telemetry and result
   unions are present without ECS, plugins, event bus, or mission-ID branches in `Game`.
 - `Game` stores only `MissionRuntime`, not concrete `Course`, `GateRaceObjective`, or `World`
-  fields. Its injected construction seam validates mission identity, ruleset, and matching
-  objective kind without rejecting escape/strike; result construction, PB identity/splits, world
-  updates, quality, reset, and disposal all cross the common runtime boundary.
+  fields. The selected factory is called once with the renderer, scenes, lighting, quality bounds,
+  definition, and seed; therefore a non-CAIRN runtime does not construct or add a fallback CAIRN
+  world. The seam validates identity, ruleset, and objective kind without rejecting escape/strike.
+- Each world exposes a stable, capacity-bounded contact set. The common frame order is world
+  simulation, all contact/proximity checks, common hull damage, hull terminal priority, and only
+  then objective update. Result construction, PB identity/splits, presentation, quality, reset,
+  and disposal also cross the common runtime boundary.
+- CAIRN gate telemetry, autopilot, capture vantages, collision staging, crossing/shear diagnostics,
+  and landmark debug state live behind an optional legacy adapter. Those surfaces fail closed or
+  no-op for other runtimes and are not read by common simulation.
 - Canonical navigation writes `?mission=cairn-drift`; `?course=cairn-drift` is the sole legacy
   alias. Unknown and dormant IDs fail closed to CAIRN, with canonical mission precedence.
 - Progress v2 keeps monotonic mission facts, migrates CAIRN clear/time/rank/clean/precision facts,
@@ -73,30 +82,36 @@ Reports: `playtest-out/boost-contract/report.json`,
 `playtest-out/campaign/report.json`.
 
 Correction evidence in `MISSION.objective-neutral-factory` constructs isolated minimal escape and
-strike runtimes through the same exported factory used by `Game`. For both kinds the factory,
-reset, objective disposal, and world disposal each occur once; `buildResult` preserves the kind,
-PB identity resolves through `missionRecordId`, and objective-owned split facts remain empty. The
-re-run production proof retained the exact CAIRN path/gate hashes and the 60/120 finish facts above.
+strike runtimes through the same exported factory and simulation seam used by `Game`. For each kind,
+the factory and world construction run once, exactly one mock world object is added, and world reset,
+simulation update, objective reset, objective disposal, and world disposal each run once. A nonempty
+hazard contact produces proximity, contact feedback, one body impact, and lethal hull damage; the
+mock objective would succeed if called, but its update count remains zero and the terminal result is
+null because hull failure wins. `buildResult` still preserves the kind, PB identity resolves through
+`missionRecordId`, and objective-owned split facts remain empty. The production proof retained the
+exact CAIRN path/gate hashes and the 60/120 finish facts above.
 
 ## Falsification self-review
 
-1. **P1, fixed:** the independent correction review found that the definition union advertised
-   escape/strike while `Game` rejected them, retained three concrete gate-race fields, and could
-   not call the common result builder. Construction, world/objective lifecycle, result dispatch,
-   and PB handling now go through the bounded runtime contract; both non-gate kinds cross the seam
-   in the focused contract.
-2. **P1, fixed:** an injected isolated runtime initially left the already-created CAIRN fallback
-   runtime outside the disposal path. `Game.dispose` now disposes the selected runtime and, only
-   when distinct, the fallback adapter, preventing leaked render/objective resources.
-3. **P1, fixed:** objective-neutral guidance exposed its own anchor but `Game` projected the legacy
-   gate anchor. Guidance now projects the objective-supplied anchor; CAIRN remains numerically
-   identical because its guidance target is the current gate/terminus.
+1. **P1, fixed:** the first independent correction review found that the definition union
+   advertised escape/strike while `Game` rejected them, retained concrete gate-race fields, and
+   could not call the common result builder. Construction, result dispatch, PB handling, and
+   lifecycle now go through the objective-neutral runtime contract.
+2. **P1, fixed:** the second independent review found that `Game` still eagerly constructed CAIRN
+   and resolved collision/proximity against its asteroids and landmarks even when another runtime
+   was injected. There is now no fallback constructor or fallback field: the selected factory runs
+   once, and common bounded world contacts apply hull damage before objective terminal resolution.
+   The escape/strike lethal-contact contract proves both the contact path and terminal priority.
+3. **P1, fixed:** CAIRN automation, vantage, collision-staging, and diagnostics still exposed
+   concrete course/world assumptions in `Game`. They now sit behind an optional legacy adapter;
+   non-CAIRN runtimes do not need or receive those surfaces.
 
 Unproven claims are deliberately bounded: no broad browser/localization/performance matrix was run;
-no manual feel verdict is claimed for the longer boost window; and escape/strike gameplay, target
-caps, authored alternative worlds, future chapter UI, and multi-mission progression are contracts
-only, not shipped content. Non-gate runtime construction is proven at the fast Game-facing factory
-seam, not as an authored browser playthrough.
+no manual feel verdict is claimed for the longer boost window; and escape/strike gameplay, authored
+alternative worlds, future chapter UI, and multi-mission progression are contracts only, not
+shipped content. Non-gate construction/contact lifecycle is proven with isolated fast runtimes at
+the Game-facing seam, not as an authored browser playthrough. Renderer resource caps beyond the
+declared contact capacity remain future mission implementation obligations.
 
 ## Diff scope
 
@@ -105,6 +120,6 @@ telemetry/result and harness contracts; FlightPath/course/game/runtime/world imp
 selection; and title/result/i18n adapters. No Chapter 02/03 authored mission data, flight speed,
 boost regeneration, or VFX tuning was added.
 
-The correction round changes only the common result/harness types, Game/runtime/world/objective
-boundaries, the result adapter, and the focused campaign contract/report. It adds no mission
-definition, target, shockwave, weapon, world art, speed, regeneration, or VFX content.
+The final correction changes only `Game`, `MissionRuntime`, `World`, the extracted default
+`CairnRuntime` factory/legacy adapter, the focused campaign contract, and this report. It adds no
+mission definition, target, shockwave, weapon, world art, speed, regeneration, or VFX content.

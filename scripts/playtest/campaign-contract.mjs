@@ -316,7 +316,8 @@ await report.check({
   );
   const calls = { reset: 0, update: 0, dispose: 0 };
   const world = {
-    colliderSets: [],
+    contacts: [],
+    contactCapacity: 0,
     targetables: [],
     reset: () => { calls.reset += 1; },
     updateSimulation: () => { calls.update += 1; },
@@ -342,8 +343,8 @@ await report.check({
 
 await report.check({
   id: 'MISSION.objective-neutral-factory',
-  name: 'The Game-facing runtime seam accepts isolated escape and strike objectives',
-  assertion: 'Construction, PB identity, result dispatch and disposal have no gate-race rejection.',
+  name: 'The Game-facing seam runs one escape/strike world through common contacts',
+  assertion: 'One selected world constructs/adds/disposes; lethal contact wins before objective success.',
 }, () => {
   const observations = [];
   for (const kind of ['escape', 'strike']) {
@@ -362,12 +363,28 @@ await report.check({
           extraction: { startProgress: 0, timeoutSeconds: 1 },
         },
     };
-    const calls = { factory: 0, reset: 0, objectiveDispose: 0, worldDispose: 0 };
+    const calls = {
+      factory: 0,
+      worldConstructed: 0,
+      worldReset: 0,
+      worldUpdate: 0,
+      mainAdds: 0,
+      farAdds: 0,
+      objectiveReset: 0,
+      objectiveUpdate: 0,
+      bodyImpact: 0,
+      contactFeedback: 0,
+      objectiveDispose: 0,
+      worldDispose: 0,
+    };
     const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
     const objective = {
       kind,
-      reset: () => { calls.reset += 1; },
-      update: () => ({ status: 'running' }),
+      reset: () => { calls.objectiveReset += 1; },
+      update: () => {
+        calls.objectiveUpdate += 1;
+        return { status: 'succeeded' };
+      },
       guidance: (position) => ({
         label: 'MOCK OBJECTIVE',
         anchor: path.terminusPosition,
@@ -416,25 +433,63 @@ await report.check({
       }),
       dispose: () => { calls.objectiveDispose += 1; },
     };
-    const world = {
-      colliderSets: [],
-      targetables: [],
-      reset: () => {},
-      updateSimulation: () => {},
-      updatePresentation: () => {},
-      applyQuality: () => {},
-      dispose: () => { calls.worldDispose += 1; },
+    const mainScene = {
+      add: () => { calls.mainAdds += 1; },
     };
-    const candidate = new MissionRuntime({ definition, path, world, objective });
+    const farScene = {
+      add: () => { calls.farAdds += 1; },
+    };
     const runtime = createGameMissionRuntime({
       definition,
       seed: CAIRN_DRIFT.defaultSeed,
-      fallback: candidate,
-    }, () => {
+      renderer: {},
+      mainScene,
+      farScene,
+      lighting: {},
+      initialQuality: {},
+      maximumQuality: {},
+    }, (context) => {
       calls.factory += 1;
-      return candidate;
+      calls.worldConstructed += 1;
+      context.mainScene.add({ kind });
+      const world = {
+        contacts: [{
+          id: `${kind}:contact`,
+          kind: 'hazard',
+          position: new THREE.Vector3(1.5, 0, 0),
+          radius: 1,
+        }],
+        contactCapacity: 1,
+        targetables: [],
+        reset: () => { calls.worldReset += 1; },
+        updateSimulation: () => { calls.worldUpdate += 1; },
+        updatePresentation: () => {},
+        applyQuality: () => {},
+        dispose: () => { calls.worldDispose += 1; },
+      };
+      return new MissionRuntime({ definition, path, world, objective });
     });
     runtime.reset();
+    const body = {
+      position: new THREE.Vector3(0, 0, 0),
+      radius: 1,
+      speed: 900,
+      hull: 0.1,
+      applyImpact: () => {
+        calls.bodyImpact += 1;
+        body.hull = 0;
+        return 1;
+      },
+    };
+    const simulation = runtime.simulate({
+      dt: 1 / 60,
+      elapsed: 12,
+      body,
+      proximityRange: 40,
+      resolveContacts: true,
+      resolveObjective: true,
+      onContact: () => { calls.contactFeedback += 1; },
+    });
     const built = runtime.buildResult({
       totalTime: 12,
       hullRemaining: 0.75,
@@ -450,12 +505,34 @@ await report.check({
       && runtime.recordId(CAIRN_DRIFT.defaultSeed) === missionRecordId(definition, CAIRN_DRIFT.defaultSeed)
       && runtime.bestRunSplits().length === 0
       && calls.factory === 1
-      && calls.reset === 1,
-    `The ${kind} mock did not cross the common Game runtime boundary.`, { built, calls });
+      && calls.worldConstructed === 1
+      && calls.mainAdds === 1
+      && calls.farAdds === 0
+      && calls.worldReset === 1
+      && calls.objectiveReset === 1
+      && calls.worldUpdate === 1
+      && calls.bodyImpact === 1
+      && calls.contactFeedback === 1
+      && body.hull === 0
+      && simulation.hullFailed
+      && simulation.terminal === null
+      && simulation.proximity > 0
+      && calls.objectiveUpdate === 0,
+    `The ${kind} mock did not cross the common Game world/contact boundary.`, {
+      built,
+      simulation,
+      calls,
+    });
     runtime.dispose();
     verify(calls.objectiveDispose === 1 && calls.worldDispose === 1,
       `The ${kind} mock runtime did not dispose one objective and one world.`, calls);
-    observations.push({ kind, resultKind: built.kind, recordId: runtime.recordId(CAIRN_DRIFT.defaultSeed), calls });
+    observations.push({
+      kind,
+      resultKind: built.kind,
+      recordId: runtime.recordId(CAIRN_DRIFT.defaultSeed),
+      simulation,
+      calls,
+    });
   }
   return observations;
 });
