@@ -4,13 +4,15 @@
 
 **▶ 플레이: https://gjeon03.github.io/last-vector/**
 
-죽어가는 호박색 별을 도는 잔해 대륙 **케언 드리프트(the Cairn Drift)**를 가로지르는 브라우저
-우주선 비행. 이곳을 처음 측량한 누군가가 남긴 거대한 항법 표지들이 항로에 늘어서 있다. 아홉 개의
-케언을 꿰고, 드리프트가 닫히기 전에 **베스퍼 터미너스(Vesper Terminus)**에 닿아야 한다.
+죽어가는 호박색 별의 잔해 지대를 건너는 브라우저 우주선 비행. Chapter 01은 아홉 개의 케언을 꿰는
+**CAIRN DRIFT**, 난파선 사이를 파고드는 8게이트 **WRECKLINE**, 고리 구조물을 내려가며 통과하는
+9게이트 **RINGFALL**로 이어진다. 마지막 벡터를 따라 VESPER TERMINUS에서 NADIR RELAY를 거쳐
+ORISON ARRAY까지 도달해야 한다.
 
 전부 브라우저 안에서 돈다. 서버나 런타임 외부 네트워크는 없다. 바위와 별과 성운, 선체 패널, 소리는
-로드 시점에 시드 하나에서 생성되며 모델·텍스처·오디오 샘플을 내려받지 않는다. 유일한 바이너리
-에셋은 저장소에 함께 두는 한국어 UI 글꼴 WOFF2 세 파일이다.
+로드 시점에 시드 하나에서 생성되며 모델·텍스처·오디오 샘플을 내려받지 않는다. 라디오 연출은 자막과
+절차적으로 합성한 통신 큐로만 구성되며 TTS나 녹음 음성은 사용하지 않는다. 유일한 바이너리 에셋은
+저장소에 함께 두는 한국어 UI 글꼴 WOFF2 세 파일이다.
 
 ## 로컬에서 실행
 
@@ -34,12 +36,14 @@ pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정�
 
 ## 항로와 진행
 
-타이틀의 항로 선택기에서 **CAIRN DRIFT**와 **NEEDLE GRAVE**를 고른다. 처음에는 CAIRN만
-열려 있고, 한 번 완주하면 회전식 `SHEAR` 차단판이 있는 6게이트 정밀 항로 NEEDLE이 해금된다.
-항로별 최초 완주, 최고 랭크, 무충돌 완주, 정밀 통과 목표와 PB·구간 기록은 서로 분리해 저장한다.
-진행 상태는 `last-vector.progress.v1`에 보관되며, `?course=cairn-drift` 또는
-`?course=needle-grave`로 결정적인 항로 URL을 만들 수 있다. 잠긴 항로의 직접 URL은 CAIRN으로
-안전하게 되돌아간다.
+타이틀에는 Chapter 01의 세 스테이지가 한 줄로 표시된다. 처음에는 **CAIRN DRIFT**만 열려 있고,
+CAIRN을 완주하면 **WRECKLINE**, WRECKLINE을 완주하면 **RINGFALL**이 차례로 열린다. 해금 조건은
+랭크나 부가 목표가 아닌 완주 여부 하나뿐이다. 스테이지별 최초 완주, 최고 랭크, 무충돌 완주,
+정밀 통과 목표와 PB·구간 기록은 서로 분리해 저장한다.
+
+진행 상태는 `last-vector.progress.v1`에 보관되며 `?course=cairn-drift`, `?course=wreckline`,
+`?course=ringfall`로 결정적인 스테이지 URL을 만들 수 있다. 아직 잠긴 스테이지나 잘못된 ID로 직접
+접근하면 현재 진행에서 허용된 스테이지로 안전하게 되돌아간다.
 
 ## 배포
 
@@ -97,9 +101,12 @@ src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하�
 ```bash
 pnpm test:i18n             # 브라우저 없이 카탈로그·타입·안전 DOM 계약 검사
 pnpm test:campaign         # 브라우저 없이 항로 카탈로그·진행 저장 계약 검사
+pnpm test:stage-landmarks  # 브라우저 없이 스테이지 랜드마크 저작·충돌 계약 검사
 node scripts/playtest/localization.mjs  # 한국어·영어 브라우저 localization 검증
 pnpm playtest              # 무인 전체 주행 + 어서션
-pnpm playtest:campaign     # 잠금·해금·URL·SHEAR·두 번째 항로 실주행 검증
+pnpm playtest:campaign     # Chapter 01 순차 해금·URL·세 스테이지 실주행 검증
+pnpm playtest:chapter-visual # WRECKLINE/RINGFALL 집중 스틸 6장 생성(사람의 시각 검토 필요)
+pnpm playtest:chapter-perf # 세 스테이지의 DPR1·DPR2 성능/리소스 예산 검증
 pnpm playtest:perf         # 1080p / 1440p 프레임타임 측정
 pnpm playtest:screenshots  # 결정적 스크린샷 매트릭스
 pnpm playtest:all          # perf/HiDPI, boost VFX, i18n, localization, 주행, 스크린샷, 오디오 전체 집계
