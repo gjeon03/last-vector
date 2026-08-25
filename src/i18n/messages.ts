@@ -71,7 +71,8 @@ export type CampaignMessageCourseId =
   | 'cairn-drift'
   | 'needle-grave'
   | 'wreckline'
-  | 'ringfall';
+  | 'ringfall'
+  | 'dead-signal';
 
 export interface CampaignRouteMessages {
   /** Compact catalog label; canonical telemetry remains in the course definition. */
@@ -100,6 +101,8 @@ export interface CampaignRouteMessages {
     highestRank: string;
     cleanClear: string;
     precision: string;
+    allNodes?: string;
+    accuracy?: string;
   };
 }
 
@@ -134,6 +137,7 @@ export interface ControlMessages {
   throttle: string;
   roll: string;
   boost: string;
+  fire: string;
   brake: string;
   strafeHorizontal: string;
   strafeVertical: string;
@@ -193,6 +197,12 @@ export interface HudMessages {
   elapsed: string;
   best: string;
   nextMarker: string;
+  nextTarget: string;
+  shieldNodes: string;
+  arrayCore: string;
+  extracting: string;
+  blast: string;
+  accuracy: string;
   departure: string;
   charging: string;
   locked: string;
@@ -253,6 +263,9 @@ export interface ResultMessages {
   marker: string;
   topSpeed: string;
   widestMarker: string;
+  shieldNodes: string;
+  accuracy: string;
+  core: string;
   hull: string;
   clean: string;
   damaged: string;

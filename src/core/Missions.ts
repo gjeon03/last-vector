@@ -6,11 +6,12 @@ import {
   type FlightPathDefinition,
   type RadioAuthoringDefinition,
 } from './Courses.ts';
+import { DEAD_SIGNAL_MISSION } from '../game/missions/DeadSignalMission.ts';
 
-export type MissionId = 'cairn-drift';
+export type MissionId = 'cairn-drift' | 'dead-signal';
 export type MissionChapter = 1 | 2 | 3;
 export type MissionCapability = 'fire';
-export type MasteryId = 'precision';
+export type MasteryId = 'precision' | 'all-nodes' | 'accuracy';
 
 export interface GateRaceObjectiveDefinition {
   readonly kind: 'gate-race';
@@ -82,13 +83,15 @@ export const CAIRN_MISSION: MissionDefinition = {
   capabilities: [],
 };
 
-export const ACTIVE_MISSION_ORDER = ['cairn-drift'] as const satisfies readonly MissionId[];
+/** Standalone Chapter03 branch order; integration inserts Chapter02 between these entries. */
+export const ACTIVE_MISSION_ORDER = ['cairn-drift', 'dead-signal'] as const satisfies readonly MissionId[];
 export const DORMANT_COURSE_ORDER = KNOWN_COURSE_ORDER.filter(
   (id): id is Exclude<CourseId, MissionId> => id !== 'cairn-drift',
 );
 
 export const MISSION_CATALOG: Readonly<Record<MissionId, MissionDefinition>> = {
   'cairn-drift': CAIRN_MISSION,
+  'dead-signal': DEAD_SIGNAL_MISSION,
 };
 
 export const DEFAULT_MISSION_ID: MissionId = 'cairn-drift';

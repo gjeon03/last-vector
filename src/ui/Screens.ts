@@ -9,7 +9,11 @@
 
 import type { HudHost, Locale, MissionResult, QualityLevel, Settings } from '../core/contracts.ts';
 import { PRECISION_MAX_OFFSET } from '../core/Courses.ts';
-import { ACTIVE_MISSION_ORDER, type MissionId } from '../core/Missions.ts';
+import {
+  ACTIVE_MISSION_ORDER,
+  type MissionCapability,
+  type MissionId,
+} from '../core/Missions.ts';
 import type { Translator } from '../i18n/index.ts';
 import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
@@ -55,12 +59,16 @@ export type CampaignNavigationError = 'navigation-failed' | 'storage-unavailable
 
 export interface CampaignMissionView {
   readonly id: MissionId;
+  readonly chapter?: number;
+  readonly capabilities?: readonly MissionCapability[];
   readonly state: CampaignMissionState;
   readonly highestRank: string | null;
   readonly objectives: {
     readonly firstClear: boolean;
     readonly cleanClear: boolean;
     readonly precision: boolean;
+    readonly allNodes?: boolean;
+    readonly accuracy?: boolean;
   };
 }
 
@@ -98,6 +106,8 @@ function defaultCampaignView(): CampaignViewModel {
     missions: [
       {
         id: 'cairn-drift',
+        chapter: 1,
+        capabilities: [],
         state: 'available',
         highestRank: null,
         objectives: { firstClear: false, cleanClear: false, precision: false },
@@ -111,6 +121,7 @@ export type ControlId =
   | 'throttle'
   | 'roll'
   | 'boost'
+  | 'fire'
   | 'brake'
   | 'strafe-horizontal'
   | 'strafe-vertical'
@@ -136,6 +147,7 @@ interface ControlRow {
    * attention; the primer has neither.
    */
   readonly short?: keyof ControlMessages;
+  readonly capability?: MissionCapability;
 }
 
 /**
@@ -147,7 +159,8 @@ const CONTROLS: readonly ControlRow[] = [
   { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
   { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
   { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
-  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
+  { id: 'boost', groups: [['SHIFT']], action: 'boost', primer: true },
+  { id: 'fire', groups: [['LMB']], action: 'fire', primer: true, capability: 'fire' },
   { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
   { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
   { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
@@ -450,6 +463,7 @@ export class Screens {
   private readonly nBriefLines: HTMLElement[] = [];
   private readonly stageNodes = new Map<MissionId, {
     button: HTMLButtonElement;
+    chapter: HTMLElement;
     status: HTMLElement;
     selected: HTMLElement;
     lock: HTMLElement;
@@ -561,6 +575,7 @@ export class Screens {
     );
     const activeMissionId = active?.id ?? fallback?.id ?? 'cairn-drift';
     this.campaign = { ...viewModel, activeMissionId };
+    this.syncControlCapabilities();
 
     const m = this.translator.messages;
     const routeCopy = m.campaign.routes[activeMissionId];
@@ -617,6 +632,7 @@ export class Screens {
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
       nodes.button.dataset['stageState'] = state;
+      nodes.chapter.textContent = `CH ${String(route?.chapter ?? 1).padStart(2, '0')}`;
       nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
       nodes.button.tabIndex = selected ? 0 : -1;
       nodes.button.setAttribute('aria-checked', selected ? 'true' : 'false');
@@ -642,7 +658,9 @@ export class Screens {
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
       nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route?.objectives.precision ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route?.capabilities?.includes('fire')
+        ? route.objectives.allNodes && route.objectives.accuracy ? '1' : '0'
+        : route?.objectives.precision ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -683,6 +701,7 @@ export class Screens {
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
+    const strike = route.capabilities?.includes('fire') === true;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
       {
@@ -693,7 +712,12 @@ export class Screens {
         target: true,
       },
       { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
+      ...(strike
+        ? [
+            { id: 'all-nodes', label: copy.allNodes ?? copy.precision, complete: route.objectives.allNodes === true, value: '', target: true },
+            { id: 'accuracy', label: copy.accuracy ?? copy.precision, complete: route.objectives.accuracy === true, value: '', target: true },
+          ]
+        : [{ id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true }]),
     ];
     const focusId = result
       ? rows.find((row) => row.target && !row.complete)?.id ?? null
@@ -1078,6 +1102,16 @@ export class Screens {
     return node;
   }
 
+  private syncControlCapabilities(): void {
+    const mission = this.campaignMission();
+    const nodes = this.el.querySelectorAll<HTMLElement>('[data-control-capability]');
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]!;
+      const capability = node.dataset['controlCapability'] as MissionCapability | undefined;
+      node.hidden = capability === undefined || !mission.capabilities?.includes(capability);
+    }
+  }
+
   private buildStageRail(): HTMLElement {
     const m = this.translator.messages;
     const section = el('section', 'lv-stage-select');
@@ -1087,7 +1121,7 @@ export class Screens {
       englishText('span', 'lv-stage-chapter', m.campaign.chapterName),
     );
     section.appendChild(heading);
-    if (CHAPTER_STAGE_IDS.length === 1) return section;
+    if (Number(CHAPTER_STAGE_IDS.length) === 1) return section;
 
     const group = el('div', 'lv-stage-rail');
     group.setAttribute('role', 'radiogroup');
@@ -1110,8 +1144,13 @@ export class Screens {
       button.setAttribute('aria-disabled', isFirst ? 'false' : 'true');
 
       const top = el('span', 'lv-stage-top');
+      const chapter = englishText(
+        'span',
+        'lv-stage-index',
+        `CH ${String(this.campaignMission(id).chapter ?? (index + 1)).padStart(2, '0')}`,
+      );
       top.append(
-        englishText('span', 'lv-stage-index', `01-${index + 1}`),
+        chapter,
         el('span', 'lv-stage-dot'),
       );
       top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
@@ -1157,6 +1196,7 @@ export class Screens {
       group.appendChild(button);
       this.stageNodes.set(id, {
         button,
+        chapter,
         status,
         selected,
         lock,
@@ -1368,6 +1408,7 @@ export class Screens {
       if (!row.primer) continue;
       const li = el('li');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.append(
         keyChips(row, m.controls.or),
         el('span', '', m.controls[row.short ?? row.action]),
@@ -1677,6 +1718,7 @@ export class Screens {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.style.setProperty('--n', String(i));
       li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
@@ -2027,6 +2069,7 @@ export class Screens {
   /** Shared result shell for objective runtimes whose authored detail panels live downstream. */
   private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
     const m = this.translator.messages;
+    const campaignMission = this.campaignMission(r.missionId);
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
@@ -2053,21 +2096,53 @@ export class Screens {
       el('div', 'lv-res-time', formatTime(r.totalTime)),
     );
     const stats = el('dl', 'lv-res-stats');
-    for (const [label, value] of [
-      [m.results.markers, r.objectiveSummary],
-      [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
-    ]) {
+    const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'strike'
+      ? [
+          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsRequired}`],
+          [m.results.core, r.coreDestroyed ? 'DESTROYED' : 'ACTIVE'],
+          [m.results.accuracy, r.shotsFired > 0
+            ? `${Math.round(r.shotsHit / r.shotsFired * 100)}%`
+            : '0%'],
+          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+        ]
+      : [
+          [m.results.markers, r.objectiveSummary],
+          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+        ];
+    for (const [label, value] of objectiveStats) {
       const cell = el('div', 'lv-res-stat');
       cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
       stats.appendChild(cell);
     }
     left.append(time, stats);
+    if (r.kind === 'strike') {
+      const objectives = el('section', 'lv-objectives lv-objectives--result');
+      objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+      const objectiveList = el('ul', 'lv-objective-list');
+      objectiveList.dataset['objectiveList'] = 'results';
+      objectives.appendChild(objectiveList);
+      this.writeObjectiveList(objectiveList, campaignMission, r);
+      left.appendChild(objectives);
+    }
     main.appendChild(left);
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
-    actions.append(
-      this.button(m.results.runAgain, 'is-primary', 'run-again', () => this.host.restart()),
+    actions.append(this.button(
+      m.results.runAgain,
+      'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    }
+    actions.appendChild(
       this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
     );
     body.append(head, main, actions);

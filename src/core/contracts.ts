@@ -120,6 +120,15 @@ export interface StrikeObjectiveTelemetry {
   targetsRequired: number;
   coreDestroyed: boolean;
   extracting: boolean;
+  /** Authored strike detail. Optional for foundation-era synthetic telemetry. */
+  act?: 'ingress' | 'shield-run' | 'core' | 'extract';
+  shieldNodesTotal?: number;
+  calibrationDestroyed?: boolean;
+  coreExposed?: boolean;
+  shotsFired?: number;
+  shotsHit?: number;
+  blastSeconds?: number | null;
+  pathProgress?: number;
 }
 
 export type ObjectiveTelemetry =

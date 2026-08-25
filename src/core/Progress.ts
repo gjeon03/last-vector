@@ -375,6 +375,16 @@ export class ProgressStore {
       && getMissionDefinition(missionId).mastery.includes('precision')) {
       mastery.precision = true;
     }
+    if (result.kind === 'strike') {
+      const definition = getMissionDefinition(missionId);
+      if (definition.mastery.includes('all-nodes') && result.targetsDestroyed >= 6) {
+        mastery['all-nodes'] = true;
+      }
+      const accuracy = result.shotsFired > 0 ? result.shotsHit / result.shotsFired : 0;
+      if (definition.mastery.includes('accuracy') && accuracy >= 0.75) {
+        mastery.accuracy = true;
+      }
+    }
     this.current.missions[missionId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),
@@ -478,7 +488,9 @@ export class ProgressStore {
   }
 }
 
-// Deliberately referenced here so a catalog contraction cannot make dormant data silently vanish.
-if (KNOWN_COURSE_ORDER.length !== ACTIVE_MISSION_ORDER.length + DORMANT_COURSE_ORDER.length) {
+// Only active missions backed by a legacy CourseId participate in this retired-data partition.
+// Chapter missions may have their own world shell without becoming dormant legacy courses.
+const activeLegacyCourseCount = ACTIVE_MISSION_ORDER.filter(isCourseId).length;
+if (KNOWN_COURSE_ORDER.length !== activeLegacyCourseCount + DORMANT_COURSE_ORDER.length) {
   throw new Error('Mission and dormant course catalogs do not partition recognized data');
 }

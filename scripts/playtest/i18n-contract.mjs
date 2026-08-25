@@ -54,6 +54,10 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.ringfall.gateClearedLog', 2],
   ['campaign.routes.ringfall.gateMissedLog', 1],
   ['campaign.routes.ringfall.gateShearBlockedLog', 1],
+  ['campaign.routes.dead-signal.gateProgress', 1],
+  ['campaign.routes.dead-signal.gateClearedLog', 2],
+  ['campaign.routes.dead-signal.gateMissedLog', 1],
+  ['campaign.routes.dead-signal.gateShearBlockedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -300,6 +304,10 @@ await report.check(
       enRingProgress: en.campaign.routes.ringfall.gateProgress(2),
       koRingRadio: ko.campaign.routes.ringfall.radio3,
       enRingRadio: en.campaign.routes.ringfall.radio3,
+      koDeadSignalProgress: ko.campaign.routes['dead-signal'].gateProgress(2),
+      enDeadSignalProgress: en.campaign.routes['dead-signal'].gateProgress(2),
+      koDeadSignalRadio: ko.campaign.routes['dead-signal'].radio1,
+      enDeadSignalRadio: en.campaign.routes['dead-signal'].radio1,
     };
     const expectedCampaignRouteFixtures = {
       koCairnProgress: '2 CAIRNS REMAINING',
@@ -326,6 +334,10 @@ await report.check(
       enRingProgress: '2 MARKERS REMAINING',
       koRingRadio: 'ORISON이 응답한다. 배열을 깨워라.',
       enRingRadio: 'ORISON is answering. Wake the array.',
+      koDeadSignalProgress: '2 SHIELD NODES REQUIRED',
+      enDeadSignalProgress: '2 SHIELD NODES REQUIRED',
+      koDeadSignalRadio: 'Kestrel, 저것이 조준 배열이다. 차폐선을 끊고 신호를 제거하라.',
+      enDeadSignalRadio: 'Kestrel, that is the targeting array. Break its shield line and kill the signal.',
     };
     verify(JSON.stringify(campaignRouteFixtures) === JSON.stringify(expectedCampaignRouteFixtures),
       'Route-specific campaign functions or radio copy differ from the canonical fixtures.', {
@@ -344,17 +356,17 @@ await report.check(
 await report.check(
   {
     id: 'I18N.chapter-stage-rail',
-    name: 'Chapter 01 presents one mission without a one-node selector',
+    name: 'The standalone rail presents CAIRN then DEAD SIGNAL',
     assertion:
-      'CAIRN is the sole active mission, dormant route copy remains recognized, the single-node '
-      + 'selector stays absent, and Korean narrative/English chrome remain explicit.',
+      'The two-mission standalone order is visible, dormant route copy remains recognized, and '
+      + 'Korean narrative/English chrome remain explicit.',
   },
   async () => {
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
     const missionsSource = await readFile(new URL('../../src/core/Missions.ts', import.meta.url), 'utf8');
-    const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'];
+    const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall', 'dead-signal'];
     verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
       'Korean campaign catalog does not use the canonical recognized stage IDs.', {
         actual: Object.keys(ko.campaign.routes),
@@ -368,14 +380,14 @@ await report.check(
     const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
     const railSource = screensSource.slice(railStart, railEnd);
     verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the chapter heading.');
-    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift'\s*\]/u.test(missionsSource),
-      'The player-facing mission order is not CAIRN-only.', { missionsSource });
-    verify(railSource.includes('if (CHAPTER_STAGE_IDS.length === 1) return section;'),
-      'The title does not suppress its selector when a chapter has one mission.', { railSource });
+    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift',\s*'dead-signal',?\s*\]/u.test(missionsSource),
+      'The standalone player-facing order is not CAIRN then DEAD SIGNAL.', { missionsSource });
+    verify(railSource.includes('CHAPTER_STAGE_IDS'),
+      'The title rail is not driven by the active mission catalog.', { railSource });
     verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
       'Result mission selection is not guarded behind a multi-chapter catalog.');
     verify(screensSource.includes("'run-again'") && screensSource.includes("'return'"),
-      'The one-mission result path omits RUN AGAIN or RETURN.');
+      'The result path omits RUN AGAIN or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
       'Mission mastery treats a non-S recorded rank as complete.');
 
@@ -396,7 +408,7 @@ await report.check(
           en: en.campaign[key],
         });
     }
-    for (const id of ['wreckline', 'ringfall']) {
+    for (const id of ['wreckline', 'ringfall', 'dead-signal']) {
       const korean = ko.campaign.routes[id];
       const english = en.campaign.routes[id];
       verify(/[가-힣]/u.test(korean.tagline + korean.briefingLine1 + korean.radio1),
@@ -411,8 +423,8 @@ await report.check(
 
     return {
       recognizedIds,
-      activeMissionIds: ['cairn-drift'],
-      stableSingleMissionActions: ['run-again', 'return'],
+      activeMissionIds: ['cairn-drift', 'dead-signal'],
+      stableResultActions: ['run-again', 'return'],
       hybridChrome,
     };
   },

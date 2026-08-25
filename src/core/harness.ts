@@ -234,8 +234,8 @@ export interface HarnessCourseState {
 
 /** Dependency-free catalog projection; it deliberately excludes render/world objects. */
 export interface HarnessCatalogState {
-  /** Player-facing Chapter 01 sequence. */
-  order: readonly CourseId[];
+  /** Player-facing active mission sequence. */
+  order: readonly MissionId[];
   /** Sanitized identities, including dormant definitions retained for migration. */
   recognizedOrder: readonly CourseId[];
   courses: ReadonlyArray<{
@@ -244,7 +244,7 @@ export interface HarnessCatalogState {
     defaultSeed: number;
     recordId: string;
     active: boolean;
-    nextCourseId: CourseId | null;
+    nextCourseId: MissionId | null;
     gateCount: number;
     sector: string;
     destination: string;

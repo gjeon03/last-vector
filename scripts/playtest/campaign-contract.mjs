@@ -13,6 +13,7 @@ import {
   getNextMission,
   missionRecordId,
 } from '../../src/core/Missions.ts';
+import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
 import {
   buildMissionUrl,
   resolveMissionSelection,
@@ -123,11 +124,11 @@ const report = new Report('campaign-contract', options);
 
 await report.check({
   id: 'MISSION.catalog-path',
-  name: 'CAIRN is the sole active mission and its path/gates are unchanged',
-  assertion: 'Dormant authored courses remain recognized, while mission and PB identity use ruleset 2.',
+  name: 'The standalone campaign is CAIRN then DEAD SIGNAL and CAIRN geometry is unchanged',
+  assertion: 'Dormant authored courses remain recognized, while both missions and PB identity use ruleset 2.',
 }, () => {
-  verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift']),
-    'The active campaign contains more than Chapter 01 CAIRN.', ACTIVE_MISSION_ORDER);
+  verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift', 'dead-signal']),
+    'The standalone campaign order is not CAIRN then DEAD SIGNAL.', ACTIVE_MISSION_ORDER);
   verify(JSON.stringify(CHAPTER_ONE_STAGE_ORDER) === JSON.stringify(['cairn-drift']),
     'The legacy availability projection did not collapse with the active campaign.');
   verify(JSON.stringify(KNOWN_COURSE_ORDER)
@@ -145,8 +146,14 @@ await report.check({
     && CAIRN_MISSION.objective.kind === 'gate-race'
     && CAIRN_MISSION.world.sourceCourse === CAIRN_DRIFT
     && CAIRN_MISSION.capabilities.length === 0
-    && getNextMission('cairn-drift') === null,
+    && getNextMission('cairn-drift') === 'dead-signal',
   'The Chapter 01 mission definition crossed a foundation boundary.', CAIRN_MISSION);
+  verify(DEAD_SIGNAL_MISSION.chapter === 3
+    && DEAD_SIGNAL_MISSION.objective.kind === 'strike'
+    && DEAD_SIGNAL_MISSION.capabilities.includes('fire')
+    && DEAD_SIGNAL_MISSION.objective.targets.length === 8
+    && getNextMission('dead-signal') === null,
+  'The DEAD SIGNAL catalog entry is incomplete.', DEAD_SIGNAL_MISSION);
   verify(missionRecordId(CAIRN_MISSION, 1337) === 'cairn-drift-r2-1337',
     'Ruleset 2 did not partition the current PB identity.');
 
@@ -169,27 +176,41 @@ await report.check({
 
 await report.check({
   id: 'MISSION.url-resolution',
-  name: 'Canonical mission URLs accept one legacy CAIRN alias and fail closed',
-  assertion: 'mission takes precedence, retired/unknown IDs fall back, and new URLs delete course.',
+  name: 'Canonical mission URLs enforce clear-only DEAD SIGNAL access and fail closed',
+  assertion: 'mission takes precedence, locked/retired/unknown IDs fall back, and new URLs delete course.',
 }, () => {
   const progress = { version: 2, selectedMission: 'cairn-drift', missions: {}, dormantCourses: {} };
+  const unlocked = {
+    ...progress,
+    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
+  };
   const cases = {
     canonical: resolveMissionSelection({ mission: 'cairn-drift', legacyCourse: null }, progress),
+    lockedDeadSignal: resolveMissionSelection({ mission: 'dead-signal', legacyCourse: null }, progress),
+    unlockedDeadSignal: resolveMissionSelection(
+      { mission: 'dead-signal', legacyCourse: null },
+      unlocked,
+    ),
     alias: resolveMissionSelection({ mission: null, legacyCourse: 'cairn-drift' }, progress),
     retired: resolveMissionSelection({ mission: null, legacyCourse: 'wreckline' }, progress),
     unknown: resolveMissionSelection({ mission: 'unknown-mission', legacyCourse: 'cairn-drift' }, progress),
   };
   verify(cases.canonical.source === 'mission-url'
     && cases.alias.source === 'legacy-course-url'
+    && cases.lockedDeadSignal.source === 'invalid-mission-url'
+    && cases.lockedDeadSignal.missionId === 'cairn-drift'
+    && cases.unlockedDeadSignal.source === 'mission-url'
+    && cases.unlockedDeadSignal.missionId === 'dead-signal'
     && cases.retired.source === 'invalid-course-url'
     && cases.unknown.source === 'invalid-mission-url'
-    && Object.values(cases).every((entry) => entry.missionId === 'cairn-drift'),
+    && [cases.canonical, cases.alias, cases.retired, cases.unknown]
+      .every((entry) => entry.missionId === 'cairn-drift'),
   'Mission resolution did not fail closed.', cases);
   const built = new URL(buildMissionUrl(
     'https://example.test/game?course=cairn-drift&seed=9&briefing=1',
-    'cairn-drift',
+    'dead-signal',
   ));
-  verify(built.searchParams.get('mission') === 'cairn-drift'
+  verify(built.searchParams.get('mission') === 'dead-signal'
     && !built.searchParams.has('course')
     && !built.searchParams.has('seed')
     && built.searchParams.get('briefing') === '1',
@@ -275,8 +296,19 @@ await report.check({
   'Progress facts did not merge monotonically.', merged);
   const finish = store.recordSuccessfulFinish('cairn-drift', result({ rank: 'S' }));
   verify(finish.newlyUnlocked === null
+    && finish.progress.missions['cairn-drift']?.cleared
     && finish.progress.missions['cairn-drift']?.highestRank === 'S',
-  'A CAIRN finish invented another active mission or lost a better rank.', finish);
+  'A repeat CAIRN finish invented a new unlock or lost a better rank.', finish);
+  const firstClearStore = new ProgressStore({
+    localStorage: new MemoryStorage(),
+    sessionStorage: new MemoryStorage(),
+    hasLegacyCairnBest: () => false,
+  });
+  const firstClear = firstClearStore.recordSuccessfulFinish('cairn-drift', result());
+  verify(firstClear.firstClear
+    && firstClear.newlyUnlocked === 'dead-signal'
+    && firstClear.progress.missions['cairn-drift']?.cleared,
+  'A first CAIRN clear did not unlock DEAD SIGNAL.', firstClear);
 
   const futureRaw = JSON.stringify({
     version: 3,
@@ -296,7 +328,7 @@ await report.check({
     && future.getItem(PROGRESS_KEY) === futureRaw
     && future.writes === 0,
   'A future progress schema was overwritten.', { outcome, stored: future.getItem(PROGRESS_KEY) });
-  return { migrated, merged, finish, future: outcome.persistence };
+  return { migrated, merged, finish, firstClear, future: outcome.persistence };
 });
 
 await report.check({

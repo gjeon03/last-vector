@@ -603,6 +603,15 @@
   animation: lv-slide-r 0.5s var(--ease-out) both;
 }
 
+.lv-strikestatus {
+  max-width: min(32vw, 30rem);
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  color: var(--c-accent);
+  text-shadow: var(--scrim);
+}
+
 @keyframes lv-slide-r {
   from { opacity: 0; transform: translateX(14px); }
 }

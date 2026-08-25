@@ -326,6 +326,8 @@ export class Hud {
   private readonly nGateCur: RollingNumber;
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
+  private readonly nObjectiveKind: HTMLElement;
+  private readonly nStrikeStatus: HTMLElement;
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -387,6 +389,8 @@ export class Hud {
   private pGateTot = -1;
   private pGateName = '';
   private pGateNameType = '';
+  private pObjectiveKind = '';
+  private pStrikeStatus = '';
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -576,9 +580,19 @@ export class Hud {
     this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    const nextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
-    nextMarkerLabel.lang = 'en';
-    right.append(nextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
+    this.nObjectiveKind = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    this.nObjectiveKind.lang = 'en';
+    this.nStrikeStatus = el('div', 'lv-strikestatus', '');
+    this.nStrikeStatus.lang = 'en';
+    this.nStrikeStatus.hidden = true;
+    right.append(
+      this.nObjectiveKind,
+      gateCount,
+      this.nGateName,
+      this.nStrikeStatus,
+      times,
+      this.nSplitFeed,
+    );
     frame.appendChild(right);
 
     /* ---- centre-upper callout ---- */
@@ -897,10 +911,19 @@ export class Hud {
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
-    /* gate counter — splits.length is the unambiguous "cleared" count */
-    const total = Math.max(1, t.gate.total);
-    const cleared = clamp(t.splits.length, 0, total);
-    const current = Math.min(cleared + 1, total);
+    const strike = t.objective.kind === 'strike' ? t.objective : null;
+    const objectiveKind = strike ? 'strike' : t.objective.kind;
+    if (objectiveKind !== this.pObjectiveKind) {
+      this.pObjectiveKind = objectiveKind;
+      this.nObjectiveKind.textContent = strike
+        ? this.messages.hud.nextTarget
+        : this.messages.hud.nextMarker;
+      this.nStrikeStatus.hidden = strike === null;
+    }
+    /* Gate-race uses accepted splits; strike uses shield destruction only. */
+    const total = Math.max(1, strike?.targetsRequired ?? t.gate.total);
+    const cleared = clamp(strike?.targetsDestroyed ?? t.splits.length, 0, total);
+    const current = strike ? cleared : Math.min(cleared + 1, total);
     if (current !== this.pGateCur) {
       this.pGateCur = current;
       this.nGateCur.set(current);
@@ -921,6 +944,20 @@ export class Hud {
         this.nGateName.lang = 'en';
       }
       retrigger(this.nGateName, 'is-in');
+    }
+    if (strike) {
+      const accuracy = (strike.shotsFired ?? 0) > 0
+        ? Math.round((strike.shotsHit ?? 0) / (strike.shotsFired ?? 1) * 100)
+        : 0;
+      const status = strike.act === 'extract'
+        ? `${this.messages.hud.extracting} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
+        : strike.act === 'core'
+          ? `${this.messages.hud.arrayCore} · ${strike.coreExposed ? 'EXPOSED' : 'LOCKED'}`
+          : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.targetsRequired} · ${this.messages.hud.accuracy} ${accuracy}%`;
+      if (status !== this.pStrikeStatus) {
+        this.pStrikeStatus = status;
+        this.nStrikeStatus.textContent = status;
+      }
     }
 
     /* timers */
@@ -961,8 +998,11 @@ export class Hud {
         node.classList.toggle('is-next', i === cleared);
       }
     }
-    const prog =
-      t.courseTotal > 0 ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1) : cleared / total;
+    const prog = strike?.pathProgress !== undefined
+      ? clamp(strike.pathProgress, 0, 1)
+      : t.courseTotal > 0
+        ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1)
+        : cleared / total;
     this.eRail.target = prog;
     const railV = this.eRail.step(dt);
     const railQ = Math.round(railV * 400);

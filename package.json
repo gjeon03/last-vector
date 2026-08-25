@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test:i18n": "node --experimental-strip-types scripts/playtest/i18n-contract.mjs",
     "test:campaign": "node --experimental-strip-types scripts/playtest/campaign-contract.mjs",
+    "test:dead-signal": "node --experimental-strip-types scripts/playtest/dead-signal-contract.mjs",
     "test:boost": "node --experimental-strip-types scripts/playtest/boost-contract.mjs",
     "test:stage-landmarks": "node --experimental-strip-types scripts/playtest/stage-landmarks-contract.mjs",
     "serve:dist": "node scripts/static-server.mjs",
