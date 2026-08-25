@@ -18,6 +18,7 @@ import {
 } from './core/Missions.ts';
 import { resolveMissionSelection } from './core/MissionSelection.ts';
 import { ProgressStore } from './core/Progress.ts';
+import { getMissionRuntimeFactory } from './game/missions/MissionFactories.ts';
 import {
   consumeLocaleHandoff,
   createTranslator,
@@ -152,6 +153,7 @@ async function boot(): Promise<void> {
       progressStore,
       missionDefinition,
       missionResolution,
+      missionRuntimeFactory: getMissionRuntimeFactory(missionDefinition.id),
       ...(seed === undefined ? {} : { seed }),
     });
   } catch (error) {

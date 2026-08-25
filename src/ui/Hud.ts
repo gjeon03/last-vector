@@ -14,6 +14,7 @@ import type { LogLine, Telemetry } from '../core/contracts.ts';
 import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
 import { radioDurationSeconds } from '../core/RadioSchedule.ts';
 import type { Messages, Translator } from '../i18n/index.ts';
+import { LastAscentHud } from './LastAscentHud.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -326,6 +327,7 @@ export class Hud {
   private readonly nGateCur: RollingNumber;
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
+  private readonly nNextMarkerLabel: HTMLElement;
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -347,6 +349,7 @@ export class Hud {
   private readonly nRadioWho: HTMLElement;
   private readonly nRadioText: HTMLElement;
   private readonly flightReadableRegions: HTMLElement[] = [];
+  private readonly escapeHud: LastAscentHud;
 
   /* eased values */
   private readonly eThrottle = new Eased(0, 14);
@@ -576,10 +579,13 @@ export class Hud {
     this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    const nextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
-    nextMarkerLabel.lang = 'en';
-    right.append(nextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
+    this.nNextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    this.nNextMarkerLabel.lang = 'en';
+    right.append(this.nNextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
     frame.appendChild(right);
+
+    this.escapeHud = new LastAscentHud(this.messages);
+    frame.appendChild(this.escapeHud.element);
 
     /* ---- centre-upper callout ---- */
     this.nCallout = el('div', 'lv-callout');
@@ -827,6 +833,7 @@ export class Hud {
     this.cleared = false;
 
     this.updateText(t, d);
+    this.escapeHud.update(t);
     this.updateBars(t, d);
     this.updateCallout(t, d);
     this.updateLog(t.log, d);
@@ -897,10 +904,20 @@ export class Hud {
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
-    /* gate counter — splits.length is the unambiguous "cleared" count */
+    /* Gate race uses accepted splits; escape uses its typed safe-corridor count. */
     const total = Math.max(1, t.gate.total);
-    const cleared = clamp(t.splits.length, 0, total);
+    const cleared = clamp(
+      t.objective.kind === 'escape' ? t.objective.checkpoint : t.splits.length,
+      0,
+      total,
+    );
     const current = Math.min(cleared + 1, total);
+    const markerLabel = t.objective.kind === 'escape'
+      ? this.messages.hud.safeCorridors
+      : this.messages.hud.nextMarker;
+    if (this.nNextMarkerLabel.textContent !== markerLabel) {
+      this.nNextMarkerLabel.textContent = markerLabel;
+    }
     if (current !== this.pGateCur) {
       this.pGateCur = current;
       this.nGateCur.set(current);

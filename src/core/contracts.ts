@@ -384,6 +384,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export type SfxEvent =
   | 'gatePass'
+  | 'checkpoint'
   | 'gateNear'
   | 'gateMiss'
   | 'boostStart'

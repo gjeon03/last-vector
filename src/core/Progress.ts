@@ -375,6 +375,11 @@ export class ProgressStore {
       && getMissionDefinition(missionId).mastery.includes('precision')) {
       mastery.precision = true;
     }
+    if (result.kind === 'escape'
+      && result.checkpointsCleared === result.checkpointsTotal
+      && getMissionDefinition(missionId).mastery.includes('precision')) {
+      mastery.precision = true;
+    }
     this.current.missions[missionId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),
@@ -478,7 +483,11 @@ export class ProgressStore {
   }
 }
 
-// Deliberately referenced here so a catalog contraction cannot make dormant data silently vanish.
-if (KNOWN_COURSE_ORDER.length !== ACTIVE_MISSION_ORDER.length + DORMANT_COURSE_ORDER.length) {
+// LAST ASCENT is a mission-only ID, so only active IDs which are also legacy CourseIds take part
+// in this historical partition. A future campaign chapter must never erase dormant course facts.
+const activeLegacyCourseIds = ACTIVE_MISSION_ORDER.filter(
+  (id): id is Extract<MissionId, CourseId> => isCourseId(id),
+);
+if (KNOWN_COURSE_ORDER.length !== activeLegacyCourseIds.length + DORMANT_COURSE_ORDER.length) {
   throw new Error('Mission and dormant course catalogs do not partition recognized data');
 }

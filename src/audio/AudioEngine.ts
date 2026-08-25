@@ -80,6 +80,7 @@ export const MENU_MUSIC_DEPTH = 0.55;
 /** Events loud enough that the pad should step out of their way for a moment. */
 const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
   'gatePass',
+  'checkpoint',
   'gateMiss',
   'countdownGo',
   'finish',
@@ -351,7 +352,9 @@ export class AudioEngine implements AudioBus {
       /* a single malformed voice must never take the run down */
       return;
     }
-    if (DUCKING_EVENTS.has(event)) this.duck(when, event === 'gatePass' ? 0.62 : 0.7);
+    if (DUCKING_EVENTS.has(event)) {
+      this.duck(when, event === 'gatePass' || event === 'checkpoint' ? 0.62 : 0.7);
+    }
     if (ENGINE_DUCK_EVENTS.has(event)) this.duckEngine(when);
   }
 

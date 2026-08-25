@@ -69,6 +69,7 @@ export interface ScreenMessages {
  */
 export type CampaignMessageCourseId =
   | 'cairn-drift'
+  | 'last-ascent'
   | 'needle-grave'
   | 'wreckline'
   | 'ringfall';
@@ -206,6 +207,13 @@ export interface HudMessages {
   meterPercent: (percent: number) => string;
   boostUsable: (seconds: number) => string;
   boostRecharging: (percent: number) => string;
+  shockfront: string;
+  separation: string;
+  safeCorridors: string;
+  ascentAct: string;
+  debrisAct: string;
+  escapeAct: string;
+  escapeStatus: (separationMetres: number, checkpoint: number, total: number) => string;
 }
 
 export interface EventMessages {
@@ -269,6 +277,12 @@ export interface ResultMessages {
   terminus: string;
   splitDelta: (delta: string) => string;
   bestComparison: (delta: string, best: string) => string;
+  extractionConfirmed: string;
+  safeCorridors: string;
+  shockfrontMargin: string;
+  secondsUnit: string;
+  shockfrontOverrun: string;
+  shockfrontOverrunDetail: string;
 }
 
 export interface CockpitMessages {

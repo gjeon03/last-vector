@@ -136,6 +136,9 @@ export class SfxKit {
       case 'gatePass':
         this.gatePass(i, when);
         break;
+      case 'checkpoint':
+        this.checkpoint(i, when);
+        break;
       case 'gateNear':
         this.gateNear(i, when);
         break;
@@ -337,6 +340,54 @@ export class SfxKit {
       peak: 0.34,
       attack: 0.01,
       decay: 0.75,
+    });
+    this.finishVoice(v);
+  }
+
+  /**
+   * LAST ASCENT safe-corridor refill: a pressure seal and rising drive confirmation, distinct
+   * from CAIRN's struck-monolith voice. `intensity` is the one-based corridor mapped to 0..1.
+   */
+  private checkpoint(intensity: number, when: number): void {
+    const v = this.begin(when, 0.56, 0.5);
+    const root = 248 + intensity * 84;
+    this.noise(v, {
+      colour: 'air',
+      filter: 'bandpass',
+      freq: 310,
+      freqTo: 1850,
+      sweepTime: 0.34,
+      q: 1.4,
+      peak: 0.3,
+      attack: 0.008,
+      decay: 0.52,
+    });
+    this.tone(v, {
+      type: 'triangle',
+      freq: root,
+      glideTo: root * 1.5,
+      glideTime: 0.28,
+      peak: 0.38,
+      attack: 0.012,
+      decay: 0.72,
+    });
+    this.tone(v, {
+      type: 'sine',
+      freq: root * 0.5,
+      glideTo: root,
+      glideTime: 0.36,
+      peak: 0.3,
+      attack: 0.018,
+      decay: 0.66,
+    });
+    this.noise(v, {
+      colour: 'spark',
+      filter: 'highpass',
+      freq: 4400,
+      peak: 0.13,
+      attack: 0.001,
+      decay: 0.08,
+      delay: 0.3,
     });
     this.finishVoice(v);
   }

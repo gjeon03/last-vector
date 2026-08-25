@@ -10,6 +10,7 @@ import {
   ACTIVE_MISSION_ORDER,
   CAIRN_MISSION,
   DORMANT_COURSE_ORDER,
+  LAST_ASCENT_MISSION,
   getNextMission,
   missionRecordId,
 } from '../../src/core/Missions.ts';
@@ -93,6 +94,24 @@ const result = (patch = {}) => ({
   ...patch,
 });
 
+const escapeResult = (patch = {}) => ({
+  kind: 'escape',
+  missionId: 'last-ascent',
+  rulesetVersion: 1,
+  totalTime: 103,
+  hullRemaining: 1,
+  objectiveSummary: '3 / 3 SAFE',
+  topSpeed: 898,
+  cleanRun: true,
+  rank: 'S',
+  destinationName: 'ORBITAL EXTRACTION',
+  newlyUnlockedMissionId: null,
+  checkpointsCleared: 3,
+  checkpointsTotal: 3,
+  secondsAhead: 5,
+  ...patch,
+});
+
 const round = (value) => Number(value.toFixed(6));
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -123,11 +142,11 @@ const report = new Report('campaign-contract', options);
 
 await report.check({
   id: 'MISSION.catalog-path',
-  name: 'CAIRN is the sole active mission and its path/gates are unchanged',
-  assertion: 'Dormant authored courses remain recognized, while mission and PB identity use ruleset 2.',
+  name: 'CAIRN and LAST ASCENT are active while the CAIRN path/gates stay unchanged',
+  assertion: 'The two mission catalog is ordered, dormant courses stay quarantined, and PB identities partition by ruleset.',
 }, () => {
-  verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift']),
-    'The active campaign contains more than Chapter 01 CAIRN.', ACTIVE_MISSION_ORDER);
+  verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift', 'last-ascent']),
+    'The active campaign is not ordered CAIRN then LAST ASCENT.', ACTIVE_MISSION_ORDER);
   verify(JSON.stringify(CHAPTER_ONE_STAGE_ORDER) === JSON.stringify(['cairn-drift']),
     'The legacy availability projection did not collapse with the active campaign.');
   verify(JSON.stringify(KNOWN_COURSE_ORDER)
@@ -145,10 +164,18 @@ await report.check({
     && CAIRN_MISSION.objective.kind === 'gate-race'
     && CAIRN_MISSION.world.sourceCourse === CAIRN_DRIFT
     && CAIRN_MISSION.capabilities.length === 0
-    && getNextMission('cairn-drift') === null,
+    && getNextMission('cairn-drift') === 'last-ascent',
   'The Chapter 01 mission definition crossed a foundation boundary.', CAIRN_MISSION);
+  verify(LAST_ASCENT_MISSION.chapter === 2
+    && LAST_ASCENT_MISSION.objective.kind === 'escape'
+    && LAST_ASCENT_MISSION.capabilities.length === 0
+    && LAST_ASCENT_MISSION.mastery.includes('precision')
+    && getNextMission('last-ascent') === null,
+  'The Chapter 02 mission is not a bounded escape definition.', LAST_ASCENT_MISSION);
   verify(missionRecordId(CAIRN_MISSION, 1337) === 'cairn-drift-r2-1337',
     'Ruleset 2 did not partition the current PB identity.');
+  verify(missionRecordId(LAST_ASCENT_MISSION, 1337) === 'last-ascent-r1-1337',
+    'LAST ASCENT did not receive an independent ruleset PB identity.');
 
   const course = new Course(
     CAIRN_DRIFT,
@@ -169,21 +196,32 @@ await report.check({
 
 await report.check({
   id: 'MISSION.url-resolution',
-  name: 'Canonical mission URLs accept one legacy CAIRN alias and fail closed',
-  assertion: 'mission takes precedence, retired/unknown IDs fall back, and new URLs delete course.',
+  name: 'Canonical mission URLs enforce clear-only LAST ASCENT unlocks and fail closed',
+  assertion: 'mission takes precedence, locked/retired/unknown IDs fall back, and canonical URLs delete course.',
 }, () => {
   const progress = { version: 2, selectedMission: 'cairn-drift', missions: {}, dormantCourses: {} };
+  const unlocked = {
+    ...progress,
+    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
+  };
   const cases = {
     canonical: resolveMissionSelection({ mission: 'cairn-drift', legacyCourse: null }, progress),
+    lockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, progress),
+    unlockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, unlocked),
     alias: resolveMissionSelection({ mission: null, legacyCourse: 'cairn-drift' }, progress),
     retired: resolveMissionSelection({ mission: null, legacyCourse: 'wreckline' }, progress),
     unknown: resolveMissionSelection({ mission: 'unknown-mission', legacyCourse: 'cairn-drift' }, progress),
   };
   verify(cases.canonical.source === 'mission-url'
+    && cases.lockedAscent.source === 'invalid-mission-url'
+    && cases.lockedAscent.missionId === 'cairn-drift'
+    && cases.unlockedAscent.source === 'mission-url'
+    && cases.unlockedAscent.missionId === 'last-ascent'
     && cases.alias.source === 'legacy-course-url'
     && cases.retired.source === 'invalid-course-url'
     && cases.unknown.source === 'invalid-mission-url'
-    && Object.values(cases).every((entry) => entry.missionId === 'cairn-drift'),
+    && Object.entries(cases).every(([name, entry]) =>
+      name === 'unlockedAscent' || entry.missionId === 'cairn-drift'),
   'Mission resolution did not fail closed.', cases);
   const built = new URL(buildMissionUrl(
     'https://example.test/game?course=cairn-drift&seed=9&briefing=1',
@@ -194,7 +232,12 @@ await report.check({
     && !built.searchParams.has('seed')
     && built.searchParams.get('briefing') === '1',
   'Canonical mission navigation retained a legacy or ephemeral parameter.', built.href);
-  return { cases, built: built.href };
+  const ascentBuilt = new URL(buildMissionUrl(built, 'last-ascent'));
+  verify(ascentBuilt.searchParams.get('mission') === 'last-ascent'
+    && !ascentBuilt.searchParams.has('course')
+    && !ascentBuilt.searchParams.has('seed'),
+  'LAST ASCENT navigation did not write a canonical mission URL.', ascentBuilt.href);
+  return { cases, built: built.href, ascentBuilt: ascentBuilt.href };
 });
 
 await report.check({
@@ -276,7 +319,23 @@ await report.check({
   const finish = store.recordSuccessfulFinish('cairn-drift', result({ rank: 'S' }));
   verify(finish.newlyUnlocked === null
     && finish.progress.missions['cairn-drift']?.highestRank === 'S',
-  'A CAIRN finish invented another active mission or lost a better rank.', finish);
+  'A repeated CAIRN finish re-announced an unlock or lost a better rank.', finish);
+  const unlockStore = new ProgressStore({
+    localStorage: new MemoryStorage(),
+    sessionStorage: new MemoryStorage(),
+    hasLegacyCairnBest: () => false,
+    now: () => 1001,
+  });
+  const firstFinish = unlockStore.recordSuccessfulFinish('cairn-drift', result({ rank: 'A' }));
+  verify(firstFinish.firstClear
+    && firstFinish.newlyUnlocked === 'last-ascent'
+    && firstFinish.progress.missions['cairn-drift']?.cleared,
+  'A first CAIRN finish did not clear-only unlock LAST ASCENT.', firstFinish);
+  const ascentFinish = store.recordSuccessfulFinish('last-ascent', escapeResult());
+  verify(ascentFinish.newlyUnlocked === null
+    && ascentFinish.progress.missions['last-ascent']?.cleared
+    && ascentFinish.progress.missions['last-ascent']?.mastery.precision,
+  'A complete safe-corridor escape did not record LAST ASCENT precision mastery.', ascentFinish);
 
   const futureRaw = JSON.stringify({
     version: 3,
@@ -296,7 +355,7 @@ await report.check({
     && future.getItem(PROGRESS_KEY) === futureRaw
     && future.writes === 0,
   'A future progress schema was overwritten.', { outcome, stored: future.getItem(PROGRESS_KEY) });
-  return { migrated, merged, finish, future: outcome.persistence };
+  return { migrated, merged, finish, firstFinish, ascentFinish, future: outcome.persistence };
 });
 
 await report.check({
