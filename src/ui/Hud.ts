@@ -283,6 +283,7 @@ interface VecState {
   time: number;
   alpha: number;
   reduced: boolean;
+  coreHot: boolean;
 }
 
 /* ------------------------------------------------------------------- the HUD */
@@ -327,7 +328,8 @@ export class Hud {
   private readonly nGateCur: RollingNumber;
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
-  private readonly nNextMarkerLabel: HTMLElement;
+  private readonly nObjectiveKind: HTMLElement;
+  private readonly nStrikeStatus: HTMLElement;
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -390,6 +392,8 @@ export class Hud {
   private pGateTot = -1;
   private pGateName = '';
   private pGateNameType = '';
+  private pObjectiveKind = '';
+  private pStrikeStatus = '';
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -453,6 +457,7 @@ export class Hud {
     time: 0,
     alpha: 0,
     reduced: false,
+    coreHot: false,
   };
 
   constructor(translator: Translator) {
@@ -579,9 +584,19 @@ export class Hud {
     this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    this.nNextMarkerLabel = el('div', 'lv-right-k', this.messages.hud.nextMarker);
-    this.nNextMarkerLabel.lang = 'en';
-    right.append(this.nNextMarkerLabel, gateCount, this.nGateName, times, this.nSplitFeed);
+    this.nObjectiveKind = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    this.nObjectiveKind.lang = 'en';
+    this.nStrikeStatus = el('div', 'lv-strikestatus', '');
+    this.nStrikeStatus.lang = 'en';
+    this.nStrikeStatus.hidden = true;
+    right.append(
+      this.nObjectiveKind,
+      gateCount,
+      this.nGateName,
+      this.nStrikeStatus,
+      times,
+      this.nSplitFeed,
+    );
     frame.appendChild(right);
 
     this.escapeHud = new LastAscentHud(this.messages);
@@ -904,20 +919,35 @@ export class Hud {
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
-    /* Gate race uses accepted splits; escape uses its typed safe-corridor count. */
-    const total = Math.max(1, t.gate.total);
+    const strike = t.objective.kind === 'strike' ? t.objective : null;
+    const escape = t.objective.kind === 'escape' ? t.objective : null;
+    this.vs.coreHot = strike?.act === 'core'
+      && strike.coreExposed === true
+      && strike.coreDestroyed !== true;
+    const objectiveKind = t.objective.kind;
+    if (objectiveKind !== this.pObjectiveKind) {
+      this.pObjectiveKind = objectiveKind;
+      this.nObjectiveKind.textContent = strike
+        ? this.messages.hud.nextTarget
+        : escape
+          ? this.messages.hud.safeCorridors
+          : this.messages.hud.nextMarker;
+      this.nStrikeStatus.hidden = strike === null;
+    }
+    /* Each objective owns its counter: accepted splits, safe corridors, or destroyed shields. */
+    const total = Math.max(
+      1,
+      strike?.shieldNodesTotal
+        ?? strike?.targetsRequired
+        ?? escape?.checkpointTotal
+        ?? t.gate.total,
+    );
     const cleared = clamp(
-      t.objective.kind === 'escape' ? t.objective.checkpoint : t.splits.length,
+      strike?.targetsDestroyed ?? escape?.checkpoint ?? t.splits.length,
       0,
       total,
     );
-    const current = Math.min(cleared + 1, total);
-    const markerLabel = t.objective.kind === 'escape'
-      ? this.messages.hud.safeCorridors
-      : this.messages.hud.nextMarker;
-    if (this.nNextMarkerLabel.textContent !== markerLabel) {
-      this.nNextMarkerLabel.textContent = markerLabel;
-    }
+    const current = strike ? cleared : Math.min(cleared + 1, total);
     if (current !== this.pGateCur) {
       this.pGateCur = current;
       this.nGateCur.set(current);
@@ -938,6 +968,20 @@ export class Hud {
         this.nGateName.lang = 'en';
       }
       retrigger(this.nGateName, 'is-in');
+    }
+    if (strike) {
+      const accuracy = (strike.shotsFired ?? 0) > 0
+        ? Math.round((strike.shotsHit ?? 0) / (strike.shotsFired ?? 1) * 100)
+        : 0;
+      const status = strike.act === 'extract'
+        ? `${this.messages.hud.extracting} · TURN ${strike.extractionTurnsCleared ?? 0}/${strike.extractionTurnsTotal ?? 2} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
+        : strike.act === 'core'
+          ? `${this.messages.hud.arrayCore} · ${strike.coreExposed ? 'EXPOSED' : 'LOCKED'}`
+          : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.shieldNodesTotal ?? strike.targetsRequired} · ${strike.targetsRequired} REQUIRED · ${this.messages.hud.accuracy} ${accuracy}%`;
+      if (status !== this.pStrikeStatus) {
+        this.pStrikeStatus = status;
+        this.nStrikeStatus.textContent = status;
+      }
     }
 
     /* timers */
@@ -978,8 +1022,12 @@ export class Hud {
         node.classList.toggle('is-next', i === cleared);
       }
     }
-    const prog =
-      t.courseTotal > 0 ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1) : cleared / total;
+    const objectiveProgress = strike?.pathProgress ?? escape?.pathProgress;
+    const prog = objectiveProgress !== undefined
+      ? clamp(objectiveProgress, 0, 1)
+      : t.courseTotal > 0
+        ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1)
+        : cleared / total;
     this.eRail.target = prog;
     const railV = this.eRail.step(dt);
     const railQ = Math.round(railV * 400);
@@ -1472,6 +1520,24 @@ export class Hud {
     ctx.save();
     ctx.translate(vs.gateX, vs.gateY);
     ctx.globalAlpha = a;
+
+    if (vs.coreHot) {
+      const pulse = vs.reduced ? 0.5 : 0.5 + 0.5 * Math.sin(vs.time * 8);
+      const coreRadius = vmin * (0.021 + pulse * 0.004);
+      ctx.globalAlpha = a * (0.58 + pulse * 0.24);
+      ctx.fillStyle = 'rgba(255,55,28,0.58)';
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = a;
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 1.35, 0, Math.PI * 2);
+      casedStroke(ctx, 'rgba(255,174,62,0.98)', Math.max(2.4, vmin * 0.003));
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 0.34, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,235,174,0.98)';
+      ctx.fill();
+    }
 
     if (r < small) {
       /* far: a fixed-size acquisition diamond keeps the target findable at a glance */

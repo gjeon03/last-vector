@@ -12,11 +12,12 @@ import {
   LAST_ASCENT_PRESENTATION_COURSE,
   LAST_ASCENT_RADIO,
 } from '../game/missions/LastAscentDefinition.ts';
+import { DEAD_SIGNAL_MISSION } from '../game/missions/DeadSignalMission.ts';
 
-export type MissionId = 'cairn-drift' | 'last-ascent';
+export type MissionId = 'cairn-drift' | 'last-ascent' | 'dead-signal';
 export type MissionChapter = 1 | 2 | 3;
 export type MissionCapability = 'fire';
-export type MasteryId = 'precision';
+export type MasteryId = 'precision' | 'all-nodes' | 'accuracy';
 
 export interface GateRaceObjectiveDefinition {
   readonly kind: 'gate-race';
@@ -111,6 +112,7 @@ export const LAST_ASCENT_MISSION: MissionDefinition = {
 export const ACTIVE_MISSION_ORDER = [
   'cairn-drift',
   'last-ascent',
+  'dead-signal',
 ] as const satisfies readonly MissionId[];
 export const DORMANT_COURSE_ORDER = KNOWN_COURSE_ORDER.filter(
   (id): id is Exclude<CourseId, MissionId> => id !== 'cairn-drift',
@@ -119,6 +121,7 @@ export const DORMANT_COURSE_ORDER = KNOWN_COURSE_ORDER.filter(
 export const MISSION_CATALOG: Readonly<Record<MissionId, MissionDefinition>> = {
   'cairn-drift': CAIRN_MISSION,
   'last-ascent': LAST_ASCENT_MISSION,
+  'dead-signal': DEAD_SIGNAL_MISSION,
 };
 
 export const DEFAULT_MISSION_ID: MissionId = 'cairn-drift';

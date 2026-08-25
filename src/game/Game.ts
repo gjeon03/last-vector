@@ -61,6 +61,7 @@ import {
   lastAscentPressureStage,
   type EscapePressureStage,
 } from './missions/LastAscentPressure.ts';
+import { playDeadSignalWeaponFeedback } from './missions/DeadSignalAudio.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -111,11 +112,18 @@ const KEYBOARD_FLIGHT_MESSAGE: CalloutSubMessage = Object.freeze({
 });
 const CAMERA_TITLE_MESSAGES: Readonly<Record<CameraMode, CalloutTitleMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-title.camera-view', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-title.camera-view', mode: 'far-chase' }),
   chase: Object.freeze({ type: 'callout-title.camera-view', mode: 'chase' }),
 });
 const CAMERA_SUB_MESSAGES: Readonly<Record<CameraMode, CalloutSubMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-sub.camera-active', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-sub.camera-active', mode: 'far-chase' }),
   chase: Object.freeze({ type: 'callout-sub.camera-active', mode: 'chase' }),
+});
+const NEXT_CAMERA_MODE: Readonly<Record<CameraMode, CameraMode>> = Object.freeze({
+  chase: 'cockpit',
+  cockpit: 'far-chase',
+  'far-chase': 'chase',
 });
 const ENGAGE_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.engage' });
 const HULL_IMPACT_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.hull-impact' });
@@ -477,6 +485,11 @@ export class Game {
     // The selected factory is the sole world constructor. A non-CAIRN mission never allocates or
     // adds the shipped CAIRN world, which keeps page-load resources inside one mission budget.
     const maxProfile = qualityProfile('ultra');
+    const missionRuntimeFactory = options.missionRuntimeFactory
+      ?? (this.missionDefinition.id === CAIRN_MISSION.id ? createCairnMissionRuntime : null);
+    if (missionRuntimeFactory === null) {
+      throw new Error(`Missing runtime factory for mission: ${this.missionDefinition.id}`);
+    }
     this.mission = createGameMissionRuntime({
       definition: this.missionDefinition,
       seed,
@@ -486,7 +499,7 @@ export class Game {
       lighting: this.lighting,
       initialQuality: profile,
       maximumQuality: maxProfile,
-    }, options.missionRuntimeFactory ?? createCairnMissionRuntime);
+    }, missionRuntimeFactory);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
     this.shipMeshHolder.add(this.shipModel.object);
@@ -547,7 +560,7 @@ export class Game {
         this.restart();
       }
       if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
-        const next: CameraMode = this.settings.value.cameraMode === 'chase' ? 'cockpit' : 'chase';
+        const next = NEXT_CAMERA_MODE[this.settings.value.cameraMode];
         this.settings.set('cameraMode', next);
         // Keep the public camera contract synchronous with the key action. The pose itself is
         // resolved in updateVisuals, but projection state (notably the cockpit near plane) must
@@ -1300,6 +1313,7 @@ export class Game {
           this.weaponEvents,
         );
         presentEscapeRewardEvents(this.rewardEvents, this.onEscapeCheckpointReward);
+        playDeadSignalWeaponFeedback(this.weaponEvents, this.audio);
         const terminal = missionFrame.terminal;
         if (terminal.status === 'failed') this.failObjective(terminal.reason);
         else if (terminal.status === 'succeeded') this.finish();

@@ -81,6 +81,8 @@ const RETRIGGER_FLOOR: Partial<Record<SfxEvent, number>> = {
   scrape: 0.09,
   /** Two strikes 35 ms apart are one strike to the ear, and stacking them only clips. */
   impact: 0.035,
+  weaponFire: 0.1,
+  weaponHit: 0.04,
   /**
    * The designed maximum is 8.3 Hz (a 0.12 s interval), so a 0.1 s floor never touches correct
    * behaviour — but it caps a runaway caller at 10 Hz. That matters: the game's tick interval was
@@ -171,6 +173,15 @@ export class SfxKit {
         break;
       case 'scrape':
         this.scrape(i, when);
+        break;
+      case 'weaponFire':
+        this.weaponFire(i, when);
+        break;
+      case 'weaponHit':
+        this.weaponHit(i, when);
+        break;
+      case 'targetDestroy':
+        this.targetDestroy(i, when);
         break;
       case 'warnProximity':
         this.warnProximity(i, when);
@@ -772,6 +783,89 @@ export class SfxKit {
     v.end = stop;
 
     this.tone(v, { type: 'triangle', freq: 128, peak: 0.14 + intensity * 0.1, attack: 0.02, decay: dur });
+    this.finishVoice(v);
+  }
+
+  /** Centreline pulse: a pressure crack with a short cold capacitor tail. */
+  private weaponFire(intensity: number, when: number): void {
+    const v = this.begin(when, 0.42 + intensity * 0.16, 0.12);
+    this.noise(v, {
+      colour: 'spark',
+      filter: 'highpass',
+      freq: 3_800,
+      freqTo: 9_000,
+      sweepTime: 0.035,
+      peak: 0.34,
+      attack: 0.0005,
+      decay: 0.045,
+    });
+    this.tone(v, {
+      type: 'triangle',
+      freq: 1_460,
+      glideTo: 510,
+      glideTime: 0.065,
+      peak: 0.24,
+      attack: 0.001,
+      decay: 0.09,
+    });
+    this.finishVoice(v);
+  }
+
+  /** Fixed-target confirmation: compact enough to layer under the next 8 Hz pulse. */
+  private weaponHit(intensity: number, when: number): void {
+    const v = this.begin(when, 0.3 + intensity * 0.18, 0.2);
+    this.noise(v, {
+      colour: 'spark',
+      filter: 'bandpass',
+      freq: 2_600,
+      q: 7,
+      peak: 0.32,
+      attack: 0.0008,
+      decay: 0.06,
+    });
+    this.tone(v, {
+      type: 'sine',
+      freq: 820,
+      glideTo: 620,
+      glideTime: 0.07,
+      peak: 0.2,
+      attack: 0.001,
+      decay: 0.12,
+    });
+    this.finishVoice(v);
+  }
+
+  /** Shield-node/core destruction: wide industrial body, no dynamic world light required. */
+  private targetDestroy(intensity: number, when: number): void {
+    const v = this.begin(when, 0.62, 0.58);
+    this.noise(v, {
+      colour: 'spark',
+      filter: 'lowpass',
+      freq: 2_400,
+      freqTo: 260,
+      sweepTime: 0.42,
+      peak: 0.5,
+      attack: 0.001,
+      decay: 0.62 + intensity * 0.38,
+    });
+    this.tone(v, {
+      type: 'sine',
+      freq: 128,
+      glideTo: 42,
+      glideTime: 0.46,
+      peak: 0.64,
+      attack: 0.003,
+      decay: 0.72 + intensity * 0.45,
+    });
+    this.tone(v, {
+      type: 'triangle',
+      freq: 310,
+      glideTo: 92,
+      glideTime: 0.3,
+      peak: 0.24,
+      attack: 0.002,
+      decay: 0.5,
+    });
     this.finishVoice(v);
   }
 

@@ -126,6 +126,7 @@ export type ControlId =
   | 'throttle'
   | 'roll'
   | 'boost'
+  | 'fire'
   | 'brake'
   | 'strafe-horizontal'
   | 'strafe-vertical'
@@ -139,7 +140,7 @@ interface ControlRow {
   readonly id: ControlId;
   /**
    * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
-   * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
+   * groups are alternatives and render with an "or" between them ("SPACE or RMB").
    */
   readonly groups: readonly (readonly string[])[];
   readonly action: keyof ControlMessages;
@@ -151,6 +152,7 @@ interface ControlRow {
    * attention; the primer has neither.
    */
   readonly short?: keyof ControlMessages;
+  readonly capability?: MissionCapability;
 }
 
 /**
@@ -162,7 +164,8 @@ const CONTROLS: readonly ControlRow[] = [
   { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
   { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
   { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
-  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
+  { id: 'boost', groups: [['SHIFT']], action: 'boost', primer: true },
+  { id: 'fire', groups: [['LMB']], action: 'fire', primer: true, capability: 'fire' },
   { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
   { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
   { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
@@ -316,6 +319,7 @@ const SETTING_GROUPS = [
         options: [
           ['chase', 'chase'],
           ['cockpit', 'cockpit'],
+          ['far-chase', 'farChase'],
         ],
       },
       {
@@ -465,6 +469,7 @@ export class Screens {
   private readonly nBriefLines: HTMLElement[] = [];
   private readonly stageNodes = new Map<MissionId, {
     button: HTMLButtonElement;
+    chapter: HTMLElement;
     status: HTMLElement;
     selected: HTMLElement;
     lock: HTMLElement;
@@ -576,6 +581,7 @@ export class Screens {
     );
     const activeMissionId = active?.id ?? fallback?.id ?? ACTIVE_MISSION_ORDER[0]!;
     this.campaign = { ...viewModel, activeMissionId };
+    this.syncControlCapabilities();
 
     const m = this.translator.messages;
     const routeCopy = m.campaign.routes[activeMissionId];
@@ -638,6 +644,7 @@ export class Screens {
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
       nodes.button.dataset['stageState'] = state;
+      nodes.chapter.textContent = `CH ${String(route?.chapter ?? 1).padStart(2, '0')}`;
       nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
       nodes.button.tabIndex = selected ? 0 : -1;
       nodes.button.setAttribute('aria-checked', selected ? 'true' : 'false');
@@ -663,9 +670,9 @@ export class Screens {
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
       nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route?.mastery.find(
-        (mastery) => mastery.id === 'precision',
-      )?.complete ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route !== undefined
+        && route.mastery.length > 0
+        && route.mastery.every((entry) => entry.complete) ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -712,6 +719,11 @@ export class Screens {
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
+    const masteryLabel = (id: MasteryId): string => id === 'all-nodes'
+      ? copy.allNodes ?? copy.precision
+      : id === 'accuracy'
+        ? copy.accuracy ?? copy.precision
+        : copy.precision;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
       {
@@ -722,10 +734,10 @@ export class Screens {
         target: true,
       },
       { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      ...route.mastery.map((mastery) => ({
-        id: mastery.id,
-        label: copy[mastery.id],
-        complete: mastery.complete,
+      ...route.mastery.map((entry) => ({
+        id: entry.id,
+        label: masteryLabel(entry.id),
+        complete: entry.complete,
         value: '',
         target: true,
       })),
@@ -746,7 +758,7 @@ export class Screens {
       const name = writeEnglishTokens(
         el('span', 'lv-objective-name'),
         label,
-        ['CAIRN DRIFT', 'WRECKLINE', 'RINGFALL'],
+        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
       );
       name.lang = 'en';
       if (id === focusId) {
@@ -1113,6 +1125,16 @@ export class Screens {
     return node;
   }
 
+  private syncControlCapabilities(): void {
+    const mission = this.campaignMission();
+    const nodes = this.el.querySelectorAll<HTMLElement>('[data-control-capability]');
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]!;
+      const capability = node.dataset['controlCapability'] as MissionCapability | undefined;
+      node.hidden = capability === undefined || !mission.capabilities.includes(capability);
+    }
+  }
+
   private buildStageRail(): HTMLElement {
     const m = this.translator.messages;
     const section = el('section', 'lv-stage-select');
@@ -1122,7 +1144,7 @@ export class Screens {
       englishText('span', 'lv-stage-chapter', m.campaign.chapterName),
     );
     section.appendChild(heading);
-    if (CHAPTER_STAGE_IDS.length === 1) return section;
+    if (Number(CHAPTER_STAGE_IDS.length) === 1) return section;
 
     const group = el('div', 'lv-stage-rail');
     group.setAttribute('role', 'radiogroup');
@@ -1131,7 +1153,6 @@ export class Screens {
     for (let index = 0; index < CHAPTER_STAGE_IDS.length; index++) {
       const id = CHAPTER_STAGE_IDS[index]!;
       const copy = m.campaign.routes[id];
-      const mission = this.campaignMission(id);
       const isFirst = index === 0;
       const button = el('button', 'lv-stage-node');
       button.type = 'button';
@@ -1146,8 +1167,13 @@ export class Screens {
       button.setAttribute('aria-disabled', isFirst ? 'false' : 'true');
 
       const top = el('span', 'lv-stage-top');
+      const chapter = englishText(
+        'span',
+        'lv-stage-index',
+        `CH ${String(this.campaignMission(id).chapter ?? (index + 1)).padStart(2, '0')}`,
+      );
       top.append(
-        englishText('span', 'lv-stage-index', `CHAPTER ${String(mission.chapter).padStart(2, '0')}`),
+        chapter,
         el('span', 'lv-stage-dot'),
       );
       top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
@@ -1193,6 +1219,7 @@ export class Screens {
       group.appendChild(button);
       this.stageNodes.set(id, {
         button,
+        chapter,
         status,
         selected,
         lock,
@@ -1404,6 +1431,7 @@ export class Screens {
       if (!row.primer) continue;
       const li = el('li');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.append(
         keyChips(row, m.controls.or),
         el('span', '', m.controls[row.short ?? row.action]),
@@ -1713,6 +1741,7 @@ export class Screens {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
+      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.style.setProperty('--n', String(i));
       li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
@@ -2064,6 +2093,7 @@ export class Screens {
   /** Shared result shell for objective runtimes whose authored detail panels live downstream. */
   private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
     const m = this.translator.messages;
+    const campaignMission = this.campaignMission(r.missionId);
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
@@ -2089,13 +2119,59 @@ export class Screens {
     const main = el('div', 'lv-res-main');
     main.style.setProperty('--n', '1');
     const left = el('div', 'lv-res-left');
+    const newlyUnlocked = r.newlyUnlockedMissionId;
+    const revealedStage = newlyUnlocked
+      ? this.campaign.missions.find((mission) => mission.id === newlyUnlocked)
+      : undefined;
+    const nextStageId = this.campaign.nextMissionId !== undefined
+      ? this.campaign.nextMissionId
+      : newlyUnlocked;
+    const nextStage = nextStageId
+      ? this.campaign.missions.find((mission) => mission.id === nextStageId)
+      : undefined;
+    const advanceStage = nextStage !== undefined
+      && nextStage.state !== 'locked'
+      && nextStage.id !== campaignMission.id
+      && this.campaign.navigationError !== 'storage-unavailable'
+        ? nextStage
+        : undefined;
+    const firstClearAdvance = advanceStage !== undefined && revealedStage?.id === advanceStage.id;
+    if (revealedStage && revealedStage.state !== 'locked') {
+      const unlock = el('div', 'lv-stage-unlock');
+      unlock.dataset['stageId'] = revealedStage.id;
+      unlock.dataset['stageState'] = revealedStage.state;
+      const unlockText = writeEnglishTokens(
+        el('span'),
+        m.campaign.routes[revealedStage.id].unlockNotice,
+        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
+      );
+      unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
+        ? this.translator.locale
+        : 'en';
+      unlock.append(el('i', 'lv-stage-unlock-mark'), unlockText);
+      left.appendChild(unlock);
+    }
     const time = el('div', 'lv-res-timeblock');
     time.append(
       el('div', 'lv-res-k', m.results.totalTime),
       el('div', 'lv-res-time', formatTime(r.totalTime)),
     );
+    if (r.kind === 'strike' && r.isNewBest) {
+      const badge = el('div', 'lv-newbest');
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
+      time.appendChild(badge);
+    } else if (r.kind === 'strike' && r.bestTime != null) {
+      const deltaSeconds = r.totalTime - r.bestTime;
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(deltaSeconds), formatTime(r.bestTime)),
+      );
+      delta.dataset['tone'] = deltaSeconds <= 0 ? 'good' : 'bad';
+      time.appendChild(delta);
+    }
     const stats = el('dl', 'lv-res-stats');
-    const missionStats: ReadonlyArray<readonly [string, string]> = r.kind === 'escape'
+    const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'escape'
       ? [
           [m.results.safeCorridors, `${r.checkpointsCleared} / ${r.checkpointsTotal}`],
           [m.results.shockfrontMargin, `+${r.secondsAhead.toFixed(1)} ${m.results.secondsUnit}`],
@@ -2103,27 +2179,79 @@ export class Screens {
           [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
         ]
       : [
-          [m.results.markers, r.objectiveSummary],
+          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsTotal ?? r.targetsRequired}`],
+          [m.results.core, r.coreDestroyed ? 'DESTROYED' : 'ACTIVE'],
+          [m.results.accuracy, r.shotsFired > 0
+            ? `${Math.round(r.shotsHit / r.shotsFired * 100)}%`
+            : '0%'],
           [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
         ];
-    for (const [label, value] of missionStats) {
+    for (const [label, value] of objectiveStats) {
       const cell = el('div', 'lv-res-stat');
       cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
       stats.appendChild(cell);
     }
     left.append(time, stats);
+    if (r.kind === 'strike') {
+      const objectives = el('section', 'lv-objectives lv-objectives--result');
+      objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+      const objectiveList = el('ul', 'lv-objective-list');
+      objectiveList.dataset['objectiveList'] = 'results';
+      objectives.appendChild(objectiveList);
+      this.writeObjectiveList(objectiveList, campaignMission, r);
+      left.appendChild(objectives);
+    }
     main.appendChild(left);
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
-    actions.append(
-      this.button(m.results.runAgain, 'is-primary', 'run-again', () => this.host.restart()),
-      this.button(m.campaign.stageSelect, 'is-secondary', 'stage-select', () => {
-        this.host.showMissionSelect();
-      }),
-      this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
-    );
-    body.append(head, main, actions);
+    const nextStageButton = (primary: boolean): HTMLElement | null => {
+      if (!advanceStage) return null;
+      const button = this.button(
+        m.campaign.nextStage,
+        primary ? 'is-primary' : '',
+        'next-stage',
+        () => this.host.selectMission(advanceStage.id),
+        m.campaign.routes[advanceStage.id].destination,
+      );
+      button.dataset['stageId'] = advanceStage.id;
+      button.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      return button;
+    };
+    if (firstClearAdvance) {
+      const next = nextStageButton(true);
+      if (next) actions.appendChild(next);
+    }
+    actions.append(this.button(
+      m.results.runAgain,
+      firstClearAdvance ? '' : 'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    }
+    if (!firstClearAdvance && advanceStage) {
+      const next = nextStageButton(false);
+      if (next) actions.appendChild(next);
+    } else if (!advanceStage) {
+      actions.appendChild(
+        this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      );
+    }
+    const error = el('p', 'lv-campaign-error lv-campaign-error--result');
+    error.lang = this.translator.locale;
+    error.dataset['campaignError'] = '1';
+    error.setAttribute('role', 'status');
+    error.setAttribute('aria-live', 'polite');
+    error.hidden = true;
+    body.append(head, main, error, actions);
+    this.syncCampaignErrors();
 
     if (this.view === 'results') {
       this.collectNav(this.views.get('results')!);
@@ -2137,6 +2265,13 @@ export class Screens {
    */
   showFailure(elapsed: number, reason?: string): void {
     const m = this.translator.messages;
+    const reasonKey = reason === 'core-boundary-without-shields'
+      ? 'insufficientNodes'
+      : reason === 'core-window-missed'
+        ? 'coreWindowMissed'
+        : reason === 'blast-timeout'
+          ? 'blastTimeout'
+          : 'missionFailed';
     const body = this.nResultBody;
     body.textContent = '';
     body.dataset['state'] = 'failure';
@@ -2144,7 +2279,7 @@ export class Screens {
     else body.dataset['failureReason'] = reason;
     this.views.get('results')?.setAttribute(
       'aria-label',
-      reason === undefined ? m.a11y.hullBreach : m.a11y.missionFailed,
+      reason === undefined ? m.a11y.hullBreach : m.a11y[reasonKey],
     );
 
     const head = el('header', 'lv-res-head');
@@ -2157,7 +2292,7 @@ export class Screens {
     } else if (reason !== undefined) {
       head.append(
         englishText('div', 'lv-kicker', m.results.runComplete),
-        englishText('h2', 'lv-res-title', m.results.missionFailed),
+        englishText('h2', 'lv-res-title', m.results[reasonKey]),
       );
     } else {
       head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));

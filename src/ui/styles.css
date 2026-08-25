@@ -724,6 +724,15 @@
   animation: lv-slide-r 0.5s var(--ease-out) both;
 }
 
+.lv-strikestatus {
+  max-width: min(32vw, 30rem);
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  color: var(--c-accent);
+  text-shadow: var(--scrim);
+}
+
 @keyframes lv-slide-r {
   from { opacity: 0; transform: translateX(14px); }
 }
@@ -2763,7 +2772,7 @@ kbd {
   gap: 0.35em;
 }
 
-/* Separates alternative bindings ("SHIFT or LMB") so two chips never read as a key pair. */
+/* Separates alternative bindings ("SPACE or RMB") so two chips never read as a key pair. */
 .lv-key-or {
   font-family: var(--f-mono);
   font-size: var(--fs-micro);

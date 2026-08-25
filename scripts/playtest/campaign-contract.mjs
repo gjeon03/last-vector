@@ -15,6 +15,7 @@ import {
   getNextMission,
   missionRecordId,
 } from '../../src/core/Missions.ts';
+import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
 import {
   buildMissionUrl,
   resolveMissionSelection,
@@ -118,6 +119,29 @@ const escapeResult = (patch = {}) => ({
   ...patch,
 });
 
+const strikeResult = (patch = {}) => ({
+  kind: 'strike',
+  missionId: 'dead-signal',
+  rulesetVersion: DEAD_SIGNAL_MISSION.rulesetVersion,
+  totalTime: 112,
+  bestTime: null,
+  isNewBest: true,
+  hullRemaining: 1,
+  objectiveSummary: '6 / 6 + CORE',
+  targetsDestroyed: 6,
+  targetsRequired: 3,
+  targetsTotal: 6,
+  shotsFired: 10,
+  shotsHit: 8,
+  coreDestroyed: true,
+  topSpeed: 950,
+  cleanRun: true,
+  rank: 'A',
+  destinationName: 'DEAD SIGNAL EXTRACTION',
+  newlyUnlockedMissionId: null,
+  ...patch,
+});
+
 const round = (value) => Number(value.toFixed(6));
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -148,11 +172,12 @@ const report = new Report('campaign-contract', options);
 
 await report.check({
   id: 'MISSION.catalog-path',
-  name: 'CAIRN and LAST ASCENT are active while the CAIRN path/gates stay unchanged',
-  assertion: 'The two mission catalog is ordered, dormant courses stay quarantined, and PB identities partition by ruleset.',
+  name: 'The campaign is CAIRN, LAST ASCENT, then DEAD SIGNAL while CAIRN stays unchanged',
+  assertion: 'The three-mission catalog is ordered, dormant courses stay quarantined, and PB identities partition by ruleset.',
 }, () => {
-  verify(JSON.stringify(ACTIVE_MISSION_ORDER) === JSON.stringify(['cairn-drift', 'last-ascent']),
-    'The active campaign is not ordered CAIRN then LAST ASCENT.', ACTIVE_MISSION_ORDER);
+  verify(JSON.stringify(ACTIVE_MISSION_ORDER)
+    === JSON.stringify(['cairn-drift', 'last-ascent', 'dead-signal']),
+  'The active campaign is not ordered CAIRN, LAST ASCENT, then DEAD SIGNAL.', ACTIVE_MISSION_ORDER);
   verify(JSON.stringify(CHAPTER_ONE_STAGE_ORDER) === JSON.stringify(['cairn-drift']),
     'The legacy availability projection did not collapse with the active campaign.');
   verify(JSON.stringify(KNOWN_COURSE_ORDER)
@@ -176,12 +201,21 @@ await report.check({
     && LAST_ASCENT_MISSION.objective.kind === 'escape'
     && LAST_ASCENT_MISSION.capabilities.length === 0
     && LAST_ASCENT_MISSION.mastery.includes('precision')
-    && getNextMission('last-ascent') === null,
+    && getNextMission('last-ascent') === 'dead-signal',
   'The Chapter 02 mission is not a bounded escape definition.', LAST_ASCENT_MISSION);
+  verify(DEAD_SIGNAL_MISSION.chapter === 3
+    && DEAD_SIGNAL_MISSION.objective.kind === 'strike'
+    && DEAD_SIGNAL_MISSION.capabilities.includes('fire')
+    && DEAD_SIGNAL_MISSION.objective.targets.length === 8
+    && getNextMission('dead-signal') === null,
+  'The DEAD SIGNAL catalog entry is incomplete.', DEAD_SIGNAL_MISSION);
   verify(missionRecordId(CAIRN_MISSION, 1337) === 'cairn-drift-r2-1337',
     'Ruleset 2 did not partition the current PB identity.');
   verify(missionRecordId(LAST_ASCENT_MISSION, 1337) === 'last-ascent-r1-1337',
     'LAST ASCENT did not receive an independent ruleset PB identity.');
+  verify(missionRecordId(DEAD_SIGNAL_MISSION, 1337)
+    === `dead-signal-r${DEAD_SIGNAL_MISSION.rulesetVersion}-1337`,
+  'DEAD SIGNAL did not receive an independent ruleset PB identity.');
 
   const course = new Course(
     CAIRN_DRIFT,
@@ -202,18 +236,36 @@ await report.check({
 
 await report.check({
   id: 'MISSION.url-resolution',
-  name: 'Canonical mission URLs enforce clear-only LAST ASCENT unlocks and fail closed',
-  assertion: 'mission takes precedence, locked/retired/unknown IDs fall back, and canonical URLs delete course.',
+  name: 'Canonical mission URLs enforce sequential clear-only campaign access and fail closed',
+  assertion: 'mission takes precedence, both locks require every prior clear, and canonical URLs delete course.',
 }, () => {
   const progress = { version: 2, selectedMission: 'cairn-drift', missions: {}, dormantCourses: {} };
-  const unlocked = {
+  const afterCairn = {
     ...progress,
     missions: { 'cairn-drift': missionFacts({ cleared: true }) },
+  };
+  const afterAscent = {
+    ...progress,
+    missions: {
+      'cairn-drift': missionFacts({ cleared: true }),
+      'last-ascent': missionFacts({ cleared: true }),
+    },
   };
   const cases = {
     canonical: resolveMissionSelection({ mission: 'cairn-drift', legacyCourse: null }, progress),
     lockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, progress),
-    unlockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, unlocked),
+    unlockedAscent: resolveMissionSelection(
+      { mission: 'last-ascent', legacyCourse: null },
+      afterCairn,
+    ),
+    lockedDeadSignal: resolveMissionSelection(
+      { mission: 'dead-signal', legacyCourse: null },
+      afterCairn,
+    ),
+    unlockedDeadSignal: resolveMissionSelection(
+      { mission: 'dead-signal', legacyCourse: null },
+      afterAscent,
+    ),
     alias: resolveMissionSelection({ mission: null, legacyCourse: 'cairn-drift' }, progress),
     retired: resolveMissionSelection({ mission: null, legacyCourse: 'wreckline' }, progress),
     unknown: resolveMissionSelection({ mission: 'unknown-mission', legacyCourse: 'cairn-drift' }, progress),
@@ -224,16 +276,20 @@ await report.check({
     && cases.unlockedAscent.source === 'mission-url'
     && cases.unlockedAscent.missionId === 'last-ascent'
     && cases.alias.source === 'legacy-course-url'
+    && cases.lockedDeadSignal.source === 'invalid-mission-url'
+    && cases.lockedDeadSignal.missionId === 'cairn-drift'
+    && cases.unlockedDeadSignal.source === 'mission-url'
+    && cases.unlockedDeadSignal.missionId === 'dead-signal'
     && cases.retired.source === 'invalid-course-url'
     && cases.unknown.source === 'invalid-mission-url'
-    && Object.entries(cases).every(([name, entry]) =>
-      name === 'unlockedAscent' || entry.missionId === 'cairn-drift'),
+    && [cases.canonical, cases.alias, cases.retired, cases.unknown]
+      .every((entry) => entry.missionId === 'cairn-drift'),
   'Mission resolution did not fail closed.', cases);
   const built = new URL(buildMissionUrl(
     'https://example.test/game?course=cairn-drift&seed=9&briefing=1',
-    'cairn-drift',
+    'dead-signal',
   ));
-  verify(built.searchParams.get('mission') === 'cairn-drift'
+  verify(built.searchParams.get('mission') === 'dead-signal'
     && !built.searchParams.has('course')
     && !built.searchParams.has('seed')
     && built.searchParams.get('briefing') === '1',
@@ -324,6 +380,7 @@ await report.check({
   'Progress facts did not merge monotonically.', merged);
   const finish = store.recordSuccessfulFinish('cairn-drift', result({ rank: 'S' }));
   verify(finish.newlyUnlocked === null
+    && finish.progress.missions['cairn-drift']?.cleared
     && finish.progress.missions['cairn-drift']?.highestRank === 'S',
   'A repeated CAIRN finish re-announced an unlock or lost a better rank.', finish);
   const unlockStore = new ProgressStore({
@@ -337,11 +394,28 @@ await report.check({
     && firstFinish.newlyUnlocked === 'last-ascent'
     && firstFinish.progress.missions['cairn-drift']?.cleared,
   'A first CAIRN finish did not clear-only unlock LAST ASCENT.', firstFinish);
-  const ascentFinish = store.recordSuccessfulFinish('last-ascent', escapeResult());
-  verify(ascentFinish.newlyUnlocked === null
+  const ascentFinish = unlockStore.recordSuccessfulFinish('last-ascent', escapeResult());
+  verify(ascentFinish.firstClear
+    && ascentFinish.newlyUnlocked === 'dead-signal'
     && ascentFinish.progress.missions['last-ascent']?.cleared
     && ascentFinish.progress.missions['last-ascent']?.mastery.precision,
-  'A complete safe-corridor escape did not record LAST ASCENT precision mastery.', ascentFinish);
+  'A complete LAST ASCENT clear did not record precision or unlock DEAD SIGNAL.', ascentFinish);
+
+  const allNodesFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
+    shotsFired: 10,
+    shotsHit: 5,
+  }));
+  verify(allNodesFinish.progress.missions['dead-signal']?.mastery['all-nodes']
+    && allNodesFinish.progress.missions['dead-signal']?.mastery.accuracy !== true,
+  'DEAD SIGNAL all-nodes mastery was not recorded independently.', allNodesFinish);
+  const accuracyFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
+    targetsDestroyed: 3,
+    shotsFired: 4,
+    shotsHit: 3,
+  }));
+  verify(accuracyFinish.progress.missions['dead-signal']?.mastery['all-nodes']
+    && accuracyFinish.progress.missions['dead-signal']?.mastery.accuracy,
+  'DEAD SIGNAL accuracy mastery did not merge independently with all-nodes.', accuracyFinish);
 
   const futureRaw = JSON.stringify({
     version: 3,
@@ -361,13 +435,22 @@ await report.check({
     && future.getItem(PROGRESS_KEY) === futureRaw
     && future.writes === 0,
   'A future progress schema was overwritten.', { outcome, stored: future.getItem(PROGRESS_KEY) });
-  return { migrated, merged, finish, firstFinish, ascentFinish, future: outcome.persistence };
+  return {
+    migrated,
+    merged,
+    finish,
+    firstFinish,
+    ascentFinish,
+    allNodesFinish,
+    accuracyFinish,
+    future: outcome.persistence,
+  };
 });
 
 await report.check({
   id: 'MISSION.campaign-view-catalog',
-  name: 'Catalog-driven campaign projection presents CAIRN then LAST ASCENT',
-  assertion: 'Empty progress locks Chapter 02; a CAIRN clear makes it available and identifies it as next.',
+  name: 'Catalog-driven campaign projection presents all three sequential chapters',
+  assertion: 'Empty progress locks Chapters 02/03; each clear exposes only its immediate successor.',
 }, () => {
   const empty = buildCampaignViewModel({
     version: 2,
@@ -399,12 +482,24 @@ await report.check({
         highestRank: null,
         objectives: { firstClear: false, cleanClear: false, precision: false },
       },
+      {
+        id: 'dead-signal',
+        chapter: 3,
+        capabilities: ['fire'],
+        mastery: [
+          { id: 'all-nodes', complete: false },
+          { id: 'accuracy', complete: false },
+        ],
+        state: 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
     ],
   };
   verify(JSON.stringify(empty) === JSON.stringify(expected),
-    'The catalog projection did not expose a locked Chapter 02 after CAIRN.', { empty, expected });
+    'The empty campaign projection did not expose the locked three-node rail.', { empty, expected });
 
-  const cleared = buildCampaignViewModel({
+  const afterCairn = buildCampaignViewModel({
     version: 2,
     selectedMission: 'cairn-drift',
     missions: {
@@ -417,23 +512,42 @@ await report.check({
     },
     dormantCourses: {},
   }, 'cairn-drift');
-  verify(cleared.nextMissionId === 'last-ascent'
-    && cleared.missions.length === 2
-    && cleared.missions[0]?.state === 'cleared'
-    && cleared.missions[0]?.highestRank === 'A'
-    && cleared.missions[0]?.chapter === 1
-    && cleared.missions[0]?.capabilities.length === 0
-    && cleared.missions[0]?.mastery[0]?.id === 'precision'
-    && cleared.missions[0]?.mastery[0]?.complete === true
-    && cleared.missions[0]?.objectives.firstClear
-    && cleared.missions[0]?.objectives.cleanClear
-    && cleared.missions[0]?.objectives.precision
-    && cleared.missions[1]?.id === 'last-ascent'
-    && cleared.missions[1]?.chapter === 2
-    && cleared.missions[1]?.state === 'available'
-    && cleared.missions[1]?.capabilities.length === 0,
-  'Cleared CAIRN progress did not expose LAST ASCENT as the next available chapter.', cleared);
-  return { empty, cleared };
+  verify(afterCairn.nextMissionId === 'last-ascent'
+    && afterCairn.missions.length === 3
+    && afterCairn.missions[0]?.state === 'cleared'
+    && afterCairn.missions[0]?.highestRank === 'A'
+    && afterCairn.missions[0]?.mastery[0]?.id === 'precision'
+    && afterCairn.missions[0]?.mastery[0]?.complete === true
+    && afterCairn.missions[0]?.objectives.firstClear
+    && afterCairn.missions[0]?.objectives.cleanClear
+    && afterCairn.missions[0]?.objectives.precision
+    && afterCairn.missions[1]?.id === 'last-ascent'
+    && afterCairn.missions[1]?.chapter === 2
+    && afterCairn.missions[1]?.state === 'available'
+    && afterCairn.missions[1]?.capabilities.length === 0
+    && afterCairn.missions[2]?.id === 'dead-signal'
+    && afterCairn.missions[2]?.state === 'locked',
+  'A CAIRN clear did not expose only LAST ASCENT.', afterCairn);
+
+  const afterAscent = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'last-ascent',
+    missions: {
+      'cairn-drift': missionFacts({ cleared: true }),
+      'last-ascent': missionFacts({ cleared: true, mastery: { precision: true } }),
+    },
+    dormantCourses: {},
+  }, 'last-ascent');
+  verify(afterAscent.nextMissionId === 'dead-signal'
+    && afterAscent.missions[1]?.state === 'cleared'
+    && afterAscent.missions[1]?.mastery[0]?.complete === true
+    && afterAscent.missions[2]?.state === 'available'
+    && afterAscent.missions[2]?.chapter === 3
+    && afterAscent.missions[2]?.capabilities[0] === 'fire'
+    && afterAscent.missions[2]?.mastery[0]?.id === 'all-nodes'
+    && afterAscent.missions[2]?.mastery[1]?.id === 'accuracy',
+  'A LAST ASCENT clear did not expose DEAD SIGNAL with independent mastery rows.', afterAscent);
+  return { empty, afterCairn, afterAscent };
 });
 
 await report.check({
@@ -450,7 +564,10 @@ await report.check({
     hullReasonless: game.includes('this.overlay.showFailure(this.elapsed);'),
     overlayThread: overlay.includes('this.screens.showFailure(elapsed, reason);'),
     stableData: screens.includes("body.dataset['failureReason'] = reason;"),
-    genericCopy: screens.includes('m.results.missionFailed'),
+    genericCopy: screens.includes("? 'insufficientNodes'")
+      && screens.includes("? 'coreWindowMissed'")
+      && screens.includes("? 'blastTimeout'")
+      && screens.includes(": 'missionFailed'"),
     hullCopy: screens.includes('m.results.hullBreach'),
   };
   verify(Object.values(facts).every(Boolean),

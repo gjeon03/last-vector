@@ -380,6 +380,16 @@ export class ProgressStore {
       && getMissionDefinition(missionId).mastery.includes('precision')) {
       mastery.precision = true;
     }
+    if (result.kind === 'strike') {
+      const definition = getMissionDefinition(missionId);
+      if (definition.mastery.includes('all-nodes') && result.targetsDestroyed >= 6) {
+        mastery['all-nodes'] = true;
+      }
+      const accuracy = result.shotsFired > 0 ? result.shotsHit / result.shotsFired : 0;
+      if (definition.mastery.includes('accuracy') && accuracy >= 0.75) {
+        mastery.accuracy = true;
+      }
+    }
     this.current.missions[missionId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),
@@ -483,8 +493,8 @@ export class ProgressStore {
   }
 }
 
-// LAST ASCENT is a mission-only ID, so only active IDs which are also legacy CourseIds take part
-// in this historical partition. A future campaign chapter must never erase dormant course facts.
+// Only active missions backed by a legacy CourseId participate in this historical partition.
+// Chapter-only missions must never erase dormant legacy course facts.
 const activeLegacyCourseIds = ACTIVE_MISSION_ORDER.filter(
   (id): id is Extract<MissionId, CourseId> => isCourseId(id),
 );

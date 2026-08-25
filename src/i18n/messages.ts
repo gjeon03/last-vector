@@ -72,7 +72,8 @@ export type CampaignMessageCourseId =
   | 'last-ascent'
   | 'needle-grave'
   | 'wreckline'
-  | 'ringfall';
+  | 'ringfall'
+  | 'dead-signal';
 
 export interface CampaignRouteMessages {
   /** Compact catalog label; canonical telemetry remains in the course definition. */
@@ -101,6 +102,8 @@ export interface CampaignRouteMessages {
     highestRank: string;
     cleanClear: string;
     precision: string;
+    allNodes?: string;
+    accuracy?: string;
   };
 }
 
@@ -135,6 +138,7 @@ export interface ControlMessages {
   throttle: string;
   roll: string;
   boost: string;
+  fire: string;
   brake: string;
   strafeHorizontal: string;
   strafeVertical: string;
@@ -175,6 +179,7 @@ export interface SettingMessages {
   raw: string;
   chase: string;
   cockpit: string;
+  farChase: string;
   low: string;
   medium: string;
   high: string;
@@ -194,6 +199,12 @@ export interface HudMessages {
   elapsed: string;
   best: string;
   nextMarker: string;
+  nextTarget: string;
+  shieldNodes: string;
+  arrayCore: string;
+  extracting: string;
+  blast: string;
+  accuracy: string;
   departure: string;
   charging: string;
   locked: string;
@@ -226,8 +237,10 @@ export interface EventMessages {
   keyboardFlightAvailable: string;
   cockpitView: string;
   chaseView: string;
+  farChaseView: string;
   pilotCameraActive: string;
   exteriorCameraActive: string;
+  farExteriorCameraActive: string;
   engage: string;
   hullImpact: string;
   boostDepletedTitle: string;
@@ -263,6 +276,9 @@ export interface ResultMessages {
   marker: string;
   topSpeed: string;
   widestMarker: string;
+  shieldNodes: string;
+  accuracy: string;
+  core: string;
   hull: string;
   clean: string;
   damaged: string;
@@ -272,6 +288,9 @@ export interface ResultMessages {
   runAgain: string;
   returnToTitle: string;
   missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
   time: string;
   retry: string;
@@ -316,6 +335,9 @@ export interface A11yMessages {
   controls: string;
   runComplete: string;
   missionFailed: string;
+  insufficientNodes: string;
+  coreWindowMissed: string;
+  blastTimeout: string;
   hullBreach: string;
 }
 

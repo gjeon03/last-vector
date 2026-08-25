@@ -41,9 +41,9 @@ async function runMissionProof({ report, session, options }) {
   const page = session.page;
 
   await report.check({
-    id: 'MISSION.single-active-title',
-    name: 'A fresh title exposes Chapter 01 without a one-node selector',
-    assertion: 'Catalog/progress/URL use mission v2 while dormant course data remains recognized.',
+    id: 'MISSION.three-chapter-title',
+    name: 'A fresh title exposes the three-node sequential campaign rail',
+    assertion: 'Catalog/progress/URL use mission v2 while later chapters begin locked.',
   }, async () => {
     await callHarness(page, 'ready', [], options.timeoutMs);
     await page.setViewportSize({ width: 1920, height: 1080 });
@@ -63,17 +63,18 @@ async function runMissionProof({ report, session, options }) {
       && course.gateCount === 9
       && course.recordId === `cairn-drift-r2-${course.seed}`,
     'Boot did not build the ruleset-partitioned CAIRN mission.', evidence);
-    verify(JSON.stringify(catalog.order) === JSON.stringify(['cairn-drift'])
+    verify(JSON.stringify(catalog.order)
+      === JSON.stringify(['cairn-drift', 'last-ascent', 'dead-signal'])
       && JSON.stringify(catalog.recognizedOrder)
         === JSON.stringify(['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'])
       && catalog.courses.filter((entry) => entry.active).length === 1,
     'Active and dormant catalogs are not partitioned.', evidence);
     verify(progress.version === 2
       && progress.selectedMission === 'cairn-drift'
-      && title.stageNodes === 0
-      && title.chapter === 'THE CAIRN FRONTIER'
+      && title.stageNodes === 3
+      && title.chapter === 'THE FALL OF ACHRA'
       && title.begin?.includes('START FLIGHT'),
-    'The title retained a one-node selector or lost the Chapter 01 start action.', evidence);
+    'The title lost its three-node rail or Chapter 01 start action.', evidence);
     verify(routeUrl.searchParams.get('mission') === 'cairn-drift'
       && !routeUrl.searchParams.has('course'),
     'Harness navigation did not mint a canonical mission URL.', evidence);
@@ -128,8 +129,8 @@ async function runMissionProof({ report, session, options }) {
 
   await report.check({
     id: 'MISSION.result-actions',
-    name: 'The sole active mission result offers RUN AGAIN and RETURN only',
-    assertion: 'No stage/chapter selector or unavailable next mission is rendered.',
+    name: 'A first CAIRN clear offers the newly unlocked LAST ASCENT',
+    assertion: 'NEXT CHAPTER, RUN AGAIN, and CHAPTER SELECT render without a terminal RETURN.',
   }, async () => {
     const actions = await page.locator(
       '[data-view="results"][data-open="1"] [data-action]',
@@ -138,8 +139,8 @@ async function runMissionProof({ report, session, options }) {
       text: node.textContent?.trim() ?? '',
     })));
     verify(JSON.stringify(actions.map((entry) => entry.action))
-      === JSON.stringify(['run-again', 'return']),
-    'Single-mission results expose an unavailable campaign action.', actions);
+      === JSON.stringify(['next-stage', 'run-again', 'stage-select']),
+    'First-clear results did not expose the authorised next chapter.', actions);
     return actions;
   });
 }

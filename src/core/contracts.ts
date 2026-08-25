@@ -120,6 +120,18 @@ export interface StrikeObjectiveTelemetry {
   targetsRequired: number;
   coreDestroyed: boolean;
   extracting: boolean;
+  /** Authored strike detail. Optional for foundation-era synthetic telemetry. */
+  act?: 'ingress' | 'shield-run' | 'core' | 'extract';
+  shieldNodesTotal?: number;
+  calibrationDestroyed?: boolean;
+  coreExposed?: boolean;
+  shotsFired?: number;
+  shotsHit?: number;
+  blastSeconds?: number | null;
+  pathProgress?: number;
+  /** Objective-owned sequential extraction turns; absent on foundation-era fixtures. */
+  extractionTurnsCleared?: number;
+  extractionTurnsTotal?: number;
 }
 
 export type ObjectiveTelemetry =
@@ -271,8 +283,12 @@ export interface EscapeMissionResult extends MissionResultBase {
 
 export interface StrikeMissionResult extends MissionResultBase {
   kind: 'strike';
+  bestTime: number | null;
+  isNewBest: boolean;
   targetsDestroyed: number;
   targetsRequired: number;
+  /** Authored target count when the success threshold is smaller than the mastery total. */
+  targetsTotal?: number;
   shotsFired: number;
   shotsHit: number;
   coreDestroyed: boolean;
@@ -336,7 +352,7 @@ export interface HudHost {
 }
 
 export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
-export type CameraMode = 'chase' | 'cockpit';
+export type CameraMode = 'chase' | 'cockpit' | 'far-chase';
 
 export interface Settings {
   quality: QualityLevel;
@@ -399,6 +415,9 @@ export type SfxEvent =
   | 'newBest'
   | 'impact'
   | 'scrape'
+  | 'weaponFire'
+  | 'weaponHit'
+  | 'targetDestroy'
   | 'warnProximity'
   | 'uiHover'
   | 'uiClick'

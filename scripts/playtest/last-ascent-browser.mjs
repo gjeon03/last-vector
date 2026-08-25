@@ -78,12 +78,14 @@ async function runLastAscentBrowser({ report, session, options }) {
   }, async () => {
     await callHarness(page, 'ready', [], options.timeoutMs);
     const freshRail = await readRail(page);
-    verify(freshRail.nodes.length === 2
+    verify(freshRail.nodes.length === 3
       && freshRail.nodes[0]?.id === 'cairn-drift'
       && freshRail.nodes[0]?.state === 'available'
       && freshRail.nodes[1]?.id === 'last-ascent'
-      && freshRail.nodes[1]?.state === 'locked',
-    'Fresh title did not present a clear-only two-chapter rail.', freshRail);
+      && freshRail.nodes[1]?.state === 'locked'
+      && freshRail.nodes[2]?.id === 'dead-signal'
+      && freshRail.nodes[2]?.state === 'locked',
+    'Fresh title did not present the sequential three-chapter rail.', freshRail);
 
     const persistence = await callHarness(page, 'installProgress', [unlockedProgress()]);
     verify(persistence?.reloadSafe === true && persistence?.localWritten === false,
@@ -111,10 +113,11 @@ async function runLastAscentBrowser({ report, session, options }) {
       && course?.recordId === `last-ascent-r1-${course.seed}`
       && course?.resolution?.missionId === 'last-ascent'
       && course?.resolution?.source === 'mission-url'
-      && catalog?.order?.join(',') === 'cairn-drift,last-ascent'
+      && catalog?.order?.join(',') === 'cairn-drift,last-ascent,dead-signal'
       && landmarks?.kind === 'last-ascent'
       && canvasCount === 1
-      && rail.nodes.find((node) => node.id === 'last-ascent')?.selected === '1',
+      && rail.nodes.find((node) => node.id === 'last-ascent')?.selected === '1'
+      && rail.nodes.find((node) => node.id === 'dead-signal')?.state === 'locked',
     'Canonical page did not construct exactly the selected LAST ASCENT presentation.', evidence);
     return evidence;
   });
