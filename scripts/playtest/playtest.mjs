@@ -1068,10 +1068,10 @@ async function runPlaytest({ report, session, options }) {
     verify(gaps.length > 0 && Math.min(...gaps) <= 2.6,
       `Fast recovery was not observed; gaps were ${gaps.join(', ')} s.`, evidence);
     const usableSeconds = Number(hudScale.usableSeconds);
-    verify(Math.abs(usableSeconds - 3.1724137931034484) <= 1e-12
+    verify(Math.abs(usableSeconds - 4.6) <= 1e-12
       && hudScale.rearmPercent === '45' && hudScale.availability === 'available',
     'The boost HUD does not expose its initial raw numeric and availability contracts.', evidence);
-    verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.3700', '0.6600', '0.9500']),
+    verify(JSON.stringify(hudScale.tickPositions) === JSON.stringify(['0.2800', '0.4800', '0.6800', '0.8800']),
       'The boost HUD one-second marks do not match the latch floor plus drain rate.', evidence);
     verify(lockedHud?.availability === 'unavailable'
       && Math.abs(Number(lockedHud.usableSeconds) - usableSeconds) <= 1e-12

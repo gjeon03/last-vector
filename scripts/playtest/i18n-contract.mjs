@@ -815,15 +815,15 @@ await report.check(
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const boostFixtures = {
-      koUsable: ko.hud.boostUsable(92 / 29),
-      enUsable: en.hud.boostUsable(92 / 29),
+      koUsable: ko.hud.boostUsable(92 / 20),
+      enUsable: en.hud.boostUsable(92 / 20),
       koRecharging: ko.hud.boostRecharging(45),
       enRecharging: en.hud.boostRecharging(45),
     };
-    verify(boostFixtures.koUsable === '부스터 3.2초 사용 가능',
-      'Korean boost usable copy differs from the exact legacy fixture.', boostFixtures);
-    verify(boostFixtures.enUsable === 'Boost reserve, 3.2 seconds usable',
-      'English boost usable copy differs from the exact legacy fixture.', boostFixtures);
+    verify(boostFixtures.koUsable === '부스터 4.6초 사용 가능',
+      'Korean boost usable copy differs from the exact fixture.', boostFixtures);
+    verify(boostFixtures.enUsable === 'Boost reserve, 4.6 seconds usable',
+      'English boost usable copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.koRecharging === '부스터 잠김 · 45%까지 충전 중',
       'Korean boost recharging copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.enRecharging === 'Boost reserve locked; recharging to 45 percent',

@@ -12,6 +12,12 @@ export type FinalGateMessage =
 export type RadioMessageKey = 'radio1' | 'radio2' | 'radio3' | 'radio4' | 'radio5';
 
 /**
+ * Physics-affecting tuning partitions personal bests without erasing legacy storage keys.
+ * A mission may advance this independently once its authored rules change.
+ */
+export const CURRENT_FLIGHT_RULESET_VERSION = 2;
+
+/**
  * Largest normalized gate offset allowed by the route-wide precision mastery objective.
  * One exported owner keeps progress evaluation and the result explanation from drifting.
  */
@@ -71,6 +77,7 @@ export interface RadioAuthoringDefinition {
 
 export interface CourseDefinition {
   readonly id: CourseId;
+  readonly rulesetVersion: number;
   /** Stable position in the recognized catalog, including dormant definitions. */
   readonly order: number;
   readonly defaultSeed: number;
@@ -262,6 +269,7 @@ const OBJECTIVES = [
 
 export const CAIRN_DRIFT: CourseDefinition = {
   id: 'cairn-drift',
+  rulesetVersion: CURRENT_FLIGHT_RULESET_VERSION,
   order: 0,
   defaultSeed: hashSeed('cairn-drift-01'),
   text: {
@@ -328,6 +336,7 @@ export const CAIRN_DRIFT: CourseDefinition = {
 
 export const NEEDLE_GRAVE: CourseDefinition = {
   id: 'needle-grave',
+  rulesetVersion: CURRENT_FLIGHT_RULESET_VERSION,
   order: 1,
   defaultSeed: hashSeed('needle-grave-01'),
   text: {
@@ -408,6 +417,7 @@ export const NEEDLE_GRAVE: CourseDefinition = {
 
 export const WRECKLINE: CourseDefinition = {
   id: 'wreckline',
+  rulesetVersion: CURRENT_FLIGHT_RULESET_VERSION,
   order: 2,
   defaultSeed: hashSeed('wreckline-01'),
   text: {
@@ -474,6 +484,7 @@ export const WRECKLINE: CourseDefinition = {
 
 export const RINGFALL: CourseDefinition = {
   id: 'ringfall',
+  rulesetVersion: CURRENT_FLIGHT_RULESET_VERSION,
   order: 3,
   defaultSeed: hashSeed('ringfall-01'),
   text: {
@@ -578,7 +589,7 @@ export function getNextCourse(id: CourseId): CourseId | null {
 }
 
 export function courseRecordId(definition: CourseDefinition, seed: number): string {
-  return `${definition.id}-${seed >>> 0}`;
+  return `${definition.id}-r${definition.rulesetVersion}-${seed >>> 0}`;
 }
 
 export function calculateCourseRank(
@@ -605,6 +616,9 @@ function validateDefinition(definition: CourseDefinition): void {
     throw new Error(`Invalid course definition ${definition.id}: ${field}`);
   };
   if (definition.geometry.legs.length < 1) fail('geometry.legs');
+  if (!Number.isInteger(definition.rulesetVersion) || definition.rulesetVersion < 1) {
+    fail('rulesetVersion');
+  }
   if (!Number.isFinite(definition.geometry.gateSpacing) || definition.geometry.gateSpacing <= 0) {
     fail('geometry.gateSpacing');
   }

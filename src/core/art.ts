@@ -129,8 +129,8 @@ export const FLIGHT: Record<
   boostEngageFraction: 0.08,
   /** Fraction required before a depleted, held boost input may re-arm. */
   boostRearmFraction: 0.45,
-  // About 3.2 s from a full tank to the latch floor, followed by a noticeably shorter recovery.
-  boostDrain: 29,
+  // 4.6 s from a full tank to the latch floor. Keep speed, regeneration and VFX tuning separate.
+  boostDrain: 20,
   boostRegen: 22,
   boostRegenDelay: 0.65,
 };

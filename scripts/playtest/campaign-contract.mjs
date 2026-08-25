@@ -111,8 +111,8 @@ await report.check({
   verify(cairn.geometry.legs.length === 9, 'CAIRN gate count changed.', { gateCount: cairn.geometry.legs.length });
   verify(cairn.defaultSeed === 3139019938,
     'CAIRN default seed changed.', { defaultSeed: cairn.defaultSeed });
-  verify(courseRecordId(cairn, 1337) === 'cairn-drift-1337', 'CAIRN PB identity changed.');
-  verify(courseRecordId(cairn, cairn.defaultSeed) === 'cairn-drift-3139019938',
+  verify(courseRecordId(cairn, 1337) === 'cairn-drift-r2-1337', 'CAIRN PB identity changed.');
+  verify(courseRecordId(cairn, cairn.defaultSeed) === 'cairn-drift-r2-3139019938',
     'CAIRN default-seed PB identity changed.');
   verify(getNextCourse('cairn-drift') === 'wreckline'
     && getNextCourse('wreckline') === 'ringfall'
@@ -131,9 +131,9 @@ await report.check({
   const pbIds = CHAPTER_ONE_STAGE_ORDER.map((id) => courseRecordId(getCourseDefinition(id), 1337));
   verify(new Set(pbIds).size === 3
     && JSON.stringify(pbIds) === JSON.stringify([
-      'cairn-drift-1337',
-      'wreckline-1337',
-      'ringfall-1337',
+      'cairn-drift-r2-1337',
+      'wreckline-r2-1337',
+      'ringfall-r2-1337',
     ]),
   'Active stages do not have independent stable PB prefixes.', { pbIds });
 
