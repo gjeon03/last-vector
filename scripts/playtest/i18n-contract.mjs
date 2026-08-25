@@ -344,16 +344,16 @@ await report.check(
 await report.check(
   {
     id: 'I18N.chapter-stage-rail',
-    name: 'Chapter 01 uses one compact semantic stage rail with hybrid-language copy',
+    name: 'Chapter 01 presents one mission without a one-node selector',
     assertion:
-      'Only the three active stage IDs render; stable selectors, roving horizontal semantics, '
-      + 'nonactivating locks, result actions, and Korean narrative/English chrome stay explicit.',
+      'CAIRN is the sole active mission, dormant route copy remains recognized, the single-node '
+      + 'selector stays absent, and Korean narrative/English chrome remain explicit.',
   },
   async () => {
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
-    const stylesSource = await readFile(new URL('../../src/ui/styles.css', import.meta.url), 'utf8');
+    const missionsSource = await readFile(new URL('../../src/core/Missions.ts', import.meta.url), 'utf8');
     const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'];
     verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
       'Korean campaign catalog does not use the canonical recognized stage IDs.', {
@@ -367,44 +367,26 @@ await report.check(
     const railStart = screensSource.indexOf('private buildStageRail()');
     const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
     const railSource = screensSource.slice(railStart, railEnd);
-    verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the compact stage rail.');
-    verify(railSource.includes('CHAPTER_STAGE_IDS') && !railSource.includes('needle-grave'),
-      'The player-facing rail is not driven by the active three-stage order.', { railSource });
-    for (const fixture of [
-      "dataset['stageId']",
-      "dataset['stageState']",
-      "dataset['stageSelected']",
-      "setAttribute('role', 'radiogroup')",
-      "setAttribute('role', 'radio')",
-      "setAttribute('aria-disabled'",
-    ]) {
-      verify(screensSource.includes(fixture), `Screens omits stage semantic fixture: ${fixture}`);
-    }
-    for (const action of ['next-stage', 'run-again', 'stage-select']) {
-      verify(screensSource.includes(`'${action}'`), `Results omit stable action: ${action}`);
-    }
+    verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the chapter heading.');
+    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift'\s*\]/u.test(missionsSource),
+      'The player-facing mission order is not CAIRN-only.', { missionsSource });
+    verify(railSource.includes('if (CHAPTER_STAGE_IDS.length === 1) return section;'),
+      'The title does not suppress its selector when a chapter has one mission.', { railSource });
+    verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
+      'Result mission selection is not guarded behind a multi-chapter catalog.');
+    verify(screensSource.includes("'run-again'") && screensSource.includes("'return'"),
+      'The one-mission result path omits RUN AGAIN or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
-      'Stage mastery treats a non-S recorded rank as complete.');
-    verify(/activeStage\s*&&\s*\(key === 'ArrowLeft'/u.test(screensSource)
-      && /activeStage\s*&&\s*\(key === 'ArrowRight'/u.test(screensSource),
-    'Stage navigation does not follow the horizontal Left/Right axis.');
-    verify(/if \(activeStage\) \{[\s\S]{0,420}activeStage\.click\(\)/u.test(screensSource),
-      'Enter/Space does not terminate in stage selection.');
-    verify(/route\.state === 'locked'[\s\S]{0,180}return/u.test(railSource),
-      'Locked stages are not explicitly nonactivating.');
-    verify(/\.lv-stage-rail\s*\{[\s\S]{0,180}repeat\(3,/u.test(stylesSource),
-      'The stage rail is not a three-column single row.');
-    verify(/\.lv-stage-node\s*\{[\s\S]{0,180}min-height:\s*(?:[3-9]\d|\d{3,})px/u.test(stylesSource),
-      'Stage node targets do not retain at least 24 CSS pixels.');
-    verify(!/@media \(max-width: 520px\)[\s\S]{0,1200}\.lv-stage-rail\s*\{[\s\S]{0,100}grid-template-columns:\s*1fr/u.test(stylesSource),
-      'Compact CSS stacks the stage rail on mobile.');
+      'Mission mastery treats a non-S recorded rank as complete.');
 
     const hybridChrome = {
       chapter: 'CHAPTER 01',
       chapterName: 'THE CAIRN FRONTIER',
-      stageSelection: 'STAGE SELECT',
-      nextStage: 'NEXT STAGE',
-      stageSelect: 'STAGE SELECT',
+      stageSelection: 'CHAPTER SELECT',
+      stageObjectives: 'MISSION MASTERY',
+      stage: 'MISSION',
+      nextStage: 'NEXT CHAPTER',
+      stageSelect: 'CHAPTER SELECT',
     };
     for (const [key, expected] of Object.entries(hybridChrome)) {
       verify(ko.campaign[key] === expected && en.campaign[key] === expected,
@@ -429,7 +411,8 @@ await report.check(
 
     return {
       recognizedIds,
-      stableActions: ['next-stage', 'run-again', 'stage-select'],
+      activeMissionIds: ['cairn-drift'],
+      stableSingleMissionActions: ['run-again', 'return'],
       hybridChrome,
     };
   },
@@ -815,15 +798,15 @@ await report.check(
     const ko = requireExport('ko.ts', 'ko');
     const en = requireExport('en.ts', 'en');
     const boostFixtures = {
-      koUsable: ko.hud.boostUsable(92 / 29),
-      enUsable: en.hud.boostUsable(92 / 29),
+      koUsable: ko.hud.boostUsable(92 / 20),
+      enUsable: en.hud.boostUsable(92 / 20),
       koRecharging: ko.hud.boostRecharging(45),
       enRecharging: en.hud.boostRecharging(45),
     };
-    verify(boostFixtures.koUsable === '부스터 3.2초 사용 가능',
-      'Korean boost usable copy differs from the exact legacy fixture.', boostFixtures);
-    verify(boostFixtures.enUsable === 'Boost reserve, 3.2 seconds usable',
-      'English boost usable copy differs from the exact legacy fixture.', boostFixtures);
+    verify(boostFixtures.koUsable === '부스터 4.6초 사용 가능',
+      'Korean boost usable copy differs from the exact fixture.', boostFixtures);
+    verify(boostFixtures.enUsable === 'Boost reserve, 4.6 seconds usable',
+      'English boost usable copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.koRecharging === '부스터 잠김 · 45%까지 충전 중',
       'Korean boost recharging copy differs from the exact fixture.', boostFixtures);
     verify(boostFixtures.enRecharging === 'Boost reserve locked; recharging to 45 percent',

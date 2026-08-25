@@ -1,13 +1,17 @@
-# Goal Ledger — G1
+# Goal Ledger — Flight-Action Campaign
 
-**Run:** `755dda47-81b7-4de8-ba20-98eb21f8b0be`
-**Logical lead:** Claude (host = Claude) · **Partner:** Codex
-**Policy:** claude-lead — the dominant unresolved risk is experience/art direction ("does it *feel* like a great space flight game?"), not repository integration.
+**Run:** `flight-action-campaign-2026-08-25`
+**Foundation:** one shipped mission, one world per load, bounded objective unions
 
 ## Outcome
 
-**LAST VECTOR** — a browser game where the player pilots a spacecraft through open space,
-flies through a sequence of checkpoint gates, and reaches a final destination.
+**LAST VECTOR** — a forward-flight action campaign with one complete mission per chapter. Every
+chapter keeps the same ship, handling, camera, hull, boost economy and guidance language while
+changing its world, spatial objective and one signature mechanic.
+
+The shared mission rhythm is `approach -> commit to one spatial objective -> extract`. The
+foundation ships Chapter 01 CAIRN only; later chapter branches may add escape and bounded strike
+objectives without turning the game into free-roaming combat or a disconnected minigame.
 
 ## Mandatory criteria
 
@@ -15,8 +19,8 @@ flies through a sequence of checkpoint gates, and reaches a final destination.
 |---|-----------|-----------------|
 | M1 | Runs entirely client-side; `dist/` deploys to any static host with no server code | build + serve `dist/` over plain static file server |
 | M2 | Player pilots a spacecraft in 3D space with continuous 6-axis-capable control | headless input drive + telemetry |
-| M3 | Sequential checkpoint gates must be flown through; passing is detected reliably | scripted playthrough reaching final gate |
-| M4 | A final destination terminates the run with a resolution beat | scripted playthrough to `finished` phase |
+| M3 | Chapter 01 is one CAIRN gate-race mission; all nine gates must be flown in order | deterministic 60/120 Hz mission proof |
+| M4 | Every mission terminates at an authored extraction boundary with hull remaining | objective runtime + scripted `finished` proof |
 | M5 | 60 fps at 1920×1080 on the dev machine; no console errors | perf probe + console capture |
 | M6 | Zero external network requests at runtime (fully self-contained) | network capture during play |
 | M7 | Keyboard + mouse; pointer-lock flight; gamepad optional | manual + scripted |
@@ -38,19 +42,22 @@ Concretely, the build is only "excellent" when all of these hold:
 ## Anti-goals / constraints
 
 - Do **not** copy Everspace 2 assets, ship silhouettes, UI layouts, names, or story. Reference the *class* of quality only.
-- Do **not** expand the objective. No combat loop, no loot, no RPG systems, no multiplayer.
+- Do **not** add free-roaming combat, enemy fighters, return fire, ammunition, loot, RPG systems,
+  multiplayer, or weapon switching. A later mission may grant one bounded forward cannon for its
+  authored strike windows; non-strike missions ignore FIRE.
+- No ECS, plugin framework, event bus, or mission-ID conditional tree in `Game`.
+- One mission world is built per page load; dormant/future missions are never preloaded.
 - No runtime CDN dependency, no analytics, no telemetry beacons, no server.
 - No binary art assets checked in — everything procedural or generated at build/runtime.
 - TypeScript strict, named exports, 2-space indent (project convention).
 
 ## Evidence plan
 
-1. `pnpm typecheck` + `pnpm build` clean.
-2. Static-serve `dist/`, drive the game headlessly through `window.__LV` harness API.
-3. Screenshot matrix at fixed course positions → fresh visual critics score against Q1–Q6.
-4. Perf probe: frame-time histogram, p95, draw calls, triangles.
-5. Network capture asserts zero external requests.
-6. Fresh `FINAL_REVIEW` challenge before claiming COMPLETE.
+1. `pnpm build` plus focused boost, mission/progress/path and i18n contracts.
+2. Static-serve `dist/`; complete CAIRN cleanly at deterministic 60 and 120 Hz through `window.__LV`.
+3. Preserve the locked CAIRN FlightPath and gate signatures exactly.
+4. Keep broad browser/localization/performance matrices for final campaign integration.
+5. Record a falsification self-review and all unproven claims before foundation PASS.
 
 ### Two rules about evidence, both learned the hard way
 

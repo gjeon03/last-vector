@@ -5,14 +5,18 @@ import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
 import {
-  CHAPTER_ONE_STAGE_ORDER,
   KNOWN_COURSE_ORDER,
   courseRecordId,
   getCourseDefinition,
-  getNextCourse,
-  isCourseAvailable,
 } from './core/Courses.ts';
-import { resolveCourseSelection } from './core/CourseSelection.ts';
+import {
+  ACTIVE_MISSION_ORDER,
+  getMissionDefinition,
+  getNextMission,
+  isMissionId,
+  missionRecordId,
+} from './core/Missions.ts';
+import { resolveMissionSelection } from './core/MissionSelection.ts';
 import { ProgressStore } from './core/Progress.ts';
 import {
   consumeLocaleHandoff,
@@ -128,8 +132,11 @@ async function boot(): Promise<void> {
   const seedParam = search.get('seed');
   const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
   const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
-  const courseResolution = resolveCourseSelection(search.get('course'), progressStore.snapshot());
-  const courseDefinition = getCourseDefinition(courseResolution.courseId);
+  const missionResolution = resolveMissionSelection({
+    mission: search.get('mission'),
+    legacyCourse: search.get('course'),
+  }, progressStore.snapshot());
+  const missionDefinition = getMissionDefinition(missionResolution.missionId);
 
   let game: Game;
   try {
@@ -143,8 +150,8 @@ async function boot(): Promise<void> {
       localeStore,
       fonts,
       progressStore,
-      courseDefinition,
-      courseResolution,
+      missionDefinition,
+      missionResolution,
       ...(seed === undefined ? {} : { seed }),
     });
   } catch (error) {
@@ -218,7 +225,9 @@ async function boot(): Promise<void> {
   loader.setProgress(1, bootTranslator.messages.loader.ready);
   loader.done();
 
-  if (search.get('briefing') === '1' && courseResolution.source === 'url') {
+  if (search.get('briefing') === '1'
+    && (missionResolution.source === 'mission-url'
+      || missionResolution.source === 'legacy-course-url')) {
     game.toBriefing();
   }
 
@@ -246,17 +255,20 @@ function installHarness(game: Game): void {
     result: () => game.getResult(),
     course: () => game.getCourseState(),
     catalog: () => ({
-      order: [...CHAPTER_ONE_STAGE_ORDER],
+      order: [...ACTIVE_MISSION_ORDER],
       recognizedOrder: [...KNOWN_COURSE_ORDER],
       courses: KNOWN_COURSE_ORDER.map((id) => {
         const definition = getCourseDefinition(id);
+        const active = isMissionId(id);
         return {
           id,
           order: definition.order,
           defaultSeed: definition.defaultSeed,
-          recordId: courseRecordId(definition, definition.defaultSeed),
-          active: isCourseAvailable(id),
-          nextCourseId: getNextCourse(id),
+          recordId: active
+            ? missionRecordId(getMissionDefinition(id), definition.defaultSeed)
+            : courseRecordId(definition, definition.defaultSeed),
+          active,
+          nextCourseId: active ? getNextMission(id) : null,
           gateCount: definition.geometry.legs.length,
           sector: definition.text.canonicalSector,
           destination: definition.text.canonicalDestination,
