@@ -1,6 +1,12 @@
 import type { RunResult } from './contracts.ts';
 import type { CourseId, RankLetter } from './Courses.ts';
-import { isCourseAvailable, isCourseId, PRECISION_MAX_OFFSET } from './Courses.ts';
+import {
+  CHAPTER_ONE_STAGE_ORDER,
+  KNOWN_COURSE_ORDER,
+  isCourseAvailable,
+  isCourseId,
+  PRECISION_MAX_OFFSET,
+} from './Courses.ts';
 import { hasBestRunPrefix } from './Settings.ts';
 
 export const PROGRESS_KEY = 'last-vector.progress.v1';
@@ -171,7 +177,7 @@ function mergeCourse(a?: CourseProgress, b?: CourseProgress): CourseProgress | u
 
 function cloneProgress(progress: ProgressV1): ProgressV1 {
   const courses: Partial<Record<CourseId, CourseProgress>> = {};
-  for (const id of ['cairn-drift', 'needle-grave'] as const) {
+  for (const id of KNOWN_COURSE_ORDER) {
     const source = progress.courses[id];
     if (source) courses[id] = { ...source };
   }
@@ -188,7 +194,14 @@ function defaultStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | 
 
 export function isCourseUnlocked(progress: ProgressV1, courseId: CourseId): boolean {
   if (!isCourseAvailable(courseId)) return false;
-  return courseId === 'cairn-drift' || progress.courses['cairn-drift']?.cleared === true;
+  const stageIndex = CHAPTER_ONE_STAGE_ORDER.indexOf(
+    courseId as typeof CHAPTER_ONE_STAGE_ORDER[number],
+  );
+  if (stageIndex < 0) return false;
+  for (let index = 0; index < stageIndex; index++) {
+    if (progress.courses[CHAPTER_ONE_STAGE_ORDER[index]!]?.cleared !== true) return false;
+  }
+  return true;
 }
 
 export class ProgressStore {
@@ -218,7 +231,7 @@ export class ProgressStore {
     this.sessionReadOnly = session.newerVersion;
 
     const merged = emptyProgress();
-    for (const id of ['cairn-drift', 'needle-grave'] as const) {
+    for (const id of KNOWN_COURSE_ORDER) {
       const course = mergeCourse(local.parsed?.courses[id], session.parsed?.courses[id]);
       if (course) merged.courses[id] = course;
     }
@@ -251,7 +264,9 @@ export class ProgressStore {
   }
 
   recordSuccessfulFinish(courseId: CourseId, result: RunResult): FinishProgressOutcome {
-    const beforeNeedle = this.isUnlocked('needle-grave');
+    const unlockedBefore = new Set(
+      CHAPTER_ONE_STAGE_ORDER.filter((id) => this.isUnlocked(id)),
+    );
     const previous = this.current.courses[courseId] ?? emptyCourseProgress();
     const firstClear = !previous.cleared;
     const rank = isRank(result.rank) ? result.rank : null;
@@ -267,10 +282,12 @@ export class ProgressStore {
       precisionClear: previous.precisionClear || precise,
     };
     const persistence = this.persist();
-    const afterNeedle = this.isUnlocked('needle-grave');
+    const newlyUnlocked = CHAPTER_ONE_STAGE_ORDER.find(
+      (id) => !unlockedBefore.has(id) && this.isUnlocked(id),
+    ) ?? null;
     return {
       firstClear,
-      newlyUnlocked: !beforeNeedle && afterNeedle ? 'needle-grave' : null,
+      newlyUnlocked,
       progress: this.snapshot(),
       persistence,
     };
@@ -316,6 +333,7 @@ export class ProgressStore {
   }
 
   private persist(): ProgressWriteOutcome {
+    this.mergeLatestForPersist();
     const serialized = JSON.stringify(this.current);
     const sessionWritten = this.write(this.session, serialized, this.sessionReadOnly);
     const localWritten = this.sessionOnly
@@ -328,6 +346,32 @@ export class ProgressStore {
       sessionReadOnly: this.sessionReadOnly,
       localReadOnly: this.localReadOnly,
     };
+  }
+
+  /**
+   * Storage is shared with other ProgressStore instances and, for localStorage, other tabs.
+   * Reconcile immediately before the synchronous writes so an older in-memory snapshot cannot
+   * erase a clear or mastery fact that another writer committed after this store was created.
+   */
+  private mergeLatestForPersist(): void {
+    this.sessionOnly = this.sessionOnly || hasHarnessSession(this.session);
+    const local = this.sessionOnly
+      ? { present: false, parsed: null, newerVersion: false }
+      : readStored(this.local);
+    const session = readStored(this.session);
+    this.localReadOnly = this.localReadOnly || local.newerVersion;
+    this.sessionReadOnly = this.sessionReadOnly || session.newerVersion;
+
+    const merged = emptyProgress();
+    for (const id of KNOWN_COURSE_ORDER) {
+      const stored = mergeCourse(local.parsed?.courses[id], session.parsed?.courses[id]);
+      const course = mergeCourse(stored, this.current.courses[id]);
+      if (course) merged.courses[id] = course;
+    }
+
+    const requested = this.current.selectedCourse;
+    merged.selectedCourse = isCourseUnlocked(merged, requested) ? requested : 'cairn-drift';
+    this.current = merged;
   }
 
   private write(

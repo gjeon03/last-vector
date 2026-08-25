@@ -213,11 +213,7 @@ export class Course {
         name: final
           ? definition.text.canonicalFinalGate
           : `${definition.text.canonicalGatePrefix} ${String(i + 1).padStart(2, '0')}`,
-        nameMessage: final
-          ? definition.id === 'cairn-drift'
-            ? { type: 'gate-name.terminus-approach' }
-            : { type: 'gate-name.nadir-approach' }
-          : undefined,
+        nameMessage: final ? { type: definition.text.finalGateMessage } : undefined,
       });
       this.gates.push(gate);
       this.object.add(gate.object);

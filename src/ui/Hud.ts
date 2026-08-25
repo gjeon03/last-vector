@@ -12,6 +12,7 @@
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
 import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
+import { radioDurationSeconds } from '../core/RadioSchedule.ts';
 import type { Messages, Translator } from '../i18n/index.ts';
 
 /* ------------------------------------------------------------------ utilities */
@@ -773,7 +774,7 @@ export class Hud {
   radio(speaker: string, text: string, durationBasisLength = text.length): void {
     this.nRadioWho.textContent = speaker;
     this.writeDynamicText(this.nRadioText, text);
-    this.radioTtl = 3.2 + Math.min(durationBasisLength, 120) * 0.035;
+    this.radioTtl = radioDurationSeconds(durationBasisLength);
     retrigger(this.nRadio, 'is-in');
     this.nRadio.dataset['on'] = '1';
     this.radioOn = true;

@@ -62,7 +62,16 @@ export interface ScreenMessages {
   configuration: string;
 }
 
-export type CampaignMessageCourseId = 'cairn-drift' | 'needle-grave';
+/**
+ * Every recognised course keeps localised telemetry copy, including dormant routes whose
+ * historical facts remain readable. Player-facing stage selection is deliberately a smaller
+ * active catalog owned by Courses.ts.
+ */
+export type CampaignMessageCourseId =
+  | 'cairn-drift'
+  | 'needle-grave'
+  | 'wreckline'
+  | 'ringfall';
 
 export interface CampaignRouteMessages {
   /** Compact catalog label; canonical telemetry remains in the course definition. */
@@ -95,8 +104,11 @@ export interface CampaignRouteMessages {
 }
 
 export interface CampaignMessages {
-  routeSelection: string;
-  routeObjectives: string;
+  chapter: string;
+  chapterName: string;
+  stageSelection: string;
+  stageObjectives: string;
+  stage: string;
   locked: string;
   available: string;
   cleared: string;
@@ -105,8 +117,8 @@ export interface CampaignMessages {
   incomplete: string;
   nextObjective: string;
   noRank: string;
-  nextRoute: string;
-  routeSelect: string;
+  nextStage: string;
+  stageSelect: string;
   navigationFailed: string;
   storageUnavailable: string;
   routes: Record<CampaignMessageCourseId, CampaignRouteMessages>;
@@ -199,6 +211,7 @@ export interface HudMessages {
 export interface EventMessages {
   terminusApproach: string;
   nadirApproach: string;
+  orisonApproach: string;
   pointerLockUnavailable: string;
   keyboardFlightAvailable: string;
   cockpitView: string;
@@ -274,6 +287,11 @@ export interface CockpitMessages {
 export interface A11yMessages {
   mainMenu: string;
   languageSelection: string;
+  stageSelection: string;
+  stageLocked: string;
+  stageAvailable: string;
+  stageCleared: string;
+  stageSelected: string;
   runBriefing: string;
   launchCountdown: string;
   paused: string;

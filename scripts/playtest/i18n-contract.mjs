@@ -46,6 +46,14 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.needle-grave.gateClearedLog', 2],
   ['campaign.routes.needle-grave.gateMissedLog', 1],
   ['campaign.routes.needle-grave.gateShearBlockedLog', 1],
+  ['campaign.routes.wreckline.gateProgress', 1],
+  ['campaign.routes.wreckline.gateClearedLog', 2],
+  ['campaign.routes.wreckline.gateMissedLog', 1],
+  ['campaign.routes.wreckline.gateShearBlockedLog', 1],
+  ['campaign.routes.ringfall.gateProgress', 1],
+  ['campaign.routes.ringfall.gateClearedLog', 2],
+  ['campaign.routes.ringfall.gateMissedLog', 1],
+  ['campaign.routes.ringfall.gateShearBlockedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -284,6 +292,14 @@ await report.check(
       enNeedleShear: en.campaign.routes['needle-grave'].gateShearBlockedLog(3),
       koNeedleRadio: ko.campaign.routes['needle-grave'].radio1,
       enNeedleRadio: en.campaign.routes['needle-grave'].radio1,
+      koWreckProgress: ko.campaign.routes.wreckline.gateProgress(2),
+      enWreckProgress: en.campaign.routes.wreckline.gateProgress(2),
+      koWreckRadio: ko.campaign.routes.wreckline.radio2,
+      enWreckRadio: en.campaign.routes.wreckline.radio2,
+      koRingProgress: ko.campaign.routes.ringfall.gateProgress(2),
+      enRingProgress: en.campaign.routes.ringfall.gateProgress(2),
+      koRingRadio: ko.campaign.routes.ringfall.radio3,
+      enRingRadio: en.campaign.routes.ringfall.radio3,
     };
     const expectedCampaignRouteFixtures = {
       koCairnProgress: '2 CAIRNS REMAINING',
@@ -302,6 +318,14 @@ await report.check(
       enNeedleShear: 'needle 03 · shear block',
       koNeedleRadio: 'Kestrel, NADIR 항로 개방. SHEAR 차폐판이 가동 중이다.',
       enNeedleRadio: 'Kestrel, the NADIR line is open. SHEAR shutters are live.',
+      koWreckProgress: '2 MARKERS REMAINING',
+      enWreckProgress: '2 MARKERS REMAINING',
+      koWreckRadio: 'THE FRACTURE 통과 확인. ENGINE SPINE을 따라가라.',
+      enWreckRadio: 'THE FRACTURE is behind you. Follow the ENGINE SPINE.',
+      koRingProgress: '2 MARKERS REMAINING',
+      enRingProgress: '2 MARKERS REMAINING',
+      koRingRadio: 'ORISON이 응답한다. 배열을 깨워라.',
+      enRingRadio: 'ORISON is answering. Wake the array.',
     };
     verify(JSON.stringify(campaignRouteFixtures) === JSON.stringify(expectedCampaignRouteFixtures),
       'Route-specific campaign functions or radio copy differ from the canonical fixtures.', {
@@ -313,6 +337,100 @@ await report.check(
       dynamicArities: Object.fromEntries(DYNAMIC_ARITIES),
       bestComparisonFixtures,
       campaignRouteFixtures,
+    };
+  },
+);
+
+await report.check(
+  {
+    id: 'I18N.chapter-stage-rail',
+    name: 'Chapter 01 uses one compact semantic stage rail with hybrid-language copy',
+    assertion:
+      'Only the three active stage IDs render; stable selectors, roving horizontal semantics, '
+      + 'nonactivating locks, result actions, and Korean narrative/English chrome stay explicit.',
+  },
+  async () => {
+    const ko = requireExport('ko.ts', 'ko');
+    const en = requireExport('en.ts', 'en');
+    const screensSource = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
+    const stylesSource = await readFile(new URL('../../src/ui/styles.css', import.meta.url), 'utf8');
+    const recognizedIds = ['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'];
+    verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
+      'Korean campaign catalog does not use the canonical recognized stage IDs.', {
+        actual: Object.keys(ko.campaign.routes),
+      });
+    verify(JSON.stringify(Object.keys(en.campaign.routes)) === JSON.stringify(recognizedIds),
+      'English campaign catalog does not use the canonical recognized stage IDs.', {
+        actual: Object.keys(en.campaign.routes),
+      });
+
+    const railStart = screensSource.indexOf('private buildStageRail()');
+    const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
+    const railSource = screensSource.slice(railStart, railEnd);
+    verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the compact stage rail.');
+    verify(railSource.includes('CHAPTER_STAGE_IDS') && !railSource.includes('needle-grave'),
+      'The player-facing rail is not driven by the active three-stage order.', { railSource });
+    for (const fixture of [
+      "dataset['stageId']",
+      "dataset['stageState']",
+      "dataset['stageSelected']",
+      "setAttribute('role', 'radiogroup')",
+      "setAttribute('role', 'radio')",
+      "setAttribute('aria-disabled'",
+    ]) {
+      verify(screensSource.includes(fixture), `Screens omits stage semantic fixture: ${fixture}`);
+    }
+    for (const action of ['next-stage', 'run-again', 'stage-select']) {
+      verify(screensSource.includes(`'${action}'`), `Results omit stable action: ${action}`);
+    }
+    verify(screensSource.includes("complete: route.highestRank === 'S'"),
+      'Stage mastery treats a non-S recorded rank as complete.');
+    verify(/activeStage\s*&&\s*\(key === 'ArrowLeft'/u.test(screensSource)
+      && /activeStage\s*&&\s*\(key === 'ArrowRight'/u.test(screensSource),
+    'Stage navigation does not follow the horizontal Left/Right axis.');
+    verify(/if \(activeStage\) \{[\s\S]{0,420}activeStage\.click\(\)/u.test(screensSource),
+      'Enter/Space does not terminate in stage selection.');
+    verify(/route\.state === 'locked'[\s\S]{0,180}return/u.test(railSource),
+      'Locked stages are not explicitly nonactivating.');
+    verify(/\.lv-stage-rail\s*\{[\s\S]{0,180}repeat\(3,/u.test(stylesSource),
+      'The stage rail is not a three-column single row.');
+    verify(/\.lv-stage-node\s*\{[\s\S]{0,180}min-height:\s*(?:[3-9]\d|\d{3,})px/u.test(stylesSource),
+      'Stage node targets do not retain at least 24 CSS pixels.');
+    verify(!/@media \(max-width: 520px\)[\s\S]{0,1200}\.lv-stage-rail\s*\{[\s\S]{0,100}grid-template-columns:\s*1fr/u.test(stylesSource),
+      'Compact CSS stacks the stage rail on mobile.');
+
+    const hybridChrome = {
+      chapter: 'CHAPTER 01',
+      chapterName: 'THE CAIRN FRONTIER',
+      stageSelection: 'STAGE SELECT',
+      nextStage: 'NEXT STAGE',
+      stageSelect: 'STAGE SELECT',
+    };
+    for (const [key, expected] of Object.entries(hybridChrome)) {
+      verify(ko.campaign[key] === expected && en.campaign[key] === expected,
+        `Campaign technical chrome changed at ${key}.`, {
+          expected,
+          ko: ko.campaign[key],
+          en: en.campaign[key],
+        });
+    }
+    for (const id of ['wreckline', 'ringfall']) {
+      const korean = ko.campaign.routes[id];
+      const english = en.campaign.routes[id];
+      verify(/[가-힣]/u.test(korean.tagline + korean.briefingLine1 + korean.radio1),
+        `${id} Korean narrative layer contains no Korean guidance.`);
+      verify(!/[가-힣]/u.test(english.tagline + english.briefingLine1 + english.radio1),
+        `${id} English narrative contains Korean text.`);
+      verify(korean.name === english.name && korean.destination === english.destination,
+        `${id} translated a canonical stage or destination ID.`);
+    }
+    verify(/[가-힣]/u.test(ko.a11y.stageSelection + ko.a11y.stageLocked + ko.a11y.stageSelected),
+      'Korean stage accessibility copy is not Korean.');
+
+    return {
+      recognizedIds,
+      stableActions: ['next-stage', 'run-again', 'stage-select'],
+      hybridChrome,
     };
   },
 );
@@ -589,6 +707,7 @@ await report.check(
 const descriptors = [
   { type: 'gate-name.terminus-approach' },
   { type: 'gate-name.nadir-approach' },
+  { type: 'gate-name.orison-approach' },
   { type: 'callout-title.pointer-lock-unavailable' },
   { type: 'callout-title.camera-view', mode: 'cockpit' },
   { type: 'callout-title.camera-view', mode: 'chase' },
@@ -661,6 +780,7 @@ await report.check(
     const fixtures = [
       [{ type: 'gate-name.terminus-approach' }, 'TERMINUS APPROACH'],
       [{ type: 'gate-name.nadir-approach' }, 'NADIR APPROACH'],
+      [{ type: 'gate-name.orison-approach' }, 'ORISON APPROACH'],
       [{ type: 'callout-title.pointer-lock-unavailable' }, 'MOUSE CAPTURE UNAVAILABLE'],
       [{ type: 'callout-sub.keyboard-flight-available' }, 'W A S D / ARROWS STILL FLY'],
       [{ type: 'callout-title.camera-view', mode: 'cockpit' }, 'COCKPIT VIEW'],

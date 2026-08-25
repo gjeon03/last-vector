@@ -233,18 +233,29 @@ export interface HarnessCourseState {
 
 /** Dependency-free catalog projection; it deliberately excludes render/world objects. */
 export interface HarnessCatalogState {
+  /** Player-facing Chapter 01 sequence. */
   order: readonly CourseId[];
+  /** Sanitized identities, including dormant definitions retained for migration. */
+  recognizedOrder: readonly CourseId[];
   courses: ReadonlyArray<{
     id: CourseId;
     order: number;
     defaultSeed: number;
     recordId: string;
-    unlocks: CourseId | null;
+    active: boolean;
+    nextCourseId: CourseId | null;
     gateCount: number;
     sector: string;
     destination: string;
     objectives: readonly ObjectiveId[];
     shearGates: readonly number[];
+    landmarkKind: string;
+    radio: ReadonlyArray<{
+      afterGate: number;
+      speaker: string;
+      messageKey: string;
+      safeWindowSeconds: number;
+    }>;
   }>;
 }
 
@@ -272,6 +283,18 @@ export interface HarnessShearState {
     initialPhase: number;
     angularSpeed: number;
   }>;
+}
+
+/** Fixed authored landmark resource/collision evidence for the one boot-built stage. */
+export interface HarnessStageLandmarkState {
+  kind: string;
+  landmarks: readonly string[];
+  signature: string;
+  draws: number;
+  triangles: number;
+  geometries: number;
+  materials: number;
+  colliders: number;
 }
 
 export interface HarnessApi {
@@ -304,6 +327,8 @@ export interface HarnessApi {
   progress(): ProgressV1;
   /** Current route's moving-barrier phases, or null for a route without SHEAR. */
   shear(): HarnessShearState | null;
+  /** Read-only signature and bounded resource counts for the selected stage landmarks. */
+  landmarks(): HarnessStageLandmarkState;
   /** Aperture-plane outcomes; unlike gateHistory(), this includes misses. */
   crossings(): HarnessCourseCrossing[];
   /**
@@ -332,6 +357,12 @@ export interface HarnessApi {
    * outside active flight or when no drawn asteroid is available.
    */
   stageCollision(): { rockId: number; overlap: number; closingSpeed: number } | null;
+  /** Stage a collision through the authored landmark contact path; null when none exist. */
+  stageLandmarkCollision(): {
+    colliderId: string;
+    overlap: number;
+    closingSpeed: number;
+  } | null;
   /** Override pilot input. Values persist until changed. `null` returns control to the human. */
   setInput(input: HarnessInput | null): void;
   /**
@@ -375,6 +406,11 @@ export interface HarnessApi {
    * more. Call `setDriven(false)` to hand pacing back.
    */
   step(frames: number, dt?: number): Promise<void>;
+  /**
+   * Advance only the production simulation path, then synchronise visuals/telemetry once.
+   * Intended for high-rate deterministic course proofs; performance and pixels use normal frames.
+   */
+  stepSimulation(frames: number, dt?: number): void;
   /**
    * Waits for the compositor to show what has already been rendered. Does NOT render.
    *

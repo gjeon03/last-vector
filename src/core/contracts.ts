@@ -30,7 +30,8 @@ export type GateMissCause = 'aperture' | 'shear';
 
 export type GateNameMessage =
   | { type: 'gate-name.terminus-approach' }
-  | { type: 'gate-name.nadir-approach' };
+  | { type: 'gate-name.nadir-approach' }
+  | { type: 'gate-name.orison-approach' };
 
 export type CalloutTitleMessage =
   | { type: 'callout-title.pointer-lock-unavailable' }

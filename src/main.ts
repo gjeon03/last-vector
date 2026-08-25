@@ -4,7 +4,14 @@ import { UI } from './core/art.ts';
 import { clamp01 } from './core/mathx.ts';
 import type { HarnessApi, HarnessInput, PerfSample } from './core/harness.ts';
 import type { Settings } from './core/contracts.ts';
-import { COURSE_ORDER, courseRecordId, getCourseDefinition } from './core/Courses.ts';
+import {
+  CHAPTER_ONE_STAGE_ORDER,
+  KNOWN_COURSE_ORDER,
+  courseRecordId,
+  getCourseDefinition,
+  getNextCourse,
+  isCourseAvailable,
+} from './core/Courses.ts';
 import { resolveCourseSelection } from './core/CourseSelection.ts';
 import { ProgressStore } from './core/Progress.ts';
 import {
@@ -230,7 +237,7 @@ function installHarness(game: Game): void {
     });
 
   const api: HarnessApi = {
-    version: '1.8.0',
+    version: '1.9.0',
     seed: game.seed,
     ready: () => game.ready(),
     startRun: (options) => game.beginRun(options?.skipIntro === true),
@@ -239,31 +246,37 @@ function installHarness(game: Game): void {
     result: () => game.getResult(),
     course: () => game.getCourseState(),
     catalog: () => ({
-      order: [...COURSE_ORDER],
-      courses: COURSE_ORDER.map((id) => {
+      order: [...CHAPTER_ONE_STAGE_ORDER],
+      recognizedOrder: [...KNOWN_COURSE_ORDER],
+      courses: KNOWN_COURSE_ORDER.map((id) => {
         const definition = getCourseDefinition(id);
         return {
           id,
           order: definition.order,
           defaultSeed: definition.defaultSeed,
           recordId: courseRecordId(definition, definition.defaultSeed),
-          unlocks: definition.unlocks ?? null,
+          active: isCourseAvailable(id),
+          nextCourseId: getNextCourse(id),
           gateCount: definition.geometry.legs.length,
           sector: definition.text.canonicalSector,
           destination: definition.text.canonicalDestination,
           objectives: [...definition.objectives],
           shearGates: [...(definition.shear?.gates ?? [])],
+          landmarkKind: definition.world.landmarkKind,
+          radio: definition.radio.map((line) => ({ ...line })),
         };
       }),
     }),
     progress: () => game.getCampaignProgress(),
     shear: () => game.getShearState(),
+    landmarks: () => game.getStageLandmarkState(),
     crossings: () => game.getCrossingHistory(),
     stageShearBlock: () => game.stageShearBlock(),
     installProgress: (value) => progressStore.install(value),
     routeUrl: (courseId) => game.getRouteUrl(courseId),
     damageHull: (amount) => game.damageHull(amount),
     stageCollision: () => game.stageCollision(),
+    stageLandmarkCollision: () => game.stageLandmarkCollision(),
     setInput: (input: HarnessInput | null) => game.setHarnessInput(input),
     setAutopilot: (enabled, options) => game.setAutopilot(enabled, options?.skill ?? 1),
     seekCourse: (t) => game.seekCourse(t),
@@ -283,6 +296,11 @@ function installHarness(game: Game): void {
       game.setFixedTimestep(dt);
       for (let i = 0; i < frames; i++) game.frame(dt);
       await Promise.resolve();
+    },
+    stepSimulation: (frames, dt = 1 / 60) => {
+      game.setDriven(true);
+      game.setFixedTimestep(dt);
+      game.stepSimulation(frames, dt);
     },
     present: async () => {
       // Safe in either mode: while driven the rAF loop advances nothing, so this only waits

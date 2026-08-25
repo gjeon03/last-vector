@@ -159,7 +159,7 @@ const APPROACH_LIGHT_FRAG = /* glsl */ `
  * orientation can never drift out of alignment with the circumference, which is exactly how
  * the first attempt collapsed into an unreadable knot.
  */
-function buildRingHull(
+export function buildRingHull(
   radius: number,
   halfRadial: number,
   halfAxial: number,
@@ -215,6 +215,36 @@ function buildRingHull(
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+export interface StructureMaterialOptions {
+  lighting: LightingUniforms;
+  base: number;
+  accent: number;
+  window: number;
+  windowDensity: number;
+}
+
+/**
+ * Shared material construction for authored built-space landmarks.
+ *
+ * Existing owners intentionally retain their current constructors and resource lifecycles;
+ * this factory only lets new stage-local owners reuse the exact structure shader pair without
+ * copying it or reaching through a class instance for its private material.
+ */
+export function createStructureMaterial(options: StructureMaterialOptions): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: withLighting(options.lighting, {
+      uCameraPos: { value: new THREE.Vector3() },
+      uBase: { value: new THREE.Color(options.base) },
+      uAccent: { value: new THREE.Color(options.accent) },
+      uWindow: { value: new THREE.Color(options.window) },
+      uWindowDensity: { value: options.windowDensity },
+      uTime: { value: 0 },
+    }),
+    vertexShader: STRUCTURE_VERT,
+    fragmentShader: STRUCTURE_FRAG,
+  });
 }
 
 /**

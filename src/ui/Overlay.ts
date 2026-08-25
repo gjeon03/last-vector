@@ -181,6 +181,10 @@ export class Overlay {
     this.screens.syncCampaign(viewModel);
   }
 
+  focusStageSelection(): void {
+    this.screens.focusStageSelection();
+  }
+
   captureFocusToken(): ScreenFocusToken | null {
     return this.screens.captureFocusToken();
   }

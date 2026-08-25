@@ -14,6 +14,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       return messages.events.terminusApproach;
     case 'gate-name.nadir-approach':
       return messages.events.nadirApproach;
+    case 'gate-name.orison-approach':
+      return messages.events.orisonApproach;
     case 'callout-title.pointer-lock-unavailable':
       return messages.events.pointerLockUnavailable;
     case 'callout-title.camera-view':

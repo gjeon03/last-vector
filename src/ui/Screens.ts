@@ -9,7 +9,7 @@
 
 import type { HudHost, Locale, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
 import {
-  CAMPAIGN_MODE_ENABLED,
+  CHAPTER_ONE_STAGE_ORDER,
   PRECISION_MAX_OFFSET,
   type CourseId,
 } from '../core/Courses.ts';
@@ -47,11 +47,11 @@ export type ScreenAction =
   | 'resume'
   | 'restart'
   | 'abort'
-  | 'again'
   | 'retry'
-  | 'select-route'
-  | 'next-route'
-  | 'route-select';
+  | 'select-stage'
+  | 'next-stage'
+  | 'run-again'
+  | 'stage-select';
 
 export type CampaignRouteState = 'locked' | 'available' | 'cleared';
 export type CampaignNavigationError = 'navigation-failed' | 'storage-unavailable';
@@ -71,6 +71,8 @@ export interface CampaignCourseView {
 export interface CampaignViewModel {
   readonly activeCourseId: CourseId;
   readonly routes: readonly CampaignCourseView[];
+  /** Next active stage already authorised by Progress; Screens never infers an unlock. */
+  readonly nextStageId?: CourseId | null;
   readonly newlyUnlockedCourseId?: CourseId | null;
   readonly navigationError?: CampaignNavigationError | null;
 }
@@ -80,10 +82,10 @@ export interface ScreenFocusToken {
   action?: ScreenAction;
   nav?: string;
   locale?: Locale;
-  route?: CourseId;
+  stage?: CourseId;
 }
 
-const COURSE_IDS = ['cairn-drift', 'needle-grave'] as const satisfies readonly CourseId[];
+const CHAPTER_STAGE_IDS = CHAPTER_ONE_STAGE_ORDER;
 const CAMPAIGN_BRIEF_KEYS = [
   'briefingLine1',
   'briefingLine2',
@@ -93,6 +95,7 @@ const CAMPAIGN_BRIEF_KEYS = [
 function defaultCampaignView(): CampaignViewModel {
   return {
     activeCourseId: 'cairn-drift',
+    nextStageId: null,
     newlyUnlockedCourseId: null,
     navigationError: null,
     routes: [
@@ -103,7 +106,13 @@ function defaultCampaignView(): CampaignViewModel {
         objectives: { firstClear: false, cleanClear: false, precision: false },
       },
       {
-        id: 'needle-grave',
+        id: 'wreckline',
+        state: 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+      {
+        id: 'ringfall',
         state: 'locked',
         highestRank: null,
         objectives: { firstClear: false, cleanClear: false, precision: false },
@@ -454,12 +463,16 @@ export class Screens {
   private nBriefTitle: HTMLElement | null = null;
   private nBriefTransit: HTMLElement | null = null;
   private readonly nBriefLines: HTMLElement[] = [];
-  private readonly routeNodes = new Map<CourseId, {
+  private readonly stageNodes = new Map<CourseId, {
     button: HTMLButtonElement;
     status: HTMLElement;
     selected: HTMLElement;
-    rank: HTMLElement;
     lock: HTMLElement;
+    mastery: {
+      s: HTMLElement;
+      clean: HTMLElement;
+      precision: HTMLElement;
+    };
   }>();
 
   private readonly nCountNum: HTMLElement;
@@ -529,6 +542,28 @@ export class Screens {
   }
 
   /**
+   * Places real DOM focus on the currently selected stage after STAGE SELECT returns to title.
+   * The title's ordinary entry focus remains START FLIGHT; callers opt into this only for the
+   * explicit result-screen path.
+   */
+  focusStageSelection(): void {
+    if (this.view !== 'title') return;
+    const button = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+    const title = this.views.get('title');
+    if (!button || !title || button.closest('[hidden]')) return;
+
+    let index = this.navItems.indexOf(button);
+    if (index < 0) {
+      this.collectNav(title);
+      index = this.navItems.indexOf(button);
+    }
+    if (index < 0) return;
+    this.navIndex = index;
+    button.focus({ preventScroll: true });
+    button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /**
    * Synchronises campaign presentation from a single host-owned snapshot. The host remains the
    * authority for unlock and persistence rules; this layer only renders the supplied states.
    */
@@ -549,7 +584,15 @@ export class Screens {
       writeEnglishTokens(
         this.nTitleTagline,
         routeCopy.tagline,
-        ['CAIRN', 'TERMINUS', 'NEEDLE GRAVE', 'NADIR RELAY'],
+        [
+          'CAIRN',
+          'TERMINUS',
+          'WRECKLINE',
+          'NADIR RELAY',
+          'ENGINE SPINE',
+          'VECTOR',
+          'ORISON ARRAY',
+        ],
       );
     }
     if (this.nBeginDestination) this.nBeginDestination.textContent = routeCopy.destination;
@@ -565,19 +608,32 @@ export class Screens {
       writeEnglishTokens(
         this.nBriefLines[i]!,
         routeCopy[CAMPAIGN_BRIEF_KEYS[i]!] ?? '',
-        ['ACHRA', 'CAIRN', 'NEEDLE GRAVE', 'SHEAR'],
+        [
+          'ACHRA',
+          'CAIRN',
+          'WRECKLINE',
+          'TWIN KEELS',
+          'THE FRACTURE',
+          'ENGINE SPINE',
+          'VECTOR',
+          'TWIN SPIRES',
+          'ORISON ARCH',
+          'ORISON ARRAY',
+        ],
       );
     }
 
-    for (const id of COURSE_IDS) {
+    for (const id of CHAPTER_STAGE_IDS) {
       const route = viewModel.routes.find((candidate) => candidate.id === id);
-      const nodes = this.routeNodes.get(id);
+      const nodes = this.stageNodes.get(id);
       if (!nodes) continue;
       const state = route?.state ?? (id === 'cairn-drift' ? 'available' : 'locked');
       const selected = id === activeCourseId;
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
-      nodes.button.dataset['routeState'] = state;
+      nodes.button.dataset['stageState'] = state;
+      nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
+      nodes.button.tabIndex = selected ? 0 : -1;
       nodes.button.setAttribute('aria-checked', selected ? 'true' : 'false');
       nodes.button.setAttribute(
         'aria-disabled',
@@ -586,16 +642,22 @@ export class Screens {
       if (state === 'locked') nodes.button.setAttribute('aria-describedby', nodes.lock.id);
       else if (storageBlocked) nodes.button.setAttribute('aria-describedby', 'lv-campaign-error-title');
       else nodes.button.removeAttribute('aria-describedby');
-      nodes.status.textContent = m.campaign[state];
-      nodes.selected.textContent = selected ? m.campaign.selected : '';
+      nodes.status.textContent = state === 'locked'
+        ? m.a11y.stageLocked
+        : state === 'cleared'
+          ? m.a11y.stageCleared
+          : m.a11y.stageAvailable;
+      nodes.selected.textContent = selected ? m.a11y.stageSelected : '';
       nodes.selected.hidden = !selected;
-      nodes.rank.textContent = route?.highestRank ?? m.campaign.noRank;
       writeEnglishTokens(
         nodes.lock,
         state === 'locked' ? m.campaign.routes[id].lockReason : '',
-        ['CAIRN DRIFT', 'NEEDLE GRAVE'],
+        ['CAIRN DRIFT', 'WRECKLINE'],
       );
       nodes.lock.hidden = state !== 'locked';
+      nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
+      nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route?.objectives.precision ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -638,15 +700,15 @@ export class Screens {
     const copy = m.campaign.routes[route.id].objectives;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
-      { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
       {
         id: 'highest-rank',
         label: copy.highestRank,
-        complete: route.highestRank !== null,
+        complete: route.highestRank === 'S',
         value: route.highestRank ?? m.campaign.noRank,
-        target: false,
+        target: true,
       },
+      { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
+      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
     ];
     const focusId = result
       ? rows.find((row) => row.target && !row.complete)?.id ?? null
@@ -664,9 +726,9 @@ export class Screens {
       const name = writeEnglishTokens(
         el('span', 'lv-objective-name'),
         label,
-        ['CAIRN DRIFT', 'NEEDLE GRAVE'],
+        ['CAIRN DRIFT', 'WRECKLINE', 'RINGFALL'],
       );
-      name.lang = this.translator.locale;
+      name.lang = 'en';
       if (id === focusId) {
         name.appendChild(englishText('span', 'lv-objective-next', m.campaign.nextObjective));
       }
@@ -691,7 +753,7 @@ export class Screens {
       action: active.dataset['action'] as ScreenAction | undefined,
       nav: nav?.dataset['nav'],
       locale: active.dataset['locale'] as Locale | undefined,
-      route: active.dataset['route'] as CourseId | undefined,
+      stage: active.dataset['stageId'] as CourseId | undefined,
     };
   }
 
@@ -708,7 +770,7 @@ export class Screens {
       if (token.action !== undefined && candidate.dataset['action'] !== token.action) continue;
       if (token.nav !== undefined && candidateNav?.dataset['nav'] !== token.nav) continue;
       if (token.locale !== undefined && candidate.dataset['locale'] !== token.locale) continue;
-      if (token.route !== undefined && candidate.dataset['route'] !== token.route) continue;
+      if (token.stage !== undefined && candidate.dataset['stageId'] !== token.stage) continue;
       match = candidate;
       break;
     }
@@ -744,14 +806,15 @@ export class Screens {
   /* -------------------------------------------------------------- navigation */
 
   private collectNav(root: HTMLElement): void {
-    /* The route strip is visually above BEGIN, but the established title keyboard contract starts
-       on BEGIN and uses S/W to reach SETTINGS and return. When campaign mode is enabled, append
-       its visible route cards without moving their visual placement. Hidden feature-gated regions
-       are always filtered below so their descendants cannot become invisible focus stops. */
+    /* The stage rail is visually above START FLIGHT, but the established title path starts on the
+       primary action. Only the selected node is a Tab stop; Left/Right traverses every node,
+       including locked nodes, without turning one of those nodes into the run target. */
     const found = root.dataset['view'] === 'title'
       ? [
           ...root.querySelectorAll<HTMLElement>('.lv-menu [data-nav]'),
-          ...root.querySelectorAll<HTMLElement>('.lv-route-strip [data-nav]'),
+          ...root.querySelectorAll<HTMLElement>(
+            '.lv-stage-rail [data-nav="stage"][data-stage-selected="1"]',
+          ),
         ]
       : [...root.querySelectorAll<HTMLElement>('[data-nav]')];
     this.navItems.length = 0;
@@ -838,8 +901,30 @@ export class Screens {
       this.navIndex = idx;
       item.focus({ preventScroll: true });
       this.opts.onSound('hover');
+    } else if (idx < 0 && item.dataset['nav'] === 'stage') {
+      /* Non-selected stage nodes are intentionally absent from Tab order, but pointer and arrow
+         discovery still focus them. Locked is aria-disabled, never the native disabled state. */
+      const selected = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+      const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
+      if (selectedIndex >= 0) this.navIndex = selectedIndex;
+      item.focus({ preventScroll: true });
+      this.opts.onSound('hover');
     }
   };
+
+  private moveStageArrow(active: HTMLElement, dir: -1 | 1): void {
+    const id = active.dataset['stageId'] as CourseId | undefined;
+    if (!id) return;
+    const current = CHAPTER_STAGE_IDS.findIndex((candidate) => candidate === id);
+    if (current < 0) return;
+    const next = clamp(current + dir, 0, CHAPTER_STAGE_IDS.length - 1);
+    if (next === current) return;
+    const selected = this.stageNodes.get(this.campaign.activeCourseId)?.button;
+    const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
+    if (selectedIndex >= 0) this.navIndex = selectedIndex;
+    this.stageNodes.get(CHAPTER_STAGE_IDS[next]!)?.button.focus({ preventScroll: true });
+    this.opts.onSound('move');
+  }
 
   /** Returns true when the key was consumed by the interface. */
   handleKey(ev: KeyboardEvent): boolean {
@@ -847,6 +932,7 @@ export class Screens {
     const key = ev.key;
     const active = document.activeElement as HTMLElement | null;
     const isRange = active instanceof HTMLInputElement && active.type === 'range';
+    const activeStage = active?.closest<HTMLElement>('[data-stage-id]') ?? null;
 
     /*
      * Trust the document, not the bookkeeping. `navIndex` only advanced when this class moved
@@ -863,6 +949,15 @@ export class Screens {
       (key === 'ArrowDown' || key === 'ArrowUp' || key === 'ArrowLeft' || key === 'ArrowRight')
       && this.moveResultArrow(key)
     ) {
+      return true;
+    }
+
+    if (activeStage && (key === 'ArrowLeft' || key === 'a' || key === 'A')) {
+      this.moveStageArrow(activeStage, -1);
+      return true;
+    }
+    if (activeStage && (key === 'ArrowRight' || key === 'd' || key === 'D')) {
+      this.moveStageArrow(activeStage, 1);
       return true;
     }
 
@@ -886,6 +981,12 @@ export class Screens {
     }
     if (key === 'Enter' || key === ' ') {
       if (isRange) return true;
+      if (activeStage) {
+        /* Selecting a node is the only stage action here. START FLIGHT is a separate button, so
+           confirm can never fall through and launch while the player is reading the rail. */
+        activeStage.click();
+        return true;
+      }
       const node = this.navItems[this.navIndex];
       if (!node) return true;
       if (node.dataset['nav'] === 'segmented') {
@@ -913,16 +1014,6 @@ export class Screens {
   private adjust(dir: number): void {
     const node = this.navItems[this.navIndex];
     if (!node) return;
-    if (node.dataset['nav'] === 'route') {
-      const current = COURSE_IDS.indexOf(node.dataset['route'] as CourseId);
-      const next = clamp(current + dir, 0, COURSE_IDS.length - 1);
-      const nextNode = this.routeNodes.get(COURSE_IDS[next]!)?.button;
-      if (nextNode && next !== current) {
-        const navIndex = this.navItems.indexOf(nextNode);
-        if (navIndex >= 0) this.focusNav(navIndex);
-      }
-      return;
-    }
     if (node.dataset['nav'] === 'segmented' || node.dataset['nav'] === 'switch') {
       const buttons = node.querySelectorAll<HTMLElement>('[data-seg]');
       if (buttons.length === 0) {
@@ -1002,53 +1093,71 @@ export class Screens {
     return node;
   }
 
-  private buildRouteStrip(): HTMLElement {
+  private buildStageRail(): HTMLElement {
     const m = this.translator.messages;
-    const section = el('section', 'lv-route-select');
-    section.appendChild(englishText('div', 'lv-kicker lv-route-kicker', m.campaign.routeSelection));
-    const group = el('div', 'lv-route-strip');
+    const section = el('section', 'lv-stage-select');
+    const heading = el('div', 'lv-stage-heading');
+    heading.append(
+      englishText('span', 'lv-kicker lv-stage-kicker', m.campaign.chapter),
+      englishText('span', 'lv-stage-chapter', m.campaign.chapterName),
+    );
+    section.appendChild(heading);
+
+    const group = el('div', 'lv-stage-rail');
     group.setAttribute('role', 'radiogroup');
-    group.setAttribute('aria-label', m.campaign.routeSelection);
+    group.setAttribute('aria-label', m.a11y.stageSelection);
 
-    for (let index = 0; index < COURSE_IDS.length; index++) {
-      const id = COURSE_IDS[index]!;
+    for (let index = 0; index < CHAPTER_STAGE_IDS.length; index++) {
+      const id = CHAPTER_STAGE_IDS[index]!;
       const copy = m.campaign.routes[id];
-      const button = el('button', 'lv-route-card');
+      const isFirst = id === 'cairn-drift';
+      const button = el('button', 'lv-stage-node');
       button.type = 'button';
-      button.dataset['nav'] = 'route';
-      button.dataset['action'] = 'select-route';
-      button.dataset['route'] = id;
-      button.dataset['routeState'] = id === 'cairn-drift' ? 'available' : 'locked';
+      button.dataset['nav'] = 'stage';
+      button.dataset['action'] = 'select-stage';
+      button.dataset['stageId'] = id;
+      button.dataset['stageState'] = isFirst ? 'available' : 'locked';
+      button.dataset['stageSelected'] = isFirst ? '1' : '0';
+      button.tabIndex = isFirst ? 0 : -1;
       button.setAttribute('role', 'radio');
-      button.setAttribute('aria-checked', id === 'cairn-drift' ? 'true' : 'false');
-      button.setAttribute('aria-disabled', id === 'needle-grave' ? 'true' : 'false');
+      button.setAttribute('aria-checked', isFirst ? 'true' : 'false');
+      button.setAttribute('aria-disabled', isFirst ? 'false' : 'true');
 
-      const top = el('span', 'lv-route-top');
+      const top = el('span', 'lv-stage-top');
       top.append(
-        englishText('span', 'lv-route-index', String(index + 1).padStart(2, '0')),
-        englishText('span', 'lv-route-state', id === 'cairn-drift' ? m.campaign.available : m.campaign.locked),
-        englishText('span', 'lv-route-selected', id === 'cairn-drift' ? m.campaign.selected : ''),
+        englishText('span', 'lv-stage-index', `01-${index + 1}`),
+        el('span', 'lv-stage-dot'),
       );
-      const selected = top.querySelector<HTMLElement>('.lv-route-selected')!;
-      selected.hidden = id !== 'cairn-drift';
+      top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
 
-      const name = englishText('span', 'lv-route-name', copy.name);
-      const destination = englishText('span', 'lv-route-destination', copy.destination);
-      const rankWrap = el('span', 'lv-route-rank');
-      rankWrap.append(
-        englishText('span', 'lv-route-rank-key', m.results.rank),
-        englishText('span', 'lv-route-rank-value', m.campaign.noRank),
+      const name = englishText('span', 'lv-stage-name', copy.name);
+      const mastery = el('span', 'lv-stage-mastery');
+      mastery.setAttribute('aria-hidden', 'true');
+      const s = englishText('span', 'lv-stage-marker', 'S');
+      const clean = englishText('span', 'lv-stage-marker', 'C');
+      const precision = englishText('span', 'lv-stage-marker', 'P');
+      s.dataset['mastery'] = 's-rank';
+      clean.dataset['mastery'] = 'clean';
+      precision.dataset['mastery'] = 'precision';
+      for (const marker of [s, clean, precision]) marker.dataset['complete'] = '0';
+      mastery.append(s, clean, precision);
+
+      const status = el(
+        'span',
+        'lv-a11y',
+        isFirst ? m.a11y.stageAvailable : m.a11y.stageLocked,
       );
-      const rank = rankWrap.querySelector<HTMLElement>('.lv-route-rank-value')!;
+      const selected = el('span', 'lv-a11y', isFirst ? m.a11y.stageSelected : '');
+      selected.hidden = !isFirst;
       const lock = writeEnglishTokens(
-        el('span', 'lv-route-lock'),
-        id === 'needle-grave' ? copy.lockReason : '',
-        ['CAIRN DRIFT', 'NEEDLE GRAVE'],
+        el('span', 'lv-a11y'),
+        isFirst ? '' : copy.lockReason,
+        ['CAIRN DRIFT', 'WRECKLINE'],
       );
-      lock.id = `lv-route-lock-${id}`;
-      lock.hidden = id !== 'needle-grave';
+      lock.id = `lv-stage-lock-${id}`;
+      lock.hidden = isFirst;
       button.setAttribute('aria-describedby', lock.id);
-      button.append(top, name, destination, rankWrap, lock);
+      button.append(top, name, mastery, status, selected, lock);
       button.addEventListener('click', () => {
         const route = this.campaignCourse(id);
         if (
@@ -1060,12 +1169,12 @@ export class Screens {
         this.host.selectRoute(id);
       });
       group.appendChild(button);
-      this.routeNodes.set(id, {
+      this.stageNodes.set(id, {
         button,
-        status: top.querySelector<HTMLElement>('.lv-route-state')!,
+        status,
         selected,
-        rank,
         lock,
+        mastery: { s, clean, precision },
       });
     }
 
@@ -1111,12 +1220,11 @@ export class Screens {
     const tag = writeEnglishTokens(el('p', 'lv-tagline'), m.meta.tagline, ['CAIRN', 'TERMINUS']);
     this.nTitleTagline = tag;
 
-    const routes = this.buildRouteStrip();
-    routes.hidden = !CAMPAIGN_MODE_ENABLED;
+    const stages = this.buildStageRail();
 
     const campaignError = el('p', 'lv-campaign-error');
     campaignError.id = 'lv-campaign-error-title';
-    if (CAMPAIGN_MODE_ENABLED) campaignError.dataset['campaignError'] = '1';
+    campaignError.dataset['campaignError'] = '1';
     campaignError.setAttribute('role', 'status');
     campaignError.setAttribute('aria-live', 'polite');
     campaignError.hidden = true;
@@ -1180,7 +1288,7 @@ export class Screens {
       englishText('span', '', m.screens.navigationNominal),
     );
 
-    inner.append(eyebrow, mark, rule, tag, routes, campaignError, menu, foot);
+    inner.append(eyebrow, mark, rule, tag, stages, campaignError, menu, foot);
     view.append(el('div', 'lv-veil'), inner);
     return view;
   }
@@ -1234,8 +1342,7 @@ export class Screens {
     addStat(m.screens.drift, m.screens.closing, 'en');
 
     const objectives = el('section', 'lv-objectives');
-    objectives.hidden = !CAMPAIGN_MODE_ENABLED;
-    objectives.appendChild(englishText('div', 'lv-kicker', m.campaign.routeObjectives));
+    objectives.appendChild(englishText('div', 'lv-kicker', m.campaign.stageObjectives));
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'briefing';
     objectives.appendChild(objectiveList);
@@ -1249,7 +1356,18 @@ export class Screens {
       const p = writeEnglishTokens(
         el('p', 'lv-prose-l'),
         routeCopy[CAMPAIGN_BRIEF_KEYS[i]!],
-        ['ACHRA', 'CAIRN', 'NEEDLE GRAVE', 'SHEAR'],
+        [
+          'ACHRA',
+          'CAIRN',
+          'WRECKLINE',
+          'TWIN KEELS',
+          'THE FRACTURE',
+          'ENGINE SPINE',
+          'VECTOR',
+          'TWIN SPIRES',
+          'ORISON ARCH',
+          'ORISON ARRAY',
+        ],
       );
       p.style.setProperty('--n', String(i));
       prose.appendChild(p);
@@ -1631,32 +1749,44 @@ export class Screens {
     main.style.setProperty('--n', '1');
 
     const left = el('div', 'lv-res-left');
-    const newlyUnlocked = r.newlyUnlockedCourseId ?? this.campaign.newlyUnlockedCourseId;
-    const unlockedCourse = newlyUnlocked
+    /* Explicit null means "this finish unlocked nothing". Do not null-coalesce it to the
+       campaign snapshot: Game retains the last reveal for title hydration, and doing so would
+       make every replay look like another first clear. Undefined alone denotes an older fixture. */
+    const newlyUnlocked = r.newlyUnlockedCourseId !== undefined
+      ? r.newlyUnlockedCourseId
+      : this.campaign.newlyUnlockedCourseId;
+    const revealedStage = newlyUnlocked
       ? this.campaign.routes.find((route) => route.id === newlyUnlocked)
       : undefined;
-    const revealedCourse =
-      unlockedCourse !== undefined &&
-      unlockedCourse.state !== 'locked' &&
-      unlockedCourse.id !== campaignCourse.id
-        ? unlockedCourse
+    const nextStageId = this.campaign.nextStageId !== undefined
+      ? this.campaign.nextStageId
+      : newlyUnlocked;
+    const nextStage = nextStageId
+      ? this.campaign.routes.find((route) => route.id === nextStageId)
+      : undefined;
+    const advanceStage =
+      nextStage !== undefined &&
+      nextStage.state !== 'locked' &&
+      nextStage.id !== campaignCourse.id &&
+      this.campaign.navigationError !== 'storage-unavailable'
+        ? nextStage
         : undefined;
-    const advanceCourse =
-      CAMPAIGN_MODE_ENABLED && this.campaign.navigationError !== 'storage-unavailable'
-        ? revealedCourse
-        : undefined;
-    if (CAMPAIGN_MODE_ENABLED && revealedCourse) {
-      const unlock = el('div', 'lv-route-unlock');
-      unlock.dataset['route'] = revealedCourse.id;
-      unlock.dataset['routeState'] = revealedCourse.state;
+    const firstClearAdvance =
+      advanceStage !== undefined && revealedStage?.id === advanceStage.id;
+    if (revealedStage && revealedStage.state !== 'locked') {
+      const unlock = el('div', 'lv-stage-unlock');
+      unlock.dataset['stageId'] = revealedStage.id;
+      unlock.dataset['stageState'] = revealedStage.state;
       const unlockText = writeEnglishTokens(
         el('span'),
-        m.campaign.routes[revealedCourse.id].unlockNotice,
-        ['CAIRN DRIFT', 'NEEDLE GRAVE'],
+        m.campaign.routes[revealedStage.id].unlockNotice,
+        ['CAIRN DRIFT', 'WRECKLINE', 'RINGFALL'],
       );
-      unlockText.lang = this.translator.locale;
+      unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
+        ? this.translator.locale
+        : 'en';
       unlock.append(
-        el('i', 'lv-route-unlock-mark'),
+        el('i', 'lv-stage-unlock-mark'),
         unlockText,
       );
       left.appendChild(unlock);
@@ -1720,8 +1850,7 @@ export class Screens {
     left.appendChild(stats);
 
     const objectives = el('section', 'lv-objectives lv-objectives--result');
-    objectives.hidden = !CAMPAIGN_MODE_ENABLED;
-    objectives.appendChild(el('div', 'lv-kicker', m.campaign.routeObjectives));
+    objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
     const objectiveList = el('ul', 'lv-objective-list');
     objectiveList.dataset['objectiveList'] = 'results';
     objectives.appendChild(objectiveList);
@@ -1852,29 +1981,48 @@ export class Screens {
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
-    if (advanceCourse) {
-      const nextRoute = this.button(
-          m.campaign.nextRoute,
-          'is-primary',
-          'next-route',
-          () => this.host.selectRoute(advanceCourse.id),
-          m.campaign.routes[advanceCourse.id].destination,
-        );
-      nextRoute.dataset['route'] = advanceCourse.id;
-      actions.appendChild(
-        nextRoute,
+    const nextStageButton = (primary: boolean): HTMLElement | null => {
+      if (!advanceStage) return null;
+      const button = this.button(
+        m.campaign.nextStage,
+        primary ? 'is-primary' : '',
+        'next-stage',
+        () => this.host.selectRoute(advanceStage.id),
+        m.campaign.routes[advanceStage.id].destination,
       );
-      actions.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      button.dataset['stageId'] = advanceStage.id;
+      button.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      return button;
+    };
+    if (firstClearAdvance) {
+      const next = nextStageButton(true);
+      if (next) actions.appendChild(next);
     }
     actions.append(
-      this.button(m.results.runAgain, advanceCourse ? '' : 'is-primary', 'again', () => this.host.restart()),
-      CAMPAIGN_MODE_ENABLED
-        ? this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect())
-        : this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      this.button(
+        m.results.runAgain,
+        firstClearAdvance ? '' : 'is-primary',
+        'run-again',
+        () => this.host.restart(),
+      ),
+      this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showRouteSelect(),
+      ),
     );
+    if (!firstClearAdvance && advanceStage) {
+      const next = nextStageButton(false);
+      if (next) actions.appendChild(next);
+    } else if (!advanceStage) {
+      actions.appendChild(
+        this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      );
+    }
     const error = el('p', 'lv-campaign-error lv-campaign-error--result');
     error.lang = this.translator.locale;
-    if (CAMPAIGN_MODE_ENABLED) error.dataset['campaignError'] = '1';
+    error.dataset['campaignError'] = '1';
     error.setAttribute('role', 'status');
     error.setAttribute('aria-live', 'polite');
     error.hidden = true;
@@ -1915,9 +2063,7 @@ export class Screens {
     actions.style.setProperty('--n', '2');
     actions.append(
       this.button(m.results.retry, 'is-primary', 'retry', () => this.host.restart(), undefined, 'N'),
-      CAMPAIGN_MODE_ENABLED
-        ? this.button(m.campaign.routeSelect, 'is-ghost', 'route-select', () => this.host.showRouteSelect())
-        : this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      this.button(m.campaign.stageSelect, 'is-ghost', 'stage-select', () => this.host.showRouteSelect()),
     );
 
     body.append(head, timeBlock, actions);

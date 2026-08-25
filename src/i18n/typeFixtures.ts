@@ -4,6 +4,8 @@ const translator = createTranslator('en');
 
 export const typeFixtures = [
   translator.messages.campaign.routes['needle-grave'].briefingLine2,
+  translator.messages.campaign.routes.wreckline.radio2,
+  translator.messages.campaign.routes.ringfall.objectives.cleanClear,
   translator.messages.campaign.routes['cairn-drift'].objectives.precision,
   translator.messages.hud.boostUsable(3.5),
   translator.messages.events.gateClearedLog(7, 12.34),
@@ -14,7 +16,7 @@ export const typeFixtures = [
     return translator.messages.campaign.routes['needle-grave'].gateShearBlockedLog();
   },
   () => {
-    // @ts-expect-error campaign copy is keyed only by authored course IDs.
+    // @ts-expect-error campaign copy is keyed only by recognised authored course IDs.
     return translator.messages.campaign.routes['helios-run'];
   },
   () => {
