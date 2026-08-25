@@ -26,7 +26,7 @@ const report = new Report('last-ascent-contract', options);
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-function runTrace(hz, strategy) {
+function runTrace(hz, strategy, personalBest = { bestTime: null, isNewBest: true }) {
   const dt = 1 / hz;
   const path = new FlightPath(
     LAST_ASCENT_MISSION.objective.path,
@@ -154,9 +154,9 @@ function runTrace(hz, strategy) {
         hullRemaining: ship.hull,
         topSpeed: ship.speed,
         cleanRun: collisionCount === 0,
-        bestTime: null,
+        bestTime: personalBest.bestTime,
         bestSplits: [],
-        isNewBest: true,
+        isNewBest: personalBest.isNewBest,
         cruiseSpeed: 462,
       })
     : null;
@@ -379,6 +379,33 @@ await report.check({
     thresholds: LAST_ASCENT_PRESSURE_THRESHOLDS,
   });
   return { stages, thresholds: LAST_ASCENT_PRESSURE_THRESHOLDS };
+});
+
+await report.check({
+  id: 'ASCENT.personal-best-result',
+  name: 'Escape results preserve first-run and seeded-repeat PB facts',
+  assertion: 'The objective carries NEW BEST on an empty record and the exact prior time on a slower repeat.',
+}, () => {
+  const firstRun = runTrace(60, 'reference');
+  const seededBest = 100;
+  const slowerRepeat = runTrace(60, 'reference', { bestTime: seededBest, isNewBest: false });
+  verify(firstRun.status === 'succeeded'
+    && firstRun.result?.bestTime === null
+    && firstRun.result?.isNewBest === true
+    && slowerRepeat.status === 'succeeded'
+    && slowerRepeat.result?.totalTime > seededBest
+    && slowerRepeat.result?.bestTime === seededBest
+    && slowerRepeat.result?.isNewBest === false,
+  'LAST ASCENT discarded MissionResultInput personal-best facts.', {
+    firstRun: firstRun.result,
+    seededBest,
+    slowerRepeat: slowerRepeat.result,
+  });
+  return {
+    firstRun: firstRun.result,
+    seededBest,
+    slowerRepeat: slowerRepeat.result,
+  };
 });
 
 await report.check({

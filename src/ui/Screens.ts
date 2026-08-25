@@ -2156,11 +2156,11 @@ export class Screens {
       el('div', 'lv-res-k', m.results.totalTime),
       el('div', 'lv-res-time', formatTime(r.totalTime)),
     );
-    if (r.kind === 'strike' && r.isNewBest) {
+    if (r.isNewBest) {
       const badge = el('div', 'lv-newbest');
       badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
       time.appendChild(badge);
-    } else if (r.kind === 'strike' && r.bestTime != null) {
+    } else if (r.bestTime != null) {
       const deltaSeconds = r.totalTime - r.bestTime;
       const delta = el(
         'div',

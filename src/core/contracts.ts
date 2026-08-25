@@ -276,6 +276,8 @@ export interface GateRaceMissionResult extends MissionResultBase {
 
 export interface EscapeMissionResult extends MissionResultBase {
   kind: 'escape';
+  bestTime: number | null;
+  isNewBest: boolean;
   checkpointsCleared: number;
   checkpointsTotal: number;
   secondsAhead: number;

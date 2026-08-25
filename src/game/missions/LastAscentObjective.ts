@@ -249,6 +249,8 @@ export class LastAscentObjective implements MissionObjectiveRuntime {
       missionId: this.definition.id,
       rulesetVersion: this.definition.rulesetVersion,
       totalTime: input.totalTime,
+      bestTime: input.bestTime,
+      isNewBest: input.isNewBest,
       hullRemaining: input.hullRemaining,
       objectiveSummary: `${this.cleared} / ${this.checkpoints.length} SAFE`,
       topSpeed: input.topSpeed,

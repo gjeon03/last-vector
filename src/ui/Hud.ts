@@ -599,7 +599,7 @@ export class Hud {
     );
     frame.appendChild(right);
 
-    this.escapeHud = new LastAscentHud(this.messages);
+    this.escapeHud = new LastAscentHud(this.translator);
     frame.appendChild(this.escapeHud.element);
 
     /* ---- centre-upper callout ---- */

@@ -3,6 +3,7 @@ import {
   lastAscentPressureStage,
   type EscapePressureStage,
 } from '../game/missions/LastAscentPressure.ts';
+import type { Translator } from '../i18n/index.ts';
 import type { Messages } from '../i18n/messages.ts';
 
 function node(tag: string, className: string, text = ''): HTMLElement {
@@ -28,21 +29,27 @@ export class LastAscentHud {
   private previousCheckpoint = -1;
   private previousPressure: EscapePressureStage = 'nominal';
 
-  constructor(messages: Messages) {
-    this.messages = messages;
+  constructor(translator: Translator) {
+    this.messages = translator.messages;
+    const messages = this.messages;
     this.element = node('section', 'lv-escape-hud');
     this.element.hidden = true;
-    this.element.lang = 'en';
+    this.element.lang = translator.locale;
     this.element.setAttribute('role', 'status');
 
     this.act = node('div', 'lv-escape-act', messages.hud.ascentAct);
+    this.act.lang = 'en';
     const separationLabel = node('span', 'lv-escape-k', messages.hud.separation);
+    separationLabel.lang = 'en';
     this.separation = node('strong', 'lv-escape-v', '+0.0 KM');
+    this.separation.lang = 'en';
     const separationRow = node('div', 'lv-escape-row');
     separationRow.append(separationLabel, this.separation);
 
     const corridorsLabel = node('span', 'lv-escape-k', messages.hud.safeCorridors);
+    corridorsLabel.lang = 'en';
     this.corridors = node('strong', 'lv-escape-v', '0 / 3');
+    this.corridors.lang = 'en';
     const corridorRow = node('div', 'lv-escape-row');
     corridorRow.append(corridorsLabel, this.corridors);
 
@@ -55,6 +62,7 @@ export class LastAscentHud {
     ship.appendChild(this.shipFill);
     race.append(front, ship);
     this.pressure = node('div', 'lv-escape-pressure');
+    this.pressure.lang = 'en';
     this.pressure.hidden = true;
     this.element.dataset.pressure = 'nominal';
     this.element.append(this.act, separationRow, corridorRow, race, this.pressure);

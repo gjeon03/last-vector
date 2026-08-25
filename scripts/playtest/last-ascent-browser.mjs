@@ -26,6 +26,16 @@ const RESOURCE_BUDGETS = Object.freeze({
   textures: 16,
   programs: 55,
 });
+const evidenceTime = (seconds) => {
+  const total = Math.floor(seconds * 100);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${pad(Math.floor(total / 6000))}:${pad(Math.floor(total / 100) % 60)}.${pad(total % 100)}`;
+};
+const evidenceDelta = (seconds) => {
+  const rounded = Math.round(seconds * 100) / 100;
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '±';
+  return `${sign}${Math.abs(rounded).toFixed(2)}`;
+};
 const REQUIRED_METHODS = [
   'ready',
   'course',
@@ -157,13 +167,21 @@ async function runLastAscentBrowser({ report, session, options }) {
     await callHarness(page, 'setAutopilot', [false]);
     await callHarness(page, 'present', [], options.timeoutMs);
     const telemetry = await callHarness(page, 'telemetry');
-    const hud = await page.evaluate(() => ({
-      visible: !document.querySelector('.lv-escape-hud')?.hasAttribute('hidden'),
-      pressure: document.querySelector('.lv-escape-hud')?.getAttribute('data-pressure') ?? null,
-      callout: document.querySelector('.lv-escape-pressure')?.textContent ?? null,
-      calloutVisible: !document.querySelector('.lv-escape-pressure')?.hasAttribute('hidden'),
-      status: document.querySelector('.lv-escape-hud')?.getAttribute('aria-label') ?? null,
-    }));
+    const hud = await page.evaluate(() => {
+      const root = document.querySelector('.lv-escape-hud');
+      return {
+        visible: !root?.hasAttribute('hidden'),
+        pressure: root?.getAttribute('data-pressure') ?? null,
+        callout: document.querySelector('.lv-escape-pressure')?.textContent ?? null,
+        calloutVisible: !document.querySelector('.lv-escape-pressure')?.hasAttribute('hidden'),
+        status: root?.getAttribute('aria-label') ?? null,
+        documentLocale: document.documentElement.lang,
+        statusLocale: root?.getAttribute('lang') ?? null,
+        technicalLocales: [...document.querySelectorAll(
+          '.lv-escape-act, .lv-escape-k, .lv-escape-v, .lv-escape-pressure',
+        )].map((node) => node.getAttribute('lang')),
+      };
+    });
     const separation = telemetry?.objective?.kind === 'escape'
       ? telemetry.objective.pathProgress - telemetry.objective.shockwaveProgress
       : null;
@@ -172,6 +190,10 @@ async function runLastAscentBrowser({ report, session, options }) {
       && hud.pressure === 'critical'
       && hud.calloutVisible
       && hud.callout?.includes('SHOCKFRONT')
+      && hud.statusLocale === hud.documentLocale
+      && (hud.statusLocale === 'ko' ? /[가-힣]/u.test(hud.status) : !/[가-힣]/u.test(hud.status))
+      && hud.technicalLocales.length === 6
+      && hud.technicalLocales.every((locale) => locale === 'en')
       && Number.isFinite(separation)
       && separation > 0,
     'Near-front state did not expose the bounded critical pressure warning before catch.', {
@@ -205,46 +227,126 @@ async function runLastAscentBrowser({ report, session, options }) {
 
   await report.check({
     id: 'ASCENT_BROWSER.production-journey',
-    name: 'A real production autopilot extracts before the scripted shockfront',
-    assertion: 'The canonical page completes all three safe corridors in 100-120 s, preserves hull, applies objective results, and emits no runtime errors.',
+    name: 'Production escape results preserve unlock ordering and exact PB comparison',
+    assertion: 'A first clear shows NEW BEST before DEAD SIGNAL, while a seeded slower repeat shows its exact delta with one reordered action set.',
   }, async () => {
     verify(routeOutcome.ok && perfOutcome.ok,
       'Route/performance setup failed before the production journey.', { routeOutcome, perfOutcome });
     await callHarness(page, 'setDriven', [true]);
     await callHarness(page, 'clearVantage');
     await callHarness(page, 'setFixedTimestep', [1 / 60]);
-    await callHarness(page, 'startRun', [{ skipIntro: true }]);
-    await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
-    let phase = await callHarness(page, 'phase');
-    let steppedFrames = 0;
-    while (phase !== 'finished' && phase !== 'failed' && steppedFrames < 7_200) {
-      await callHarness(page, 'stepSimulation', [300, 1 / 60], 120_000);
-      steppedFrames += 300;
-      phase = await callHarness(page, 'phase');
-    }
-    await callHarness(page, 'setAutopilot', [false]);
-    await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
-    await callHarness(page, 'present', [], options.timeoutMs);
-    const result = await callHarness(page, 'result');
-    const telemetry = await callHarness(page, 'telemetry');
-    const progress = await callHarness(page, 'progress');
-    const errors = await callHarness(page, 'errors');
-    const evidence = { phase, steppedFrames, result, telemetry, progress, errors };
-    verify(phase === 'finished'
-      && result?.kind === 'escape'
-      && result?.missionId === 'last-ascent'
-      && result?.totalTime >= 100
-      && result?.totalTime <= 120
-      && result?.hullRemaining > 0
-      && result?.checkpointsCleared === 3
-      && result?.checkpointsTotal === 3
-      && result?.secondsAhead >= 3
-      && result?.secondsAhead <= 8
-      && telemetry?.objective?.kind === 'escape'
-      && progress?.missions?.['last-ascent']?.cleared === true
-      && errors.length === 0,
-    'Focused production journey did not produce the authored escape outcome.', evidence);
-    return evidence;
+    const flyEscape = async () => {
+      await callHarness(page, 'startRun', [{ skipIntro: true }]);
+      await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
+      let phase = await callHarness(page, 'phase');
+      let steppedFrames = 0;
+      while (phase !== 'finished' && phase !== 'failed' && steppedFrames < 7_200) {
+        await callHarness(page, 'stepSimulation', [300, 1 / 60], 120_000);
+        steppedFrames += 300;
+        phase = await callHarness(page, 'phase');
+      }
+      await callHarness(page, 'setAutopilot', [false]);
+      await callHarness(page, 'step', [1, 1 / 60], options.timeoutMs);
+      await callHarness(page, 'present', [], options.timeoutMs);
+      return { phase, steppedFrames };
+    };
+    const readResultUi = () => page.evaluate(() => ({
+      newBest: document.querySelector('.lv-newbest')?.textContent?.trim() ?? '',
+      comparison: document.querySelector('.lv-res-delta')?.textContent?.trim() ?? '',
+      unlockStageId: document.querySelector('.lv-stage-unlock')?.getAttribute('data-stage-id') ?? null,
+      actions: [...document.querySelectorAll('[data-view="results"][data-open="1"] [data-action]')]
+        .map((node) => node.getAttribute('data-action')),
+    }));
+
+    const firstFlight = await flyEscape();
+    const firstResult = await callHarness(page, 'result');
+    const firstTelemetry = await callHarness(page, 'telemetry');
+    const firstProgress = await callHarness(page, 'progress');
+    const firstErrors = await callHarness(page, 'errors');
+    const firstUi = await readResultUi();
+    verify(firstFlight.phase === 'finished'
+      && firstResult?.kind === 'escape'
+      && firstResult?.missionId === 'last-ascent'
+      && firstResult?.totalTime >= 100
+      && firstResult?.totalTime <= 120
+      && firstResult?.hullRemaining > 0
+      && firstResult?.checkpointsCleared === 3
+      && firstResult?.checkpointsTotal === 3
+      && firstResult?.secondsAhead >= 3
+      && firstResult?.secondsAhead <= 8
+      && firstResult?.bestTime === null
+      && firstResult?.isNewBest === true
+      && firstResult?.newlyUnlockedMissionId === 'dead-signal'
+      && firstTelemetry?.objective?.kind === 'escape'
+      && firstProgress?.missions?.['last-ascent']?.cleared === true
+      && firstUi.newBest === 'NEW BEST'
+      && firstUi.comparison === ''
+      && firstUi.unlockStageId === 'dead-signal'
+      && firstUi.actions.join(',') === 'next-stage,run-again,stage-select'
+      && firstErrors.length === 0,
+    'First production escape did not expose NEW BEST and the ordered DEAD SIGNAL unlock.', {
+      firstFlight,
+      firstResult,
+      firstTelemetry,
+      firstProgress,
+      firstUi,
+      firstErrors,
+    });
+
+    const bestRecordId = (await callHarness(page, 'course')).recordId;
+    const seededBest = 100;
+    await page.evaluate(({ recordId, seconds }) => {
+      const key = 'last-vector.best.v1';
+      const all = JSON.parse(localStorage.getItem(key) ?? '{}');
+      all[recordId] = { time: seconds, splits: [] };
+      localStorage.setItem(key, JSON.stringify(all));
+    }, { recordId: bestRecordId, seconds: seededBest });
+
+    const repeatFlight = await flyEscape();
+    const repeatResult = await callHarness(page, 'result');
+    const repeatTelemetry = await callHarness(page, 'telemetry');
+    const repeatErrors = await callHarness(page, 'errors');
+    const repeatUi = await readResultUi();
+    const expectedComparison = repeatResult?.kind === 'escape'
+      ? `${evidenceDelta(repeatResult.totalTime - seededBest)} vs BEST ${evidenceTime(seededBest)}`
+      : '';
+    verify(repeatFlight.phase === 'finished'
+      && repeatResult?.kind === 'escape'
+      && repeatResult.totalTime > seededBest
+      && repeatResult.bestTime === seededBest
+      && repeatResult.isNewBest === false
+      && repeatResult.newlyUnlockedMissionId === null
+      && repeatTelemetry?.objective?.kind === 'escape'
+      && repeatUi.newBest === ''
+      && repeatUi.comparison === expectedComparison
+      && repeatUi.unlockStageId === null
+      && repeatUi.actions.join(',') === 'run-again,stage-select,next-stage'
+      && repeatErrors.length === 0,
+    'Seeded slower escape did not expose the exact PB delta and repeat-clear action order.', {
+      bestRecordId,
+      seededBest,
+      repeatFlight,
+      repeatResult,
+      repeatTelemetry,
+      repeatUi,
+      expectedComparison,
+      repeatErrors,
+    });
+    return {
+      first: {
+        flight: firstFlight,
+        result: firstResult,
+        ui: firstUi,
+      },
+      personalBest: {
+        recordId: bestRecordId,
+        seededBest,
+        flight: repeatFlight,
+        result: repeatResult,
+        ui: repeatUi,
+        expectedComparison,
+      },
+    };
   });
 }
 
