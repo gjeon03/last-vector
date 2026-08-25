@@ -365,9 +365,9 @@ await report.check({
 });
 
 await report.check({
-  id: 'MISSION.campaign-view-single',
-  name: 'Catalog-driven campaign projection preserves the one-mission view',
-  assertion: 'Empty and cleared CAIRN progress project exactly without a one-node rail or next mission.',
+  id: 'MISSION.campaign-view-catalog',
+  name: 'Catalog-driven campaign projection presents CAIRN then LAST ASCENT',
+  assertion: 'Empty progress locks Chapter 02; a CAIRN clear makes it available and identifies it as next.',
 }, () => {
   const empty = buildCampaignViewModel({
     version: 2,
@@ -380,18 +380,29 @@ await report.check({
     nextMissionId: null,
     newlyUnlockedMissionId: null,
     navigationError: null,
-    missions: [{
-      id: 'cairn-drift',
-      chapter: 1,
-      capabilities: [],
-      mastery: [{ id: 'precision', complete: false }],
-      state: 'available',
-      highestRank: null,
-      objectives: { firstClear: false, cleanClear: false, precision: false },
-    }],
+    missions: [
+      {
+        id: 'cairn-drift',
+        chapter: 1,
+        capabilities: [],
+        mastery: [{ id: 'precision', complete: false }],
+        state: 'available',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+      {
+        id: 'last-ascent',
+        chapter: 2,
+        capabilities: [],
+        mastery: [{ id: 'precision', complete: false }],
+        state: 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      },
+    ],
   };
   verify(JSON.stringify(empty) === JSON.stringify(expected),
-    'The catalog projection changed the established one-mission campaign snapshot.', { empty, expected });
+    'The catalog projection did not expose a locked Chapter 02 after CAIRN.', { empty, expected });
 
   const cleared = buildCampaignViewModel({
     version: 2,
@@ -406,8 +417,8 @@ await report.check({
     },
     dormantCourses: {},
   }, 'cairn-drift');
-  verify(cleared.nextMissionId === null
-    && cleared.missions.length === 1
+  verify(cleared.nextMissionId === 'last-ascent'
+    && cleared.missions.length === 2
     && cleared.missions[0]?.state === 'cleared'
     && cleared.missions[0]?.highestRank === 'A'
     && cleared.missions[0]?.chapter === 1
@@ -416,8 +427,12 @@ await report.check({
     && cleared.missions[0]?.mastery[0]?.complete === true
     && cleared.missions[0]?.objectives.firstClear
     && cleared.missions[0]?.objectives.cleanClear
-    && cleared.missions[0]?.objectives.precision,
-  'Cleared CAIRN progress did not remain a terminal one-mission view.', cleared);
+    && cleared.missions[0]?.objectives.precision
+    && cleared.missions[1]?.id === 'last-ascent'
+    && cleared.missions[1]?.chapter === 2
+    && cleared.missions[1]?.state === 'available'
+    && cleared.missions[1]?.capabilities.length === 0,
+  'Cleared CAIRN progress did not expose LAST ASCENT as the next available chapter.', cleared);
   return { empty, cleared };
 });
 

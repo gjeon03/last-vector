@@ -55,6 +55,7 @@ import {
   resolveAutopilotButton,
 } from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
+import { presentEscapeRewardEvents } from './missions/LastAscentEvents.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -296,6 +297,10 @@ export class Game {
   private gateTickTimer = 0;
   private readonly rewardEvents: MissionRewardEvent[] = [];
   private readonly weaponEvents: MissionWeaponEvent[] = [];
+  private readonly onEscapeCheckpointReward = (sourceIndex: number): void => {
+    this.audio.play('checkpoint', 0.85);
+    this.queueRadio(sourceIndex + 1);
+  };
 
   private autopilot = false;
   private autopilotSkill = 1;
@@ -1286,6 +1291,7 @@ export class Game {
           this.rewardEvents,
           this.weaponEvents,
         );
+        presentEscapeRewardEvents(this.rewardEvents, this.onEscapeCheckpointReward);
         const terminal = missionFrame.terminal;
         if (terminal.status === 'failed') this.failObjective(terminal.reason);
         else if (terminal.status === 'succeeded') this.finish();

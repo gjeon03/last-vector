@@ -2898,6 +2898,15 @@ kbd {
   text-shadow: 0 4px 30px rgba(0, 0, 0, 0.85);
 }
 
+.lv-res-failure-detail {
+  max-width: 42em;
+  margin: clamp(12px, 1.8vmin, 24px) 0 0;
+  color: var(--c-ink-soft);
+  font-size: var(--fs-small);
+  line-height: 1.65;
+  letter-spacing: 0.04em;
+}
+
 .lv-res-delta {
   margin-top: 0.5em;
   font-family: var(--f-mono);

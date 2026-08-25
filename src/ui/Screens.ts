@@ -572,9 +572,9 @@ export class Screens {
       (mission) => mission.id === viewModel.activeMissionId && mission.state !== 'locked',
     );
     const fallback = viewModel.missions.find(
-      (mission) => mission.id === 'cairn-drift' && mission.state !== 'locked',
+      (mission) => mission.id === ACTIVE_MISSION_ORDER[0] && mission.state !== 'locked',
     );
-    const activeMissionId = active?.id ?? fallback?.id ?? 'cairn-drift';
+    const activeMissionId = active?.id ?? fallback?.id ?? ACTIVE_MISSION_ORDER[0]!;
     this.campaign = { ...viewModel, activeMissionId };
 
     const m = this.translator.messages;
@@ -632,7 +632,8 @@ export class Screens {
       const route = viewModel.missions.find((candidate) => candidate.id === id);
       const nodes = this.stageNodes.get(id);
       if (!nodes) continue;
-      const state = route?.state ?? (id === 'cairn-drift' ? 'available' : 'locked');
+      const state = route?.state
+        ?? (ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked');
       const selected = id === activeMissionId;
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
@@ -662,7 +663,9 @@ export class Screens {
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
       nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route?.objectives.precision ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route?.mastery.find(
+        (mastery) => mastery.id === 'precision',
+      )?.complete ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -719,7 +722,13 @@ export class Screens {
         target: true,
       },
       { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      { id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true },
+      ...route.mastery.map((mastery) => ({
+        id: mastery.id,
+        label: copy[mastery.id],
+        complete: mastery.complete,
+        value: '',
+        target: true,
+      })),
     ];
     const focusId = result
       ? rows.find((row) => row.target && !row.complete)?.id ?? null
@@ -1122,7 +1131,8 @@ export class Screens {
     for (let index = 0; index < CHAPTER_STAGE_IDS.length; index++) {
       const id = CHAPTER_STAGE_IDS[index]!;
       const copy = m.campaign.routes[id];
-      const isFirst = id === 'cairn-drift';
+      const mission = this.campaignMission(id);
+      const isFirst = index === 0;
       const button = el('button', 'lv-stage-node');
       button.type = 'button';
       button.dataset['nav'] = 'stage';
@@ -1137,7 +1147,7 @@ export class Screens {
 
       const top = el('span', 'lv-stage-top');
       top.append(
-        englishText('span', 'lv-stage-index', `01-${index + 1}`),
+        englishText('span', 'lv-stage-index', `CHAPTER ${String(mission.chapter).padStart(2, '0')}`),
         el('span', 'lv-stage-dot'),
       );
       top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
@@ -2139,7 +2149,12 @@ export class Screens {
 
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    if (reason !== undefined) {
+    if (reason === 'shockfront-catch') {
+      head.append(
+        englishText('div', 'lv-kicker', m.results.missionFailed),
+        englishText('h2', 'lv-res-title', m.results.shockfrontOverrun),
+      );
+    } else if (reason !== undefined) {
       head.append(
         englishText('div', 'lv-kicker', m.results.runComplete),
         englishText('h2', 'lv-res-title', m.results.missionFailed),
@@ -2154,6 +2169,15 @@ export class Screens {
       el('div', 'lv-res-k', m.results.time),
       el('div', 'lv-res-time', formatTime(elapsed)),
     );
+    if (reason === 'shockfront-catch') {
+      const detail = writeEnglishTokens(
+        el('p', 'lv-res-failure-detail'),
+        m.results.shockfrontOverrunDetail,
+        ['SHOCKFRONT', 'VECTOR'],
+      );
+      detail.lang = this.translator.locale;
+      timeBlock.appendChild(detail);
+    }
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');

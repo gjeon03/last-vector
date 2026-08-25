@@ -28,8 +28,9 @@ const SHOCKFRONT_FAILURE = Object.freeze({
   status: 'failed',
   reason: 'shockfront-catch',
 } as const);
-const EMPTY_REWARDS = Object.freeze([]) as readonly MissionRewardEvent[];
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+export const LAST_ASCENT_CHECKPOINT_REWARD_SOURCE = 'escape-checkpoint';
 
 const CHECKPOINT_OFFSETS = [
   [280, 0],
@@ -173,9 +174,10 @@ export class LastAscentObjective implements MissionObjectiveRuntime {
       this.cleared += 1;
       this.checkpointTimes.push(frame.elapsed);
       this.pendingRewards.push({
-        kind: 'checkpoint',
+        kind: 'boost-recharge',
         amount: LAST_ASCENT_CHECKPOINT_REWARD,
-        checkpoint: checkpoint.index + 1,
+        sourceId: LAST_ASCENT_CHECKPOINT_REWARD_SOURCE,
+        sourceIndex: checkpoint.index,
       });
     }
 
@@ -228,9 +230,11 @@ export class LastAscentObjective implements MissionObjectiveRuntime {
     };
   }
 
-  drainRewardEvents(): readonly MissionRewardEvent[] {
-    if (this.pendingRewards.length === 0) return EMPTY_REWARDS;
-    return this.pendingRewards.splice(0, this.pendingRewards.length);
+  drainRewardEvents(out: MissionRewardEvent[]): number {
+    const count = this.pendingRewards.length;
+    for (let index = 0; index < count; index++) out.push(this.pendingRewards[index]!);
+    this.pendingRewards.length = 0;
+    return count;
   }
 
   bestRunSplits(): readonly number[] {

@@ -19,25 +19,25 @@ interface DebrisSeed {
 
 const DEBRIS_SEEDS: readonly DebrisSeed[] = [
   { checkpoint: 0, right: -740, up: -260, forward: 0, radius: 138, phase: 0.1 },
-  { checkpoint: 0, right: -480, up: 220, forward: -30, radius: 116, phase: 1.0 },
-  { checkpoint: 0, right: -190, up: -340, forward: 26, radius: 128, phase: 2.1 },
-  { checkpoint: 0, right: 20, up: 330, forward: -18, radius: 112, phase: 3.0 },
+  { checkpoint: 0, right: -506, up: 232, forward: -30, radius: 116, phase: 1.0 },
+  { checkpoint: 0, right: -278, up: -497, forward: 26, radius: 128, phase: 2.1 },
+  { checkpoint: 0, right: 33, up: 551, forward: -18, radius: 112, phase: 3.0 },
   { checkpoint: 0, right: 610, up: -310, forward: 22, radius: 148, phase: 4.2 },
   { checkpoint: 0, right: 760, up: 260, forward: -34, radius: 124, phase: 5.1 },
 
   { checkpoint: 1, right: -700, up: -420, forward: 14, radius: 142, phase: 0.6 },
-  { checkpoint: 1, right: -430, up: -120, forward: -26, radius: 108, phase: 1.4 },
-  { checkpoint: 1, right: -170, up: 50, forward: 28, radius: 132, phase: 2.5 },
-  { checkpoint: 1, right: 120, up: -260, forward: -16, radius: 122, phase: 3.4 },
-  { checkpoint: 1, right: 410, up: 10, forward: 32, radius: 118, phase: 4.3 },
+  { checkpoint: 1, right: -528, up: -147, forward: -26, radius: 108, phase: 1.4 },
+  { checkpoint: 1, right: -550, up: 162, forward: 28, radius: 132, phase: 2.5 },
+  { checkpoint: 1, right: 235, up: -510, forward: -16, radius: 122, phase: 3.4 },
+  { checkpoint: 1, right: 558, up: 14, forward: 32, radius: 118, phase: 4.3 },
   { checkpoint: 1, right: 680, up: -350, forward: -24, radius: 150, phase: 5.2 },
   { checkpoint: 1, right: 760, up: 220, forward: 12, radius: 104, phase: 5.8 },
 
   { checkpoint: 2, right: -760, up: 300, forward: -28, radius: 126, phase: 0.2 },
   { checkpoint: 2, right: -620, up: -440, forward: 18, radius: 116, phase: 1.2 },
-  { checkpoint: 2, right: -40, up: -360, forward: -12, radius: 144, phase: 2.2 },
-  { checkpoint: 2, right: 180, up: 40, forward: 30, radius: 108, phase: 3.2 },
-  { checkpoint: 2, right: 410, up: 370, forward: -20, radius: 138, phase: 4.1 },
+  { checkpoint: 2, right: -64, up: -580, forward: -12, radius: 144, phase: 2.2 },
+  { checkpoint: 2, right: 536, up: 119, forward: 30, radius: 108, phase: 3.2 },
+  { checkpoint: 2, right: 429, up: 387, forward: -20, radius: 138, phase: 4.1 },
   { checkpoint: 2, right: 690, up: -170, forward: 24, radius: 114, phase: 5.0 },
   { checkpoint: 2, right: 780, up: 330, forward: -32, radius: 146, phase: 5.7 },
 ];
@@ -72,11 +72,11 @@ export class LastAscentDebris {
     }
     const collisionGeometry = new THREE.IcosahedronGeometry(1, 1);
     const collisionMaterial = new THREE.MeshStandardMaterial({
-      color: 0x39444b,
-      roughness: 0.82,
-      metalness: 0.48,
-      emissive: 0x110806,
-      emissiveIntensity: 0.18,
+      color: 0x61747b,
+      roughness: 0.76,
+      metalness: 0.58,
+      emissive: 0x102e38,
+      emissiveIntensity: 0.42,
       flatShading: true,
     });
     this.collisionMesh = new THREE.InstancedMesh(
