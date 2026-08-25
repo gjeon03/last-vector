@@ -1,1091 +1,174 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import * as THREE from 'three';
-import {
-  CAIRN_DRIFT,
-  CHAPTER_ONE_STAGE_ORDER,
-  KNOWN_COURSE_ORDER,
-  isCourseAvailable,
-} from '../../src/core/Courses.ts';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   ACTIVE_MISSION_ORDER,
   CAIRN_MISSION,
-  DORMANT_COURSE_ORDER,
-  LAST_ASCENT_MISSION,
+  getMissionDefinition,
   getNextMission,
+  isMissionId,
   missionRecordId,
 } from '../../src/core/Missions.ts';
-import { DEAD_SIGNAL_MISSION } from '../../src/game/missions/DeadSignalMission.ts';
 import {
   buildMissionUrl,
   resolveMissionSelection,
 } from '../../src/core/MissionSelection.ts';
+import { ProgressStore } from '../../src/core/Progress.ts';
 import {
-  LEGACY_PROGRESS_KEY,
-  PROGRESS_KEY,
-  ProgressStore,
-} from '../../src/core/Progress.ts';
-import { Course } from '../../src/game/Course.ts';
-import { FlightPath } from '../../src/game/FlightPath.ts';
-import { GateRaceObjective } from '../../src/game/GateRaceObjective.ts';
-import {
-  buildCampaignViewModel,
-  consumeMissionFrameEvents,
-  resolveAutopilotButton,
-} from '../../src/game/GameContracts.ts';
-import {
-  createGameMissionRuntime,
-  MissionRuntime,
-} from '../../src/game/MissionRuntime.ts';
-import { createLightingUniforms } from '../../src/render/lighting.ts';
-import { Report, parseOptions, verify } from './runtime.mjs';
+  getRelayHarvestLayout,
+  nextRelayHarvestLayoutIndex,
+  selectRelayHarvestLayoutIndex,
+} from '../../src/game/missions/RelayHarvestLayout.ts';
+import { RelayHarvestObjective } from '../../src/game/missions/RelayHarvestObjective.ts';
+import { RelayHarvestState } from '../../src/game/missions/RelayHarvestState.ts';
 
-const PATH_SIGNATURE = 'cf64cc23e6accbd750712bb2a2140d5a0ac3dc55dbdce4851166846f24f7f605';
-const GATE_SIGNATURE = '22ff40ffc12de5522e8cf83f6c8f0407201d2462d9b5e064d628c5c511c7cefc';
+const checks = [];
+const started = Date.now();
+
+async function check(id, fn) {
+  const begin = performance.now();
+  try {
+    const evidence = await fn();
+    checks.push({ id, status: 'PASS', durationMs: performance.now() - begin, evidence });
+  } catch (error) {
+    checks.push({
+      id,
+      status: 'FAIL',
+      durationMs: performance.now() - begin,
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+    });
+  }
+}
 
 class MemoryStorage {
-  constructor(initial = {}, failures = {}) {
-    this.values = new Map(Object.entries(initial));
-    this.failSet = failures.failSet === true;
-    this.writes = 0;
-  }
-
-  getItem(key) {
-    return this.values.get(key) ?? null;
-  }
-
-  setItem(key, value) {
-    if (this.failSet) throw new Error('write denied');
-    this.writes += 1;
-    this.values.set(key, String(value));
-  }
+  values = new Map();
+  getItem(key) { return this.values.get(key) ?? null; }
+  setItem(key, value) { this.values.set(key, String(value)); }
 }
 
-const missionFacts = (patch = {}) => ({
-  cleared: false,
-  clearedAt: null,
-  highestRank: null,
-  cleanClear: false,
-  mastery: {},
-  ...patch,
-});
-
-const dormantFacts = (patch = {}) => ({
-  cleared: false,
-  clearedAt: null,
-  highestRank: null,
-  cleanClear: false,
-  precisionClear: false,
-  ...patch,
-});
-
-const result = (patch = {}) => ({
-  kind: 'gate-race',
-  missionId: 'cairn-drift',
-  rulesetVersion: 2,
-  totalTime: 90,
-  hullRemaining: 1,
-  objectiveSummary: '9 / 9',
-  splits: [],
-  bestTime: null,
-  bestSplits: [],
-  isNewBest: false,
-  gatesCleared: 9,
-  gatesTotal: 9,
-  topSpeed: 1000,
-  cleanRun: true,
-  rank: 'A',
-  destinationName: 'VESPER TERMINUS',
-  maxGateOffset: 0.2,
-  newlyUnlockedMissionId: null,
-  ...patch,
-});
-
-const escapeResult = (patch = {}) => ({
-  kind: 'escape',
-  missionId: 'last-ascent',
-  rulesetVersion: 1,
-  totalTime: 103,
-  hullRemaining: 1,
-  objectiveSummary: '3 / 3 SAFE',
-  topSpeed: 898,
-  cleanRun: true,
-  rank: 'S',
-  destinationName: 'ORBITAL EXTRACTION',
-  newlyUnlockedMissionId: null,
-  checkpointsCleared: 3,
-  checkpointsTotal: 3,
-  secondsAhead: 5,
-  ...patch,
-});
-
-const strikeResult = (patch = {}) => ({
-  kind: 'strike',
-  missionId: 'dead-signal',
-  rulesetVersion: DEAD_SIGNAL_MISSION.rulesetVersion,
-  totalTime: 112,
-  bestTime: null,
-  isNewBest: true,
-  hullRemaining: 1,
-  objectiveSummary: '6 / 6 + CORE',
-  targetsDestroyed: 6,
-  targetsRequired: 3,
-  targetsTotal: 6,
-  shotsFired: 10,
-  shotsHit: 8,
-  coreDestroyed: true,
-  topSpeed: 950,
-  cleanRun: true,
-  rank: 'A',
-  destinationName: 'DEAD SIGNAL EXTRACTION',
-  newlyUnlockedMissionId: null,
-  ...patch,
-});
-
-const round = (value) => Number(value.toFixed(6));
-const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-
-function courseSignatures(course) {
-  const path = {
-    start: [...course.startPosition].map(round),
-    startQ: [...course.startQuaternion].map(round),
-    terminus: [...course.terminusPosition].map(round),
-    normal: [...course.terminusNormal].map(round),
-    total: round(course.totalLength),
-    spine: course.spine.map((point) => [...point].map(round)),
-    channel: course.clearChannel.map((segment) => ({
-      a: [...segment.a].map(round),
-      b: [...segment.b].map(round),
-      r: round(segment.radius),
-    })),
-  };
-  const gates = course.gates.map((gate) => ({
-    p: [...gate.position].map(round),
-    n: [...gate.normal].map(round),
-    r: round(gate.radius),
-  }));
-  return { path: hash(path), gates: hash(gates) };
-}
-
-const options = parseOptions('campaign-contract', process.argv.slice(2));
-const report = new Report('campaign-contract', options);
-
-await report.check({
-  id: 'MISSION.catalog-path',
-  name: 'The campaign is CAIRN, LAST ASCENT, then DEAD SIGNAL while CAIRN stays unchanged',
-  assertion: 'The three-mission catalog is ordered, dormant courses stay quarantined, and PB identities partition by ruleset.',
-}, () => {
-  verify(JSON.stringify(ACTIVE_MISSION_ORDER)
-    === JSON.stringify(['cairn-drift', 'last-ascent', 'dead-signal']),
-  'The active campaign is not ordered CAIRN, LAST ASCENT, then DEAD SIGNAL.', ACTIVE_MISSION_ORDER);
-  verify(JSON.stringify(CHAPTER_ONE_STAGE_ORDER) === JSON.stringify(['cairn-drift']),
-    'The legacy availability projection did not collapse with the active campaign.');
-  verify(JSON.stringify(KNOWN_COURSE_ORDER)
-    === JSON.stringify(['cairn-drift', 'needle-grave', 'wreckline', 'ringfall']),
-  'Dormant recognized definitions were lost.', KNOWN_COURSE_ORDER);
-  verify(JSON.stringify(DORMANT_COURSE_ORDER)
-    === JSON.stringify(['needle-grave', 'wreckline', 'ringfall']),
-  'Dormant recognized definitions are not partitioned from missions.', DORMANT_COURSE_ORDER);
-  verify(isCourseAvailable('cairn-drift')
-    && !isCourseAvailable('needle-grave')
-    && !isCourseAvailable('wreckline')
-    && !isCourseAvailable('ringfall'),
-  'A retired course remains release-active.');
-  verify(CAIRN_MISSION.chapter === 1
-    && CAIRN_MISSION.objective.kind === 'gate-race'
-    && CAIRN_MISSION.world.sourceCourse === CAIRN_DRIFT
-    && CAIRN_MISSION.capabilities.length === 0
-    && getNextMission('cairn-drift') === 'last-ascent',
-  'The Chapter 01 mission definition crossed a foundation boundary.', CAIRN_MISSION);
-  verify(LAST_ASCENT_MISSION.chapter === 2
-    && LAST_ASCENT_MISSION.objective.kind === 'escape'
-    && LAST_ASCENT_MISSION.capabilities.length === 0
-    && LAST_ASCENT_MISSION.mastery.includes('precision')
-    && getNextMission('last-ascent') === 'dead-signal',
-  'The Chapter 02 mission is not a bounded escape definition.', LAST_ASCENT_MISSION);
-  verify(DEAD_SIGNAL_MISSION.chapter === 3
-    && DEAD_SIGNAL_MISSION.objective.kind === 'strike'
-    && DEAD_SIGNAL_MISSION.capabilities.includes('fire')
-    && DEAD_SIGNAL_MISSION.objective.targets.length === 8
-    && getNextMission('dead-signal') === null,
-  'The DEAD SIGNAL catalog entry is incomplete.', DEAD_SIGNAL_MISSION);
-  verify(missionRecordId(CAIRN_MISSION, 1337) === 'cairn-drift-r2-1337',
-    'Ruleset 2 did not partition the current PB identity.');
-  verify(missionRecordId(LAST_ASCENT_MISSION, 1337) === 'last-ascent-r1-1337',
-    'LAST ASCENT did not receive an independent ruleset PB identity.');
-  verify(missionRecordId(DEAD_SIGNAL_MISSION, 1337)
-    === `dead-signal-r${DEAD_SIGNAL_MISSION.rulesetVersion}-1337`,
-  'DEAD SIGNAL did not receive an independent ruleset PB identity.');
-
-  const course = new Course(
-    CAIRN_DRIFT,
-    CAIRN_DRIFT.defaultSeed,
-    createLightingUniforms(new THREE.Vector3(...CAIRN_DRIFT.world.sunDirection)),
-  );
-  const signatures = courseSignatures(course);
-  course.dispose();
-  verify(signatures.path === PATH_SIGNATURE && signatures.gates === GATE_SIGNATURE,
-    'FlightPath extraction changed the locked CAIRN route or gate signature.', signatures);
+function gateResult() {
   return {
-    active: ACTIVE_MISSION_ORDER,
-    dormant: DORMANT_COURSE_ORDER,
-    recordId: missionRecordId(CAIRN_MISSION, 1337),
-    signatures,
-  };
-});
-
-await report.check({
-  id: 'MISSION.url-resolution',
-  name: 'Canonical mission URLs enforce sequential clear-only campaign access and fail closed',
-  assertion: 'mission takes precedence, both locks require every prior clear, and canonical URLs delete course.',
-}, () => {
-  const progress = { version: 2, selectedMission: 'cairn-drift', missions: {}, dormantCourses: {} };
-  const afterCairn = {
-    ...progress,
-    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
-  };
-  const afterAscent = {
-    ...progress,
-    missions: {
-      'cairn-drift': missionFacts({ cleared: true }),
-      'last-ascent': missionFacts({ cleared: true }),
-    },
-  };
-  const cases = {
-    canonical: resolveMissionSelection({ mission: 'cairn-drift', legacyCourse: null }, progress),
-    lockedAscent: resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, progress),
-    unlockedAscent: resolveMissionSelection(
-      { mission: 'last-ascent', legacyCourse: null },
-      afterCairn,
-    ),
-    lockedDeadSignal: resolveMissionSelection(
-      { mission: 'dead-signal', legacyCourse: null },
-      afterCairn,
-    ),
-    unlockedDeadSignal: resolveMissionSelection(
-      { mission: 'dead-signal', legacyCourse: null },
-      afterAscent,
-    ),
-    alias: resolveMissionSelection({ mission: null, legacyCourse: 'cairn-drift' }, progress),
-    retired: resolveMissionSelection({ mission: null, legacyCourse: 'wreckline' }, progress),
-    unknown: resolveMissionSelection({ mission: 'unknown-mission', legacyCourse: 'cairn-drift' }, progress),
-  };
-  verify(cases.canonical.source === 'mission-url'
-    && cases.lockedAscent.source === 'invalid-mission-url'
-    && cases.lockedAscent.missionId === 'cairn-drift'
-    && cases.unlockedAscent.source === 'mission-url'
-    && cases.unlockedAscent.missionId === 'last-ascent'
-    && cases.alias.source === 'legacy-course-url'
-    && cases.lockedDeadSignal.source === 'invalid-mission-url'
-    && cases.lockedDeadSignal.missionId === 'cairn-drift'
-    && cases.unlockedDeadSignal.source === 'mission-url'
-    && cases.unlockedDeadSignal.missionId === 'dead-signal'
-    && cases.retired.source === 'invalid-course-url'
-    && cases.unknown.source === 'invalid-mission-url'
-    && [cases.canonical, cases.alias, cases.retired, cases.unknown]
-      .every((entry) => entry.missionId === 'cairn-drift'),
-  'Mission resolution did not fail closed.', cases);
-  const built = new URL(buildMissionUrl(
-    'https://example.test/game?course=cairn-drift&seed=9&briefing=1',
-    'dead-signal',
-  ));
-  verify(built.searchParams.get('mission') === 'dead-signal'
-    && !built.searchParams.has('course')
-    && !built.searchParams.has('seed')
-    && built.searchParams.get('briefing') === '1',
-  'Canonical mission navigation retained a legacy or ephemeral parameter.', built.href);
-  const ascentBuilt = new URL(buildMissionUrl(built, 'last-ascent'));
-  verify(ascentBuilt.searchParams.get('mission') === 'last-ascent'
-    && !ascentBuilt.searchParams.has('course')
-    && !ascentBuilt.searchParams.has('seed'),
-  'LAST ASCENT navigation did not write a canonical mission URL.', ascentBuilt.href);
-  return { cases, built: built.href, ascentBuilt: ascentBuilt.href };
-});
-
-await report.check({
-  id: 'MISSION.progress-v2',
-  name: 'Progress v2 migrates CAIRN facts and quarantines retired stage clears',
-  assertion: 'Local/session merges are monotonic and a future schema remains read-only.',
-}, () => {
-  const legacy = new MemoryStorage({
-    [LEGACY_PROGRESS_KEY]: JSON.stringify({
-      version: 1,
-      selectedCourse: 'ringfall',
-      courses: {
-        'cairn-drift': dormantFacts({
-          cleared: true,
-          clearedAt: 200,
-          highestRank: 'B',
-          cleanClear: true,
-          precisionClear: true,
-        }),
-        wreckline: dormantFacts({ cleared: true, highestRank: 'S' }),
-        ringfall: dormantFacts({ cleared: true, clearedAt: 300 }),
-        'needle-grave': dormantFacts({ precisionClear: true }),
-      },
-    }),
-  });
-  const migrated = new ProgressStore({
-    localStorage: legacy,
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => false,
-  }).snapshot();
-  verify(migrated.version === 2
-    && migrated.selectedMission === 'cairn-drift'
-    && migrated.missions['cairn-drift']?.cleared === true
-    && migrated.missions['cairn-drift']?.highestRank === 'B'
-    && migrated.missions['cairn-drift']?.cleanClear === true
-    && migrated.missions['cairn-drift']?.mastery.precision === true,
-  'Supported CAIRN facts did not migrate to the mission record.', migrated);
-  verify(Object.keys(migrated.missions).length === 1
-    && migrated.dormantCourses.wreckline?.cleared === true
-    && migrated.dormantCourses.ringfall?.cleared === true
-    && migrated.dormantCourses['needle-grave']?.precisionClear === true,
-  'Retired stage facts were promoted or discarded.', migrated);
-
-  const durable = new MemoryStorage({
-    [PROGRESS_KEY]: JSON.stringify({
-      version: 2,
-      selectedMission: 'cairn-drift',
-      missions: {
-        'cairn-drift': missionFacts({ cleared: true, clearedAt: 300, highestRank: 'B' }),
-      },
-      dormantCourses: { wreckline: dormantFacts({ cleared: true }) },
-    }),
-  });
-  const session = new MemoryStorage({
-    [PROGRESS_KEY]: JSON.stringify({
-      version: 2,
-      selectedMission: 'cairn-drift',
-      missions: {
-        'cairn-drift': missionFacts({ clearedAt: 200, cleanClear: true, mastery: { precision: true } }),
-      },
-      dormantCourses: { wreckline: dormantFacts({ highestRank: 'A' }) },
-    }),
-  });
-  const store = new ProgressStore({
-    localStorage: durable,
-    sessionStorage: session,
-    hasLegacyCairnBest: () => false,
-    now: () => 999,
-  });
-  const merged = store.snapshot();
-  verify(merged.missions['cairn-drift']?.cleared
-    && merged.missions['cairn-drift']?.clearedAt === 200
-    && merged.missions['cairn-drift']?.highestRank === 'B'
-    && merged.missions['cairn-drift']?.cleanClear
-    && merged.missions['cairn-drift']?.mastery.precision
-    && merged.dormantCourses.wreckline?.cleared
-    && merged.dormantCourses.wreckline?.highestRank === 'A',
-  'Progress facts did not merge monotonically.', merged);
-  const finish = store.recordSuccessfulFinish('cairn-drift', result({ rank: 'S' }));
-  verify(finish.newlyUnlocked === null
-    && finish.progress.missions['cairn-drift']?.cleared
-    && finish.progress.missions['cairn-drift']?.highestRank === 'S',
-  'A repeated CAIRN finish re-announced an unlock or lost a better rank.', finish);
-  const unlockStore = new ProgressStore({
-    localStorage: new MemoryStorage(),
-    sessionStorage: new MemoryStorage(),
-    hasLegacyCairnBest: () => false,
-    now: () => 1001,
-  });
-  const firstFinish = unlockStore.recordSuccessfulFinish('cairn-drift', result({ rank: 'A' }));
-  verify(firstFinish.firstClear
-    && firstFinish.newlyUnlocked === 'last-ascent'
-    && firstFinish.progress.missions['cairn-drift']?.cleared,
-  'A first CAIRN finish did not clear-only unlock LAST ASCENT.', firstFinish);
-  const ascentFinish = unlockStore.recordSuccessfulFinish('last-ascent', escapeResult());
-  verify(ascentFinish.firstClear
-    && ascentFinish.newlyUnlocked === 'dead-signal'
-    && ascentFinish.progress.missions['last-ascent']?.cleared
-    && ascentFinish.progress.missions['last-ascent']?.mastery.precision,
-  'A complete LAST ASCENT clear did not record precision or unlock DEAD SIGNAL.', ascentFinish);
-
-  const allNodesFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
-    shotsFired: 10,
-    shotsHit: 5,
-  }));
-  verify(allNodesFinish.progress.missions['dead-signal']?.mastery['all-nodes']
-    && allNodesFinish.progress.missions['dead-signal']?.mastery.accuracy !== true,
-  'DEAD SIGNAL all-nodes mastery was not recorded independently.', allNodesFinish);
-  const accuracyFinish = unlockStore.recordSuccessfulFinish('dead-signal', strikeResult({
-    targetsDestroyed: 3,
-    shotsFired: 4,
-    shotsHit: 3,
-  }));
-  verify(accuracyFinish.progress.missions['dead-signal']?.mastery['all-nodes']
-    && accuracyFinish.progress.missions['dead-signal']?.mastery.accuracy,
-  'DEAD SIGNAL accuracy mastery did not merge independently with all-nodes.', accuracyFinish);
-
-  const futureRaw = JSON.stringify({
-    version: 3,
-    selectedMission: 'cairn-drift',
-    missions: { 'cairn-drift': missionFacts({ cleared: true }) },
-    dormantCourses: {},
-  });
-  const future = new MemoryStorage({ [PROGRESS_KEY]: futureRaw });
-  const futureStore = new ProgressStore({
-    localStorage: future,
-    sessionStorage: new MemoryStorage({}, { failSet: true }),
-    hasLegacyCairnBest: () => false,
-  });
-  const outcome = futureStore.recordSuccessfulFinish('cairn-drift', result());
-  verify(outcome.persistence.localReadOnly
-    && !outcome.persistence.localWritten
-    && future.getItem(PROGRESS_KEY) === futureRaw
-    && future.writes === 0,
-  'A future progress schema was overwritten.', { outcome, stored: future.getItem(PROGRESS_KEY) });
-  return {
-    migrated,
-    merged,
-    finish,
-    firstFinish,
-    ascentFinish,
-    allNodesFinish,
-    accuracyFinish,
-    future: outcome.persistence,
-  };
-});
-
-await report.check({
-  id: 'MISSION.campaign-view-catalog',
-  name: 'Catalog-driven campaign projection presents all three sequential chapters',
-  assertion: 'Empty progress locks Chapters 02/03; each clear exposes only its immediate successor.',
-}, () => {
-  const empty = buildCampaignViewModel({
-    version: 2,
-    selectedMission: 'cairn-drift',
-    missions: {},
-    dormantCourses: {},
-  }, 'cairn-drift');
-  const expected = {
-    activeMissionId: 'cairn-drift',
-    nextMissionId: null,
-    newlyUnlockedMissionId: null,
-    navigationError: null,
-    missions: [
-      {
-        id: 'cairn-drift',
-        chapter: 1,
-        capabilities: [],
-        mastery: [{ id: 'precision', complete: false }],
-        state: 'available',
-        highestRank: null,
-        objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-      {
-        id: 'last-ascent',
-        chapter: 2,
-        capabilities: [],
-        mastery: [{ id: 'precision', complete: false }],
-        state: 'locked',
-        highestRank: null,
-        objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-      {
-        id: 'dead-signal',
-        chapter: 3,
-        capabilities: ['fire'],
-        mastery: [
-          { id: 'all-nodes', complete: false },
-          { id: 'accuracy', complete: false },
-        ],
-        state: 'locked',
-        highestRank: null,
-        objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-    ],
-  };
-  verify(JSON.stringify(empty) === JSON.stringify(expected),
-    'The empty campaign projection did not expose the locked three-node rail.', { empty, expected });
-
-  const afterCairn = buildCampaignViewModel({
-    version: 2,
-    selectedMission: 'cairn-drift',
-    missions: {
-      'cairn-drift': missionFacts({
-        cleared: true,
-        highestRank: 'A',
-        cleanClear: true,
-        mastery: { precision: true },
-      }),
-    },
-    dormantCourses: {},
-  }, 'cairn-drift');
-  verify(afterCairn.nextMissionId === 'last-ascent'
-    && afterCairn.missions.length === 3
-    && afterCairn.missions[0]?.state === 'cleared'
-    && afterCairn.missions[0]?.highestRank === 'A'
-    && afterCairn.missions[0]?.mastery[0]?.id === 'precision'
-    && afterCairn.missions[0]?.mastery[0]?.complete === true
-    && afterCairn.missions[0]?.objectives.firstClear
-    && afterCairn.missions[0]?.objectives.cleanClear
-    && afterCairn.missions[0]?.objectives.precision
-    && afterCairn.missions[1]?.id === 'last-ascent'
-    && afterCairn.missions[1]?.chapter === 2
-    && afterCairn.missions[1]?.state === 'available'
-    && afterCairn.missions[1]?.capabilities.length === 0
-    && afterCairn.missions[2]?.id === 'dead-signal'
-    && afterCairn.missions[2]?.state === 'locked',
-  'A CAIRN clear did not expose only LAST ASCENT.', afterCairn);
-
-  const afterAscent = buildCampaignViewModel({
-    version: 2,
-    selectedMission: 'last-ascent',
-    missions: {
-      'cairn-drift': missionFacts({ cleared: true }),
-      'last-ascent': missionFacts({ cleared: true, mastery: { precision: true } }),
-    },
-    dormantCourses: {},
-  }, 'last-ascent');
-  verify(afterAscent.nextMissionId === 'dead-signal'
-    && afterAscent.missions[1]?.state === 'cleared'
-    && afterAscent.missions[1]?.mastery[0]?.complete === true
-    && afterAscent.missions[2]?.state === 'available'
-    && afterAscent.missions[2]?.chapter === 3
-    && afterAscent.missions[2]?.capabilities[0] === 'fire'
-    && afterAscent.missions[2]?.mastery[0]?.id === 'all-nodes'
-    && afterAscent.missions[2]?.mastery[1]?.id === 'accuracy',
-  'A LAST ASCENT clear did not expose DEAD SIGNAL with independent mastery rows.', afterAscent);
-  return { empty, afterCairn, afterAscent };
-});
-
-await report.check({
-  id: 'MISSION.objective-failure-reason',
-  name: 'Objective failure reasons remain distinct from hull breach presentation',
-  assertion: 'Reason codes cross Game and Overlay into stable generic failure UI; hull failure stays reasonless.',
-}, async () => {
-  const game = await readFile(new URL('../../src/game/Game.ts', import.meta.url), 'utf8');
-  const overlay = await readFile(new URL('../../src/ui/Overlay.ts', import.meta.url), 'utf8');
-  const screens = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
-  const facts = {
-    terminalReason: game.includes('this.failObjective(terminal.reason);'),
-    objectiveReason: game.includes('this.overlay.showFailure(this.elapsed, reason);'),
-    hullReasonless: game.includes('this.overlay.showFailure(this.elapsed);'),
-    overlayThread: overlay.includes('this.screens.showFailure(elapsed, reason);'),
-    stableData: screens.includes("body.dataset['failureReason'] = reason;"),
-    genericCopy: screens.includes("? 'insufficientNodes'")
-      && screens.includes("? 'coreWindowMissed'")
-      && screens.includes("? 'blastTimeout'")
-      && screens.includes(": 'missionFailed'"),
-    hullCopy: screens.includes('m.results.hullBreach'),
-  };
-  verify(Object.values(facts).every(Boolean),
-    'The objective reason seam collapsed into hull-breach presentation.', facts);
-  return facts;
-});
-
-await report.check({
-  id: 'MISSION.generic-autopilot-buttons',
-  name: 'Generic autopilot preserves independent flight buttons only during active flight',
-  assertion: 'Nonlegacy boost/brake pass through in flight while attract phases remain neutral.',
-}, () => {
-  const facts = {
-    genericFlight: resolveAutopilotButton(undefined, true, true),
-    genericAttract: resolveAutopilotButton(undefined, true, false),
-    legacyTrue: resolveAutopilotButton(true, false, false),
-    legacyFalse: resolveAutopilotButton(false, true, true),
-  };
-  verify(facts.genericFlight === true
-    && facts.genericAttract === false
-    && facts.legacyTrue === true
-    && facts.legacyFalse === false,
-    'Generic autopilot buttons were dropped or leaked into attract flight.', facts);
-  return facts;
-});
-
-await report.check({
-  id: 'MISSION.runtime-boundaries',
-  name: 'GateRaceObjective and MissionRuntime own bounded objective/world lifecycles',
-  assertion: 'Objective state has no UI/storage dependency and runtime disposes one objective/world.',
-}, () => {
-  const course = new Course(
-    CAIRN_DRIFT,
-    CAIRN_DRIFT.defaultSeed,
-    createLightingUniforms(new THREE.Vector3(...CAIRN_DRIFT.world.sunDirection)),
-  );
-  const objective = new GateRaceObjective(
-    course,
-    CAIRN_DRIFT.destination.apertureRadius * 2.4,
-    CAIRN_MISSION,
-  );
-  const calls = { reset: 0, update: 0, dispose: 0 };
-  const world = {
-    contacts: [],
-    contactCapacity: 0,
-    targetables: [],
-    reset: () => { calls.reset += 1; },
-    updateSimulation: () => { calls.update += 1; },
-    updatePresentation: () => {},
-    applyQuality: () => {},
-    dispose: () => { calls.dispose += 1; },
-  };
-  const runtime = new MissionRuntime({ definition: CAIRN_MISSION, path: course.path, world, objective });
-  runtime.reset();
-  const guidance = objective.guidance(course.startPosition);
-  const telemetry = objective.telemetry();
-  const rewardEvents = [];
-  verify(guidance.current === 0
-    && guidance.total === 9
-    && telemetry.kind === 'gate-race'
-    && telemetry.gatesTotal === 9
-    && runtime.path === course.path
-    && objective.drainRewardEvents(rewardEvents) === 0
-    && rewardEvents.length === 0
-    && calls.reset === 1,
-  'Mission runtime did not expose the current objective/path boundary.', { guidance, telemetry, calls });
-  runtime.dispose();
-  verify(calls.dispose === 1, 'Mission runtime did not dispose its world exactly once.', calls);
-  return { guidance: { ...guidance, anchor: [...guidance.anchor] }, telemetry, calls };
-});
-
-await report.check({
-  id: 'MISSION.extension-events',
-  name: 'Reward and optional weapon events preserve bounded terminal ordering',
-  assertion: 'Surviving frames run weapon before objective and drain reusable events; lethal frames do neither.',
-}, () => {
-  const definition = {
-    ...CAIRN_MISSION,
-    capabilities: ['fire'],
-  };
-  const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
-  const contacts = [];
-  const targetables = [{ id: 'target:stable' }];
-  const order = [];
-  const calls = {
-    worldReset: 0,
-    worldUpdate: 0,
-    worldDispose: 0,
-    weaponReset: 0,
-    weaponUpdate: 0,
-    weaponEventDrain: 0,
-    weaponRewardDrain: 0,
-    weaponDispose: 0,
-    objectiveReset: 0,
-    objectiveUpdate: 0,
-    objectiveRewardDrain: 0,
-    objectiveDispose: 0,
-    impacts: 0,
-  };
-  const weaponReward = Object.freeze({
-    kind: 'boost-recharge',
-    amount: 10,
-    sourceId: 'shield-node-a',
-  });
-  const objectiveReward = Object.freeze({
-    kind: 'boost-recharge',
-    amount: 999,
-    sourceIndex: 2,
-  });
-  const invalidReward = Object.freeze({
-    kind: 'boost-recharge',
-    amount: Number.NaN,
-    sourceId: 'invalid-proof',
-  });
-  const weaponEvent = Object.freeze({
-    type: 'hit',
-    intensity: 0.75,
-    sourceId: 'shield-node-a',
-  });
-  let weaponRewardQueued = false;
-  let weaponEventQueued = false;
-  let objectiveRewardsQueued = false;
-  let weaponFrame = null;
-
-  const world = {
-    contacts,
-    contactCapacity: 1,
-    targetables,
-    reset: () => { calls.worldReset += 1; },
-    updateSimulation: () => {
-      calls.worldUpdate += 1;
-      order.push('world');
-    },
-    updatePresentation: () => {},
-    applyQuality: () => {},
-    dispose: () => { calls.worldDispose += 1; },
-  };
-  const weapon = {
-    reset: () => {
-      calls.weaponReset += 1;
-      weaponRewardQueued = false;
-      weaponEventQueued = false;
-    },
-    update: (frame) => {
-      calls.weaponUpdate += 1;
-      order.push('weapon');
-      weaponFrame = frame;
-      weaponRewardQueued = frame.fire;
-      weaponEventQueued = frame.fire;
-    },
-    drainEvents: (out) => {
-      calls.weaponEventDrain += 1;
-      if (!weaponEventQueued) return 0;
-      weaponEventQueued = false;
-      out.push(weaponEvent);
-      return 1;
-    },
-    drainRewardEvents: (out) => {
-      calls.weaponRewardDrain += 1;
-      if (!weaponRewardQueued) return 0;
-      weaponRewardQueued = false;
-      out.push(weaponReward);
-      return 1;
-    },
-    dispose: () => { calls.weaponDispose += 1; },
-  };
-  const objective = {
     kind: 'gate-race',
-    reset: () => {
-      calls.objectiveReset += 1;
-      objectiveRewardsQueued = false;
-    },
-    update: () => {
-      calls.objectiveUpdate += 1;
-      order.push('objective');
-      objectiveRewardsQueued = true;
-      return { status: 'failed', reason: 'mock-window-expired' };
-    },
-    drainRewardEvents: (out) => {
-      calls.objectiveRewardDrain += 1;
-      if (!objectiveRewardsQueued) return 0;
-      objectiveRewardsQueued = false;
-      out.push(objectiveReward, invalidReward);
-      return 2;
-    },
-    guidance: () => ({
-      label: 'MOCK',
-      anchor: path.terminusPosition,
-      distance: 0,
-      progress: 0,
-      current: 0,
-      total: 1,
-    }),
-    telemetry: () => ({
-      kind: 'gate-race',
-      gatesCleared: 0,
-      gatesTotal: 1,
-      misses: 0,
-      complete: false,
-    }),
-    bestRunSplits: () => [],
-    buildResult: () => result(),
-    dispose: () => { calls.objectiveDispose += 1; },
+    missionId: 'cairn-drift',
+    rulesetVersion: CAIRN_MISSION.rulesetVersion,
+    totalTime: 80,
+    hullRemaining: 1,
+    objectiveSummary: '9 / 9',
+    topSpeed: 900,
+    cleanRun: true,
+    rank: 'A',
+    destinationName: 'VESPER TERMINUS',
+    newlyUnlockedMissionId: null,
+    splits: [],
+    bestTime: null,
+    bestSplits: [],
+    isNewBest: true,
+    gatesCleared: 9,
+    gatesTotal: 9,
+    maxGateOffset: 0.2,
   };
-  const runtime = new MissionRuntime({ definition, path, world, objective, weapon });
-  runtime.reset();
+}
 
-  const body = {
-    position: new THREE.Vector3(),
-    radius: 1,
-    speed: 900,
-    hull: 1,
-    applyImpact: () => {
-      calls.impacts += 1;
-      body.hull = 0;
-      return 1;
-    },
+function collectionResult() {
+  return {
+    kind: 'collection',
+    missionId: 'relay-harvest',
+    rulesetVersion: 1,
+    totalTime: 58,
+    hullRemaining: 0.92,
+    objectiveSummary: '3 / 3 CORES',
+    topSpeed: 980,
+    cleanRun: true,
+    rank: 'A',
+    destinationName: 'BLACKOUT RELAY',
+    newlyUnlockedMissionId: null,
+    bestTime: null,
+    isNewBest: true,
+    collected: 3,
+    required: 3,
+    activeTotal: 5,
+    charge: 60,
+    chargeRequired: 60,
   };
-  const forward = new THREE.Vector3(0, 0, -1);
-  const live = runtime.simulate({
-    dt: 1 / 60,
-    elapsed: 4,
-    body,
-    forward,
-    fire: true,
-    proximityRange: 40,
-    resolveContacts: true,
-    resolveObjective: true,
-  });
-  const rewardEvents = [];
-  const weaponEvents = [];
-  const recharges = [];
-  consumeMissionFrameEvents(runtime, live, {
-    rechargeBoost: (amount) => {
-      recharges.push(amount);
-      return { before: 0, after: amount / 100 };
-    },
-  }, rewardEvents, weaponEvents);
+}
 
-  verify(JSON.stringify(order) === JSON.stringify(['world', 'weapon', 'objective'])
-    && live.hullFailed === false
-    && live.terminal?.status === 'failed'
-    && live.terminal.reason === 'mock-window-expired'
-    && weaponFrame?.position !== body.position
-    && weaponFrame?.position.equals(body.position)
-    && weaponFrame?.forward !== forward
-    && weaponFrame?.forward.equals(forward)
-    && weaponFrame?.targetables === targetables
-    && weaponFrame?.fire === true
-    && rewardEvents[0] === weaponReward
-    && rewardEvents[1] === objectiveReward
-    && rewardEvents[2] === invalidReward
-    && weaponEvents[0] === weaponEvent
-    && JSON.stringify(recharges) === JSON.stringify([10, 100]),
-  'The surviving-frame extension order, identities, or reward validation changed.', {
-    order,
-    live,
-    weaponFrame,
-    rewardEvents,
-    weaponEvents,
-    recharges,
-  });
-
-  contacts.push({
-    id: 'lethal-contact',
-    kind: 'hazard',
-    position: new THREE.Vector3(1.5, 0, 0),
-    radius: 1,
-  });
-  body.hull = 0.1;
-  order.length = 0;
-  rewardEvents.length = 0;
-  weaponEvents.length = 0;
-  const lethal = runtime.simulate({
-    dt: 1 / 60,
-    elapsed: 5,
-    body,
-    forward,
-    fire: true,
-    proximityRange: 40,
-    resolveContacts: true,
-    resolveObjective: true,
-  });
-  consumeMissionFrameEvents(runtime, lethal, {
-    rechargeBoost: (amount) => {
-      recharges.push(amount);
-      return { before: 0, after: amount / 100 };
-    },
-  }, rewardEvents, weaponEvents);
-  verify(lethal.hullFailed
-    && lethal.terminal === null
-    && JSON.stringify(order) === JSON.stringify(['world'])
-    && calls.impacts === 1
-    && calls.weaponUpdate === 1
-    && calls.objectiveUpdate === 1
-    && calls.weaponEventDrain === 1
-    && calls.weaponRewardDrain === 1
-    && calls.objectiveRewardDrain === 1
-    && recharges.length === 2
-    && rewardEvents.length === 0
-    && weaponEvents.length === 0,
-  'A lethal frame updated/drained the weapon or objective or applied a queued reward.', {
-    lethal,
-    order,
-    calls,
-    recharges,
-  });
-
-  runtime.dispose();
-  verify(calls.worldReset === 1
-    && calls.weaponReset === 1
-    && calls.objectiveReset === 1
-    && calls.weaponDispose === 1
-    && calls.objectiveDispose === 1
-    && calls.worldDispose === 1,
-  'MissionRuntime did not reset/dispose its optional weapon exactly once.', calls);
-  return { live, lethal, order: ['world', 'weapon', 'objective'], calls, recharges };
+await check('CAMPAIGN.catalog-contract', () => {
+  assert.deepEqual([...ACTIVE_MISSION_ORDER], ['cairn-drift', 'relay-harvest']);
+  assert.equal(isMissionId('last-ascent'), false);
+  assert.equal(isMissionId('dead-signal'), false);
+  assert.equal(getNextMission('cairn-drift'), 'relay-harvest');
+  assert.equal(getNextMission('relay-harvest'), null);
+  const relay = getMissionDefinition('relay-harvest');
+  assert.equal(relay.chapter, 2);
+  assert.equal(relay.objective.kind, 'collection');
+  assert.equal(relay.objective.activeSources, 5);
+  assert.equal(relay.objective.requiredSources, 3);
+  assert.deepEqual(relay.capabilities, []);
+  return { order: ACTIVE_MISSION_ORDER, objective: relay.objective };
 });
 
-await report.check({
-  id: 'MISSION.objective-neutral-factory',
-  name: 'The Game-facing seam runs one escape/strike world through common contacts',
-  assertion: 'One selected world constructs/adds/disposes; lethal contact wins before objective success.',
-}, () => {
-  const observations = [];
-  for (const kind of ['escape', 'strike']) {
-    const definition = {
-      ...CAIRN_MISSION,
-      objective: kind === 'escape'
-        ? {
-          kind,
-          path: CAIRN_DRIFT.geometry,
-          shockwave: { speed: 1, startProgress: 0, catchProgress: 1 },
-        }
-        : {
-          kind,
-          path: CAIRN_DRIFT.geometry,
-          targets: [],
-          extraction: { startProgress: 0, timeoutSeconds: 1 },
-        },
-    };
-    const calls = {
-      factory: 0,
-      worldConstructed: 0,
-      worldReset: 0,
-      worldUpdate: 0,
-      mainAdds: 0,
-      farAdds: 0,
-      objectiveReset: 0,
-      objectiveUpdate: 0,
-      bodyImpact: 0,
-      contactFeedback: 0,
-      objectiveDispose: 0,
-      worldDispose: 0,
-    };
-    const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
-    const objective = {
-      kind,
-      reset: () => { calls.objectiveReset += 1; },
-      update: () => {
-        calls.objectiveUpdate += 1;
-        return { status: 'succeeded' };
-      },
-      guidance: (position) => ({
-        label: 'MOCK OBJECTIVE',
-        anchor: path.terminusPosition,
-        distance: position.distanceTo(path.terminusPosition),
-        progress: 0,
-        current: 0,
-        total: 1,
-      }),
-      telemetry: () => kind === 'escape'
-        ? {
-          kind,
-          pathProgress: 0,
-          shockwaveProgress: 0,
-          checkpoint: 0,
-          checkpointTotal: 1,
-        }
-        : {
-          kind,
-          targetsDestroyed: 0,
-          targetsRequired: 0,
-          coreDestroyed: false,
-          extracting: false,
-        },
-      bestRunSplits: () => [],
-      drainRewardEvents: () => 0,
-      buildResult: (input) => ({
-        kind,
-        missionId: definition.id,
-        rulesetVersion: definition.rulesetVersion,
-        totalTime: input.totalTime,
-        hullRemaining: input.hullRemaining,
-        objectiveSummary: 'MOCK COMPLETE',
-        topSpeed: input.topSpeed,
-        cleanRun: input.cleanRun,
-        rank: 'A',
-        destinationName: 'MOCK EXTRACTION',
-        newlyUnlockedMissionId: null,
-        ...(kind === 'escape'
-          ? { checkpointsCleared: 1, checkpointsTotal: 1, secondsAhead: 1 }
-          : {
-            targetsDestroyed: 0,
-            targetsRequired: 0,
-            shotsFired: 0,
-            shotsHit: 0,
-            coreDestroyed: true,
-          }),
-      }),
-      dispose: () => { calls.objectiveDispose += 1; },
-    };
-    const mainScene = {
-      add: () => { calls.mainAdds += 1; },
-    };
-    const farScene = {
-      add: () => { calls.farAdds += 1; },
-    };
-    const runtime = createGameMissionRuntime({
-      definition,
-      seed: CAIRN_DRIFT.defaultSeed,
-      renderer: {},
-      mainScene,
-      farScene,
-      lighting: {},
-      initialQuality: {},
-      maximumQuality: {},
-    }, (context) => {
-      calls.factory += 1;
-      calls.worldConstructed += 1;
-      context.mainScene.add({ kind });
-      const world = {
-        contacts: [{
-          id: `${kind}:contact`,
-          kind: 'hazard',
-          position: new THREE.Vector3(1.5, 0, 0),
-          radius: 1,
-        }],
-        contactCapacity: 1,
-        targetables: [],
-        reset: () => { calls.worldReset += 1; },
-        updateSimulation: () => { calls.worldUpdate += 1; },
-        updatePresentation: () => {},
-        applyQuality: () => {},
-        dispose: () => { calls.worldDispose += 1; },
-      };
-      return new MissionRuntime({ definition, path, world, objective });
-    });
-    runtime.reset();
-    const body = {
-      position: new THREE.Vector3(0, 0, 0),
-      radius: 1,
-      speed: 900,
-      hull: 0.1,
-      applyImpact: () => {
-        calls.bodyImpact += 1;
-        body.hull = 0;
-        return 1;
-      },
-    };
-    const simulation = runtime.simulate({
-      dt: 1 / 60,
-      elapsed: 12,
-      body,
-      forward: new THREE.Vector3(0, 0, -1),
-      fire: false,
-      proximityRange: 40,
-      resolveContacts: true,
-      resolveObjective: true,
-      onContact: () => { calls.contactFeedback += 1; },
-    });
-    const built = runtime.buildResult({
-      totalTime: 12,
-      hullRemaining: 0.75,
-      topSpeed: 900,
-      cleanRun: true,
-      bestTime: null,
-      bestSplits: [],
-      isNewBest: true,
-      cruiseSpeed: 720,
-    });
-    verify(runtime.objective.kind === kind
-      && built.kind === kind
-      && runtime.recordId(CAIRN_DRIFT.defaultSeed) === missionRecordId(definition, CAIRN_DRIFT.defaultSeed)
-      && runtime.bestRunSplits().length === 0
-      && calls.factory === 1
-      && calls.worldConstructed === 1
-      && calls.mainAdds === 1
-      && calls.farAdds === 0
-      && calls.worldReset === 1
-      && calls.objectiveReset === 1
-      && calls.worldUpdate === 1
-      && calls.bodyImpact === 1
-      && calls.contactFeedback === 1
-      && body.hull === 0
-      && simulation.hullFailed
-      && simulation.terminal === null
-      && simulation.proximity > 0
-      && calls.objectiveUpdate === 0,
-    `The ${kind} mock did not cross the common Game world/contact boundary.`, {
-      built,
-      simulation,
-      calls,
-    });
-    runtime.dispose();
-    verify(calls.objectiveDispose === 1 && calls.worldDispose === 1,
-      `The ${kind} mock runtime did not dispose one objective and one world.`, calls);
-    observations.push({
-      kind,
-      resultKind: built.kind,
-      recordId: runtime.recordId(CAIRN_DRIFT.defaultSeed),
-      simulation,
-      calls,
-    });
-  }
-  return observations;
+await check('CAMPAIGN.route-resolution', () => {
+  const locked = new ProgressStore({ localStorage: null, sessionStorage: null, hasLegacyCairnBest: () => false });
+  assert.equal(resolveMissionSelection({ mission: 'relay-harvest', legacyCourse: null }, locked.snapshot()).missionId, 'cairn-drift');
+  assert.equal(resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, locked.snapshot()).missionId, 'cairn-drift');
+  locked.recordSuccessfulFinish('cairn-drift', gateResult());
+  assert.equal(resolveMissionSelection({ mission: 'relay-harvest', legacyCourse: null }, locked.snapshot()).missionId, 'relay-harvest');
+  const built = new URL(buildMissionUrl(
+    'http://localhost/?mission=relay-harvest&layout=4&seed=7&course=ringfall#x',
+    'cairn-drift',
+  ));
+  assert.equal(built.searchParams.get('mission'), 'cairn-drift');
+  assert.equal(built.searchParams.has('layout'), false);
+  assert.equal(built.searchParams.has('seed'), false);
+  assert.equal(built.searchParams.has('course'), false);
+  assert.equal(built.hash, '#x');
+  return { canonical: built.href };
 });
 
-await report.write();
-process.stdout.write(`${report.status}: ${report.reportPath}\n`);
-process.exitCode = report.status === 'PASS' ? 0 : 1;
+await check('CAMPAIGN.progress-merge', () => {
+  const local = new MemoryStorage();
+  const session = new MemoryStorage();
+  const store = new ProgressStore({ localStorage: local, sessionStorage: session, hasLegacyCairnBest: () => false, now: () => 10 });
+  const first = store.recordSuccessfulFinish('cairn-drift', gateResult());
+  assert.equal(first.firstClear, true);
+  assert.equal(first.newlyUnlocked, 'relay-harvest');
+  const second = store.recordSuccessfulFinish('relay-harvest', collectionResult());
+  assert.equal(second.firstClear, true);
+  assert.equal(second.newlyUnlocked, null);
+  assert.equal(second.progress.missions['relay-harvest']?.cleared, true);
+  assert.equal(second.progress.missions['relay-harvest']?.cleanClear, true);
+  return { progress: second.progress };
+});
+
+await check('CAMPAIGN.progress-persistence', () => {
+  const local = new MemoryStorage();
+  const first = new ProgressStore({ localStorage: local, sessionStorage: null, hasLegacyCairnBest: () => false });
+  first.recordSuccessfulFinish('cairn-drift', gateResult());
+  assert.equal(first.selectMission('relay-harvest').accepted, true);
+  const reloaded = new ProgressStore({ localStorage: local, sessionStorage: null, hasLegacyCairnBest: () => false });
+  assert.equal(reloaded.snapshot().selectedMission, 'relay-harvest');
+  const seed = 1337;
+  const layoutIndex = selectRelayHarvestLayoutIndex(seed);
+  const nextIndex = nextRelayHarvestLayoutIndex(layoutIndex, seed);
+  assert.notEqual(nextIndex, layoutIndex);
+  const objective = new RelayHarvestObjective(new RelayHarvestState(getRelayHarvestLayout(layoutIndex)));
+  const recordId = objective.recordId(missionRecordId(getMissionDefinition('relay-harvest'), seed));
+  assert.match(recordId, /^relay-harvest-r1-1337-layout-rh1-/u);
+  return { selected: reloaded.snapshot().selectedMission, layoutIndex, nextIndex, recordId };
+});
+
+const status = checks.every((entry) => entry.status === 'PASS') ? 'PASS' : 'FAIL';
+const outDir = resolve('playtest-out/campaign-contract');
+await mkdir(outDir, { recursive: true });
+const report = {
+  schemaVersion: 1,
+  suite: 'campaign-contract',
+  status,
+  durationMs: Date.now() - started,
+  summary: { passed: checks.filter((entry) => entry.status === 'PASS').length, total: checks.length },
+  checks,
+};
+const reportPath = resolve(outDir, 'report.json');
+await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+process.stdout.write(`${status}: ${reportPath}\n`);
+process.exitCode = status === 'PASS' ? 0 : 1;

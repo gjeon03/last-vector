@@ -32,6 +32,8 @@ const DYNAMIC_ARITIES = new Map([
   ['hud.meterPercent', 1],
   ['hud.boostUsable', 1],
   ['hud.boostRecharging', 1],
+  ['hud.coreProgress', 2],
+  ['hud.chargeProgress', 2],
   ['results.splitDelta', 1],
   ['results.bestComparison', 2],
   ['events.hullContact', 1],
@@ -42,10 +44,10 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.cairn-drift.gateClearedLog', 2],
   ['campaign.routes.cairn-drift.gateMissedLog', 1],
   ['campaign.routes.cairn-drift.gateShearBlockedLog', 1],
-  ['campaign.routes.last-ascent.gateProgress', 1],
-  ['campaign.routes.last-ascent.gateClearedLog', 2],
-  ['campaign.routes.last-ascent.gateMissedLog', 1],
-  ['campaign.routes.last-ascent.gateShearBlockedLog', 1],
+  ['campaign.routes.relay-harvest.gateProgress', 1],
+  ['campaign.routes.relay-harvest.gateClearedLog', 2],
+  ['campaign.routes.relay-harvest.gateMissedLog', 1],
+  ['campaign.routes.relay-harvest.gateShearBlockedLog', 1],
   ['campaign.routes.needle-grave.gateProgress', 1],
   ['campaign.routes.needle-grave.gateClearedLog', 2],
   ['campaign.routes.needle-grave.gateMissedLog', 1],
@@ -58,10 +60,6 @@ const DYNAMIC_ARITIES = new Map([
   ['campaign.routes.ringfall.gateClearedLog', 2],
   ['campaign.routes.ringfall.gateMissedLog', 1],
   ['campaign.routes.ringfall.gateShearBlockedLog', 1],
-  ['campaign.routes.dead-signal.gateProgress', 1],
-  ['campaign.routes.dead-signal.gateClearedLog', 2],
-  ['campaign.routes.dead-signal.gateMissedLog', 1],
-  ['campaign.routes.dead-signal.gateShearBlockedLog', 1],
 ]);
 
 const options = parseOptions('i18n-contract', process.argv.slice(2));
@@ -290,12 +288,12 @@ await report.check(
       enCairnClear: en.campaign.routes['cairn-drift'].gateClearedLog(7, 12.34),
       koCairnMiss: ko.campaign.routes['cairn-drift'].gateMissedLog(7),
       enCairnMiss: en.campaign.routes['cairn-drift'].gateMissedLog(7),
-      koAscentProgress: ko.campaign.routes['last-ascent'].gateProgress(2),
-      enAscentProgress: en.campaign.routes['last-ascent'].gateProgress(2),
-      koAscentClear: ko.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
-      enAscentClear: en.campaign.routes['last-ascent'].gateClearedLog(3, 66.93),
-      koAscentRadio: ko.campaign.routes['last-ascent'].radio3,
-      enAscentRadio: en.campaign.routes['last-ascent'].radio3,
+      koRelayProgress: ko.campaign.routes['relay-harvest'].gateProgress(2),
+      enRelayProgress: en.campaign.routes['relay-harvest'].gateProgress(2),
+      koRelayClear: ko.campaign.routes['relay-harvest'].gateClearedLog(3, 66.93),
+      enRelayClear: en.campaign.routes['relay-harvest'].gateClearedLog(3, 66.93),
+      koRelayRadio: ko.campaign.routes['relay-harvest'].radio3,
+      enRelayRadio: en.campaign.routes['relay-harvest'].radio3,
       koNeedleProgress: ko.campaign.routes['needle-grave'].gateProgress(2),
       enNeedleProgress: en.campaign.routes['needle-grave'].gateProgress(2),
       koNeedleClear: ko.campaign.routes['needle-grave'].gateClearedLog(4, 9.87),
@@ -314,10 +312,6 @@ await report.check(
       enRingProgress: en.campaign.routes.ringfall.gateProgress(2),
       koRingRadio: ko.campaign.routes.ringfall.radio3,
       enRingRadio: en.campaign.routes.ringfall.radio3,
-      koDeadSignalProgress: ko.campaign.routes['dead-signal'].gateProgress(2),
-      enDeadSignalProgress: en.campaign.routes['dead-signal'].gateProgress(2),
-      koDeadSignalRadio: ko.campaign.routes['dead-signal'].radio1,
-      enDeadSignalRadio: en.campaign.routes['dead-signal'].radio1,
     };
     const expectedCampaignRouteFixtures = {
       koCairnProgress: '2 CAIRNS REMAINING',
@@ -326,12 +320,12 @@ await report.check(
       enCairnClear: 'cairn 07 · 12.34s',
       koCairnMiss: 'cairn 07 missed',
       enCairnMiss: 'cairn 07 missed',
-      koAscentProgress: 'SAFE CORRIDOR 2 REMAINING',
-      enAscentProgress: '2 SAFE CORRIDORS REMAINING',
-      koAscentClear: 'safe corridor 03 · 66.93s',
-      enAscentClear: 'safe corridor 03 · 66.93s',
-      koAscentRadio: '두 번째 잔해선 통과. 충격파가 대기권을 넘었다. 거리를 계속 벌려.',
-      enAscentRadio: 'Second line clear. The front has crossed the atmosphere; keep building separation.',
+      koRelayProgress: '2 CORES REQUIRED',
+      enRelayProgress: '2 CORES REQUIRED',
+      koRelayClear: 'core 03 · 66.93s',
+      enRelayClear: 'core 03 · 66.93s',
+      koRelayRadio: 'CORE 두 개 확보. 하나만 더 회수하면 RELAY가 VECTOR를 유지할 수 있다.',
+      enRelayRadio: 'Two cores aboard. One more and the relay can carry the VECTOR.',
       koNeedleProgress: '2 NEEDLES REMAINING',
       enNeedleProgress: '2 NEEDLES REMAINING',
       koNeedleClear: 'needle 04 · 9.87s',
@@ -350,10 +344,6 @@ await report.check(
       enRingProgress: '2 MARKERS REMAINING',
       koRingRadio: 'ORISON이 응답한다. 배열을 깨워라.',
       enRingRadio: 'ORISON is answering. Wake the array.',
-      koDeadSignalProgress: '2 SHIELD NODES REQUIRED',
-      enDeadSignalProgress: '2 SHIELD NODES REQUIRED',
-      koDeadSignalRadio: 'Kestrel, 저것이 조준 배열이다. 차폐선을 끊고 신호를 제거하라.',
-      enDeadSignalRadio: 'Kestrel, that is the targeting array. Break its shield line and kill the signal.',
     };
     verify(JSON.stringify(campaignRouteFixtures) === JSON.stringify(expectedCampaignRouteFixtures),
       'Route-specific campaign functions or radio copy differ from the canonical fixtures.', {
@@ -372,9 +362,9 @@ await report.check(
 await report.check(
   {
     id: 'I18N.chapter-stage-rail',
-    name: 'The active campaign presents CAIRN, LAST ASCENT, then DEAD SIGNAL',
+    name: 'The active campaign presents CAIRN then BLACKOUT RELAY',
     assertion:
-      'Three active missions share one catalog rail, dormant route copy remains recognized, and '
+      'Two active missions share one catalog rail, dormant route copy remains recognized, and '
       + 'Korean narrative/English chrome remain explicit.',
   },
   async () => {
@@ -384,11 +374,10 @@ await report.check(
     const missionsSource = await readFile(new URL('../../src/core/Missions.ts', import.meta.url), 'utf8');
     const recognizedIds = [
       'cairn-drift',
-      'last-ascent',
+      'relay-harvest',
       'needle-grave',
       'wreckline',
       'ringfall',
-      'dead-signal',
     ];
     verify(JSON.stringify(Object.keys(ko.campaign.routes)) === JSON.stringify(recognizedIds),
       'Korean campaign catalog does not use the canonical recognized stage IDs.', {
@@ -403,8 +392,8 @@ await report.check(
     const railEnd = screensSource.indexOf('/* ------------------------------------------------------------------- title */', railStart);
     const railSource = screensSource.slice(railStart, railEnd);
     verify(railStart >= 0 && railEnd > railStart, 'Screens does not define the chapter heading.');
-    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift',\s*'last-ascent',\s*'dead-signal',?\s*\]/u.test(missionsSource),
-      'The player-facing order is not CAIRN, LAST ASCENT, then DEAD SIGNAL.', { missionsSource });
+    verify(/ACTIVE_MISSION_ORDER\s*=\s*\[\s*'cairn-drift',\s*'relay-harvest',?\s*\]/u.test(missionsSource),
+      'The player-facing order is not CAIRN then BLACKOUT RELAY.', { missionsSource });
     verify(railSource.includes('CHAPTER_STAGE_IDS'),
       'The title rail is not driven by the active mission catalog.', { railSource });
     verify(/if \(Number\(CHAPTER_STAGE_IDS\.length\) === 1\) return section;/u.test(railSource),
@@ -412,9 +401,10 @@ await report.check(
     verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
       'Result mission selection is not guarded behind a multi-chapter catalog.');
     verify(screensSource.includes("'run-again'")
+      && screensSource.includes("'new-layout'")
       && screensSource.includes("'stage-select'")
       && screensSource.includes("'return'"),
-    'The campaign result path omits RUN AGAIN, CHAPTER SELECT, or RETURN.');
+    'The campaign result path omits RUN AGAIN, NEW LAYOUT, CHAPTER SELECT, or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
       'Mission mastery treats a non-S recorded rank as complete.');
 
@@ -435,7 +425,7 @@ await report.check(
           en: en.campaign[key],
         });
     }
-    for (const id of ['last-ascent', 'wreckline', 'ringfall', 'dead-signal']) {
+    for (const id of ['relay-harvest', 'wreckline', 'ringfall']) {
       const korean = ko.campaign.routes[id];
       const english = en.campaign.routes[id];
       verify(/[가-힣]/u.test(korean.tagline + korean.briefingLine1 + korean.radio1),
@@ -448,21 +438,17 @@ await report.check(
     verify(/[가-힣]/u.test(ko.a11y.stageSelection + ko.a11y.stageLocked + ko.a11y.stageSelected),
       'Korean stage accessibility copy is not Korean.');
     const lockPrerequisites = {
-      enLastAscent: en.campaign.routes['last-ascent'].lockReason,
-      koLastAscent: ko.campaign.routes['last-ascent'].lockReason,
-      enDeadSignal: en.campaign.routes['dead-signal'].lockReason,
-      koDeadSignal: ko.campaign.routes['dead-signal'].lockReason,
+      enRelay: en.campaign.routes['relay-harvest'].lockReason,
+      koRelay: ko.campaign.routes['relay-harvest'].lockReason,
     };
-    verify(lockPrerequisites.enLastAscent.includes('CAIRN DRIFT')
-      && lockPrerequisites.koLastAscent.includes('CAIRN DRIFT')
-      && lockPrerequisites.enDeadSignal.includes('LAST ASCENT')
-      && lockPrerequisites.koDeadSignal.includes('LAST ASCENT'),
+    verify(lockPrerequisites.enRelay.includes('CAIRN DRIFT')
+      && lockPrerequisites.koRelay.includes('CAIRN DRIFT'),
     'A campaign lock names the wrong prerequisite mission.', lockPrerequisites);
 
     return {
       recognizedIds,
-      activeMissionIds: ['cairn-drift', 'last-ascent', 'dead-signal'],
-      stableCampaignActions: ['run-again', 'stage-select', 'return'],
+      activeMissionIds: ['cairn-drift', 'relay-harvest'],
+      stableCampaignActions: ['run-again', 'new-layout', 'stage-select', 'return'],
       lockPrerequisites,
       hybridChrome,
     };
@@ -628,6 +614,7 @@ await report.check(
       'results.arrivalConfirmed': 'ARRIVAL CONFIRMED',
       'results.newRecord': 'NEW BEST',
       'results.runAgain': 'RUN AGAIN',
+      'results.newLayout': 'NEW LAYOUT',
       'results.returnToTitle': 'RETURN',
       'results.missionFailed': 'MISSION FAILED',
       'results.hullBreach': 'HULL BREACH',
@@ -749,6 +736,7 @@ const descriptors = [
   { type: 'callout-title.engage' },
   { type: 'callout-title.hull-impact' },
   { type: 'callout-title.boost-depleted' },
+  { type: 'callout-title.core-acquired', core: 2 },
   { type: 'callout-title.gate-cleared', accuracy: 'dead-centre' },
   { type: 'callout-title.gate-cleared', accuracy: 'clean' },
   { type: 'callout-title.gate-cleared', accuracy: 'cleared' },
@@ -758,6 +746,7 @@ const descriptors = [
   { type: 'callout-sub.camera-active', mode: 'cockpit' },
   { type: 'callout-sub.camera-active', mode: 'chase' },
   { type: 'callout-sub.boost-recharging' },
+  { type: 'callout-sub.relay-charge', charge: 40, required: 60 },
   { type: 'callout-sub.gate-progress', remaining: 2 },
   { type: 'callout-sub.gate-progress', remaining: 1 },
   { type: 'callout-sub.gate-progress', remaining: 0 },
@@ -766,6 +755,7 @@ const descriptors = [
   { type: 'log.pointer-lock-refused', reason: '<img src=x onerror=globalThis.__LV_INJECTED=1>' },
   { type: 'log.hull-contact', percent: 37 },
   { type: 'log.boost-depleted' },
+  { type: 'log.core-acquired', core: 2, seconds: 12.34 },
   { type: 'log.gate-cleared', gate: 7, seconds: 12.34 },
   { type: 'log.gate-missed', gate: 7 },
   { type: 'log.gate-missed', gate: 3, courseId: 'needle-grave', blockedBy: 'shear' },
@@ -827,6 +817,9 @@ await report.check(
       [{ type: 'callout-title.boost-depleted' }, 'DRIVE DRY'],
       [{ type: 'callout-sub.boost-recharging' }, 'RESERVE RECHARGING'],
       [{ type: 'log.boost-depleted' }, 'overdrive reserve depleted'],
+      [{ type: 'callout-title.core-acquired', core: 2 }, 'CORE 02 ACQUIRED'],
+      [{ type: 'callout-sub.relay-charge', charge: 40, required: 60 }, 'RELAY CHARGE 40/60'],
+      [{ type: 'log.core-acquired', core: 2, seconds: 12.34 }, 'core 02 \u00B7 12.34s'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'dead-centre' }, 'DEAD CENTRE'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'clean' }, 'CLEAN'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'cleared' }, 'CLEARED'],

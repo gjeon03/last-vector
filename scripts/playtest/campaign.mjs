@@ -1,8 +1,8 @@
 import {
   callHarness,
-  reloadHarness,
   runManagedSuite,
   verify,
+  waitForHarness,
 } from './runtime.mjs';
 
 const REQUIRED_METHODS = [
@@ -10,8 +10,6 @@ const REQUIRED_METHODS = [
   'course',
   'catalog',
   'progress',
-  'routeUrl',
-  'telemetry',
   'startRun',
   'setDriven',
   'setAutopilot',
@@ -34,121 +32,96 @@ await runManagedSuite({
   suite: 'campaign',
   argv: process.argv.slice(2),
   requiredMethods: REQUIRED_METHODS,
-  execute: runMissionProof,
+  execute: runCampaignProof,
 });
 
-async function runMissionProof({ report, session, options }) {
+async function runCampaignProof({ report, session, options }) {
   const page = session.page;
-  const cairnResultActions = [];
 
   await report.check({
-    id: 'MISSION.three-chapter-title',
-    name: 'A fresh title exposes the three-node sequential campaign rail',
-    assertion: 'Catalog/progress/URL use mission v2 while later chapters begin locked.',
+    id: 'MISSION.two-chapter-title',
+    name: 'The shipped title contains exactly the approved two chapters',
+    assertion: 'CAIRN is available, BLACKOUT RELAY is locked, and rejected missions never enter the live catalog or DOM.',
   }, async () => {
     await callHarness(page, 'ready', [], options.timeoutMs);
     await page.setViewportSize({ width: 1920, height: 1080 });
-    await callHarness(page, 'setSettings', [FAST_SETTINGS]);
-    await callHarness(page, 'setDriven', [true]);
     const course = await callHarness(page, 'course');
     const catalog = await callHarness(page, 'catalog');
     const progress = await callHarness(page, 'progress');
-    const routeUrl = new URL(await callHarness(page, 'routeUrl', ['cairn-drift']));
     const title = await page.evaluate(() => ({
-      chapter: document.querySelector('.lv-stage-chapter')?.textContent ?? null,
-      stageNodes: document.querySelectorAll('.lv-stage-node').length,
-      begin: document.querySelector('[data-view="title"] [data-action="begin"]')?.textContent ?? null,
+      nodes: [...document.querySelectorAll('.lv-stage-node')].map((node) => ({
+        id: node.getAttribute('data-stage-id'),
+        state: node.getAttribute('data-stage-state'),
+      })),
+      text: document.querySelector('[data-view="title"]')?.textContent ?? '',
     }));
-    const evidence = { course, catalog, progress, routeUrl: routeUrl.href, title };
-    verify(course.courseId === 'cairn-drift'
-      && course.gateCount === 9
-      && course.recordId === `cairn-drift-r2-${course.seed}`,
-    'Boot did not build the ruleset-partitioned CAIRN mission.', evidence);
-    verify(JSON.stringify(catalog.order)
-      === JSON.stringify(['cairn-drift', 'last-ascent', 'dead-signal'])
-      && JSON.stringify(catalog.recognizedOrder)
-        === JSON.stringify(['cairn-drift', 'needle-grave', 'wreckline', 'ringfall'])
-      && catalog.courses.filter((entry) => entry.active).length === 1,
-    'Active and dormant catalogs are not partitioned.', evidence);
-    verify(progress.version === 2
-      && progress.selectedMission === 'cairn-drift'
-      && title.stageNodes === 3
-      && title.chapter === 'THE FALL OF ACHRA'
-      && title.begin?.includes('START FLIGHT'),
-    'The title lost its three-node rail or Chapter 01 start action.', evidence);
-    verify(routeUrl.searchParams.get('mission') === 'cairn-drift'
-      && !routeUrl.searchParams.has('course'),
-    'Harness navigation did not mint a canonical mission URL.', evidence);
-    return evidence;
+    verify(course.courseId === 'cairn-drift', 'Fresh boot did not select CAIRN.', { course });
+    verify(JSON.stringify(catalog.order) === JSON.stringify(['cairn-drift', 'relay-harvest']),
+      'Active catalog is not exactly two chapters.', { catalog });
+    verify(JSON.stringify(title.nodes) === JSON.stringify([
+      { id: 'cairn-drift', state: 'available' },
+      { id: 'relay-harvest', state: 'locked' },
+    ]), 'Title rail does not express the clear-only handoff.', { title, progress });
+    verify(!/LAST ASCENT|DEAD SIGNAL|FIRE/u.test(title.text),
+      'Rejected mission copy remains in the product title.', { title });
+    return { course, catalog, progress, title };
   });
 
   await report.check({
-    id: 'MISSION.cairn-production-60-120',
-    name: 'CAIRN completes cleanly through the production path at 60 and 120 Hz',
-    assertion: 'Both fixed-step runs clear nine gates and extraction with hull intact and no errors.',
+    id: 'MISSION.cairn-production-60hz',
+    name: 'Chapter 01 still completes through its production path',
+    assertion: 'The unchanged CAIRN route clears 9/9 cleanly at 60 Hz and exposes BLACKOUT RELAY as the next chapter.',
   }, async () => {
-    const runs = [];
-    for (const fps of [60, 120]) {
-      if (runs.length > 0) await reloadHarness(page, options.timeoutMs);
-      await callHarness(page, 'setSettings', [FAST_SETTINGS]);
-      await callHarness(page, 'setDriven', [true]);
-      await callHarness(page, 'startRun', [{ skipIntro: true }]);
-      await callHarness(page, 'setAutopilot', [true, { skill: 0.75 }]);
-      const maximumFrames = Math.ceil(Math.min(options.maxSimSeconds, 140) * fps);
-      const chunkFrames = fps * 5;
-      let steppedFrames = 0;
-      let phase = await callHarness(page, 'phase');
-      while (steppedFrames < maximumFrames && phase !== 'finished' && phase !== 'failed') {
-        await callHarness(page, 'stepSimulation', [chunkFrames, 1 / fps], 120_000);
-        steppedFrames += chunkFrames;
-        phase = await callHarness(page, 'phase');
-      }
-      const run = {
-        fps,
-        steppedFrames,
-        phase,
-        result: await callHarness(page, 'result'),
-        telemetry: await callHarness(page, 'telemetry'),
-        errors: await callHarness(page, 'errors'),
-        actions: await page.locator(
-          '[data-view="results"][data-open="1"] [data-action]',
-        ).evaluateAll((nodes) => nodes.map((node) => ({
-          action: node.getAttribute('data-action'),
-          text: node.textContent?.trim() ?? '',
-        }))),
-      };
-      verify(run.phase === 'finished'
-        && run.result?.kind === 'gate-race'
-        && run.result?.missionId === 'cairn-drift'
-        && run.result?.rulesetVersion === 2
-        && run.result?.gatesCleared === 9
-        && run.result?.gatesTotal === 9
-        && run.result?.cleanRun === true
-        && run.result?.hullRemaining === 1
-        && run.telemetry.objective?.kind === 'gate-race'
-        && run.telemetry.objective?.complete === true
-        && run.errors.length === 0,
-      `CAIRN production proof failed at ${fps} Hz.`, run);
-      runs.push(run);
-      cairnResultActions.push(run.actions);
+    await callHarness(page, 'setSettings', [FAST_SETTINGS]);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 0.75 }]);
+    let phase = await callHarness(page, 'phase');
+    for (let chunk = 0; chunk < 30 && phase === 'flying'; chunk++) {
+      await callHarness(page, 'stepSimulation', [300, 1 / 60], 120_000);
+      phase = await callHarness(page, 'phase');
     }
-    return runs;
+    const result = await callHarness(page, 'result');
+    const errors = await callHarness(page, 'errors');
+    const actions = await page.locator('[data-view="results"][data-open="1"] [data-action]')
+      .evaluateAll((nodes) => nodes.map((node) => ({
+        action: node.getAttribute('data-action'),
+        stage: node.getAttribute('data-stage-id'),
+      })));
+    verify(phase === 'finished'
+      && result?.kind === 'gate-race'
+      && result.gatesCleared === 9
+      && result.gatesTotal === 9
+      && result.cleanRun === true
+      && result.hullRemaining === 1
+      && errors.length === 0,
+    'CAIRN production completion regressed.', { phase, result, errors });
+    verify(actions[0]?.action === 'next-stage' && actions[0]?.stage === 'relay-harvest',
+      'First clear does not lead directly to BLACKOUT RELAY.', { actions });
+    return { result, actions };
   });
 
   await report.check({
-    id: 'MISSION.result-actions',
-    name: 'A first CAIRN clear offers the newly unlocked LAST ASCENT',
-    assertion: 'NEXT CHAPTER, RUN AGAIN, and CHAPTER SELECT render without a terminal RETURN.',
+    id: 'MISSION.relay-handoff',
+    name: 'NEXT CHAPTER constructs the BLACKOUT RELAY world by canonical reload',
+    assertion: 'The handoff reloads one relay mission with a validated layout and no rejected chapter in the active catalog.',
   }, async () => {
-    const [firstClear, repeatClear] = cairnResultActions;
-    verify(JSON.stringify(firstClear?.map((entry) => entry.action))
-      === JSON.stringify(['next-stage', 'run-again', 'stage-select'])
-      && JSON.stringify(repeatClear?.map((entry) => entry.action))
-        === JSON.stringify(['run-again', 'stage-select', 'next-stage']),
-    'First-clear and repeat-clear results did not expose one ordered action set each.', {
-      firstClear,
-      repeatClear,
-    });
-    return { firstClear, repeatClear };
+    await Promise.all([
+      page.waitForURL(/mission=relay-harvest/u, { waitUntil: 'load', timeout: options.timeoutMs }),
+      page.locator('[data-action="next-stage"][data-stage-id="relay-harvest"]').click(),
+    ]);
+    verify(await waitForHarness(page, options.timeoutMs), 'Harness did not return after chapter handoff.');
+    await callHarness(page, 'ready', [], options.timeoutMs);
+    const course = await callHarness(page, 'course');
+    const catalog = await callHarness(page, 'catalog');
+    const url = new URL(page.url());
+    verify(course.courseId === 'relay-harvest'
+      && course.recordId.includes('-layout-rh1-')
+      && url.searchParams.get('mission') === 'relay-harvest'
+      && /^\d+$/u.test(url.searchParams.get('layout') ?? ''),
+    'Chapter handoff did not construct a canonical relay layout.', { course, url: url.href });
+    verify(JSON.stringify(catalog.order) === JSON.stringify(['cairn-drift', 'relay-harvest']),
+      'Rejected mission returned after handoff.', { catalog });
+    return { course, catalog, url: url.href };
   });
 }

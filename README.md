@@ -4,10 +4,11 @@
 
 **▶ 플레이: https://gjeon03.github.io/last-vector/**
 
-죽어가는 호박색 별의 잔해 지대를 건너는 브라우저 우주선 비행. Chapter 01은 아홉 개의 케언을 꿰는
-**CAIRN DRIFT**, 난파선 사이를 파고드는 8게이트 **WRECKLINE**, 고리 구조물을 내려가며 통과하는
-9게이트 **RINGFALL**로 이어진다. 마지막 벡터를 따라 VESPER TERMINUS에서 NADIR RELAY를 거쳐
-ORISON ARRAY까지 도달해야 한다.
+죽어가는 호박색 별의 잔해 지대를 건너는 2챕터 브라우저 우주선 비행. Chapter 01
+**CAIRN DRIFT**에서는 아홉 개의 케언을 순서대로 통과해 VESPER TERMINUS에 도달한다. 완주하면
+Chapter 02 **BLACKOUT RELAY**가 열린다. 이곳에서는 항상 보이는 다섯 CORE 중 어느 세 개든 골라
+회수한다. CORE 하나가 RELAY CHARGE 20과 BOOST 예비량 25를 공급하며, 세 번째 CORE에서 CHARGE
+60을 채우면 임무가 끝난다.
 
 전부 브라우저 안에서 돈다. 서버나 런타임 외부 네트워크는 없다. 바위와 별과 성운, 선체 패널, 소리는
 로드 시점에 시드 하나에서 생성되며 모델·텍스처·오디오 샘플을 내려받지 않는다. 라디오 연출은 자막과
@@ -23,6 +24,7 @@ pnpm dev            # http://127.0.0.1:5173
 
 ```bash
 pnpm build          # 타입체크 + dist/ 정적 빌드
+pnpm preview        # Vite 미리보기 서버
 pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정적 서버
 ```
 
@@ -36,14 +38,14 @@ pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정�
 
 ## 항로와 진행
 
-타이틀에는 Chapter 01의 세 스테이지가 한 줄로 표시된다. 처음에는 **CAIRN DRIFT**만 열려 있고,
-CAIRN을 완주하면 **WRECKLINE**, WRECKLINE을 완주하면 **RINGFALL**이 차례로 열린다. 해금 조건은
-랭크나 부가 목표가 아닌 완주 여부 하나뿐이다. 스테이지별 최초 완주, 최고 랭크, 무충돌 완주,
-정밀 통과 목표와 PB·구간 기록은 서로 분리해 저장한다.
+타이틀에는 **CAIRN DRIFT**와 **BLACKOUT RELAY**가 챕터 순서대로 표시된다. 처음에는 CAIRN만
+열려 있으며, 랭크나 부가 목표와 관계없이 한 번 완주하면 RELAY가 열린다. 최초 완주, 최고 랭크,
+무충돌 완주와 미션별 숙련 목표는 `last-vector.progress.v2`에 저장된다.
 
-진행 상태는 `last-vector.progress.v1`에 보관되며 `?course=cairn-drift`, `?course=wreckline`,
-`?course=ringfall`로 결정적인 스테이지 URL을 만들 수 있다. 아직 잠긴 스테이지나 잘못된 ID로 직접
-접근하면 현재 진행에서 허용된 스테이지로 안전하게 되돌아간다.
+결정적인 미션 URL은 `?mission=cairn-drift`와 `?mission=relay-harvest`를 사용한다. RELAY의
+`layout=<index>`는 다섯 CORE 배치를 고정한다. 결과 화면의 **RUN AGAIN**은 같은 배치와 PB 구획을
+유지해 다시 시작하고, **NEW LAYOUT**은 다른 검증된 배치로 새로 로드한다. 잠긴 미션이나 잘못된 ID로
+접근하면 CAIRN으로 안전하게 되돌아간다.
 
 ## 배포
 
@@ -99,21 +101,26 @@ src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하�
 성능 측정, 스크린샷 매트릭스를 헤드리스로 구동할 수 있다.
 
 ```bash
-pnpm test:i18n             # 브라우저 없이 카탈로그·타입·안전 DOM 계약 검사
-pnpm test:campaign         # 브라우저 없이 항로 카탈로그·진행 저장 계약 검사
-pnpm test:stage-landmarks  # 브라우저 없이 스테이지 랜드마크 저작·충돌 계약 검사
-node scripts/playtest/localization.mjs  # 한국어·영어 브라우저 localization 검증
-pnpm playtest              # 무인 전체 주행 + 어서션
-pnpm playtest:campaign     # Chapter 01 순차 해금·URL·세 스테이지 실주행 검증
-pnpm playtest:chapter-visual # WRECKLINE/RINGFALL 집중 스틸 6장 생성(사람의 시각 검토 필요)
-pnpm playtest:chapter-perf # 세 스테이지의 DPR1·DPR2 성능/리소스 예산 검증
-pnpm playtest:perf         # 1080p / 1440p 프레임타임 측정
+pnpm typecheck             # TypeScript 검사
+pnpm test:i18n             # 카탈로그·타입·안전 DOM 계약
+pnpm test:campaign         # 2챕터 카탈로그·선택·진행 저장 계약
+pnpm test:boost            # BOOST 계약
+pnpm test:relay            # BLACKOUT RELAY 수집·배치 계약
+pnpm test:relay-render     # RELAY 렌더·충돌 예산 계약
+pnpm test:stage-landmarks  # 랜드마크 저작·충돌 계약
+
+pnpm playtest              # CAIRN 무인 주행과 입력·비행 어서션
+pnpm playtest:perf         # 브라우저 성능 측정
+pnpm playtest:boost-vfx    # BOOST 시각 효과 검증
+pnpm playtest:campaign     # 2챕터 해금과 전환 검증
+pnpm playtest:relay        # RELAY 수집·재도전·새 배치 실주행 검증
 pnpm playtest:screenshots  # 결정적 스크린샷 매트릭스
-pnpm playtest:all          # perf/HiDPI, boost VFX, i18n, localization, 주행, 스크린샷, 오디오 전체 집계
+pnpm playtest:all          # 전체 브라우저·계약·성능·오디오 게이트 집계
 ```
 
-이 스크립트들은 **빌드하지 않고** `dist/`를 정적 서빙한다. 현재 작업 트리를 검증하려면 반드시
-`pnpm build`를 먼저 돌려야 한다. 그러지 않으면 이전 산출물을 측정하게 된다.
+브라우저 playtest는 **빌드하지 않고** `dist/`를 정적 서빙한다. 현재 작업 트리를 검증하려면 반드시
+`pnpm build`를 먼저 돌려야 한다. 그러지 않으면 이전 산출물을 측정하게 된다. `test:*` 계약은 소스를
+직접 검사한다.
 
 API는 `load` 시점이 아니라 비동기 부팅이 끝난 뒤 설치된다. 구동하기 전에 `window.__LV` 또는
 `html[data-lv-ready="1"]`를 기다려야 한다. `?seed=<uint32>`로 월드를 고정할 수 있다.

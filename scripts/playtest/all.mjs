@@ -27,6 +27,7 @@ const suites = [
   { name: 'localization-hidpi', script: 'localization.mjs', args: ['--device-scale-factor', '2'] },
   { name: 'playtest', script: 'playtest.mjs' },
   { name: 'campaign', script: 'campaign.mjs' },
+  { name: 'relay-harvest', script: 'relay-harvest.mjs' },
   { name: 'screenshot-matrix', script: 'screenshot-matrix.mjs' },
   // Nobody has heard this build, so the offline audio measurement IS the audio quality gate —
   // and a gate that is not run does not gate. --require-clean because everything this suite

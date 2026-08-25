@@ -10,7 +10,6 @@ const command = (boost) => ({
   throttle: 1,
   strafeX: 0,
   strafeY: 0,
-  fire: false,
   boost,
   brake: false,
   stickX: 0,

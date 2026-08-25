@@ -261,9 +261,9 @@ async function runPlaytest({ report, session, options }) {
 
     await mouse('mousedown', { button: 0 });
     await callHarness(page, 'step', [2]);
-    const inactiveLmb = await callHarness(page, 'activeInput');
-    verify(inactiveLmb.fire === false && inactiveLmb.boost === false,
-      'CAIRN LMB unexpectedly produced a flight action.', inactiveLmb);
+    const lmbBoost = await callHarness(page, 'activeInput');
+    verify(lmbBoost.boost === true,
+      'LMB did not reach the restored mouse boost alias.', lmbBoost);
 
     /* The latch: drop the lock with the button still down — the mouseup after Esc is exactly the
        event the guard drops. Boost must clear anyway, from the lock transition itself. */
@@ -289,7 +289,7 @@ async function runPlaytest({ report, session, options }) {
 
     return {
       steered: { yaw: steered.yaw, pitch: steered.pitch },
-      inactiveLmb: { fire: inactiveLmb.fire, boost: inactiveLmb.boost },
+      lmbBoost: lmbBoost.boost,
       clearedOnLockLoss: released.boost === false,
       keyboardSurvivedLockLoss: keyboardHeld.boost === true,
       notCovered: ['trusted pointer-lock acquisition', 'raw OS mouse delta delivery', 'real Esc keystroke ordering'],
