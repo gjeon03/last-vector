@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import type {
   GateNameMessage,
+  MissionRewardEvent,
   MissionResult,
   ObjectiveTelemetry,
 } from '../core/contracts.ts';
+export type { MissionRewardEvent } from '../core/contracts.ts';
 import type { VantageDefinition } from '../core/Courses.ts';
 import { missionRecordId, type MissionDefinition } from '../core/Missions.ts';
 import type { QualityProfile } from '../core/Settings.ts';
@@ -49,7 +51,42 @@ export interface MissionResultInput {
   readonly cruiseSpeed: number;
 }
 
-export interface MissionObjectiveRuntime {
+/** Maximum rewards one MissionRuntime may expose between two drains. */
+export const MISSION_REWARD_EVENT_CAPACITY = 16;
+
+/** Maximum weapon feedback events one MissionRuntime may expose between two drains. */
+export const MISSION_WEAPON_EVENT_CAPACITY = 64;
+
+export type MissionWeaponEvent =
+  | {
+    readonly type: 'fire';
+    readonly intensity: number;
+    readonly sourceId?: string;
+    readonly sourceIndex?: number;
+  }
+  | {
+    readonly type: 'hit';
+    readonly intensity: number;
+    readonly sourceId?: string;
+    readonly sourceIndex?: number;
+  }
+  | {
+    readonly type: 'destroy';
+    readonly intensity: number;
+    readonly sourceId?: string;
+    readonly sourceIndex?: number;
+  };
+
+interface MissionRewardSource {
+  /**
+   * Appends queued events to the caller-owned array and returns the appended count. The source
+   * clears its queue, never exceeds MISSION_REWARD_EVENT_CAPACITY, and allocates nothing when
+   * there are no events.
+   */
+  drainRewardEvents(out: MissionRewardEvent[]): number;
+}
+
+export interface MissionObjectiveRuntime extends MissionRewardSource {
   readonly kind: MissionDefinition['objective']['kind'];
   reset(): void;
   update(frame: ObjectiveUpdateFrame): ObjectiveTerminalState;
@@ -57,6 +94,25 @@ export interface MissionObjectiveRuntime {
   telemetry(): ObjectiveTelemetry;
   bestRunSplits(): readonly number[];
   buildResult(input: MissionResultInput): MissionResult;
+  dispose(): void;
+}
+
+export interface MissionWeaponUpdateFrame {
+  /** Values are valid for the synchronous update call; runtimes copy anything they retain. */
+  readonly dt: number;
+  readonly elapsed: number;
+  readonly position: THREE.Vector3;
+  readonly forward: THREE.Vector3;
+  readonly fire: boolean;
+  readonly targetables: readonly unknown[];
+}
+
+/** Optional bounded weapon seam. Rendering, audio and objective state remain outside it. */
+export interface MissionWeaponRuntime extends MissionRewardSource {
+  reset(): void;
+  update(frame: MissionWeaponUpdateFrame): void;
+  /** Appends and clears at most MISSION_WEAPON_EVENT_CAPACITY queued feedback events. */
+  drainEvents(out: MissionWeaponEvent[]): number;
   dispose(): void;
 }
 
@@ -181,6 +237,8 @@ export interface MissionSimulationFrame {
   readonly dt: number;
   readonly elapsed: number;
   readonly body: MissionContactBody;
+  readonly forward: THREE.Vector3;
+  readonly fire: boolean;
   readonly proximityRange: number;
   readonly resolveContacts: boolean;
   readonly resolveObjective: boolean;
@@ -204,26 +262,39 @@ export class MissionRuntime {
   readonly path: FlightPath;
   readonly world: MissionWorldRuntime;
   readonly objective: MissionObjectiveRuntime;
+  readonly weapon: MissionWeaponRuntime | null;
   readonly legacy: LegacyMissionAdapter | null;
 
   private readonly contactNormal = new THREE.Vector3();
+  /** Reused for the optional weapon update so the seam adds no steady-state frame allocation. */
+  private readonly weaponUpdateFrame = {
+    dt: 0,
+    elapsed: 0,
+    position: new THREE.Vector3(),
+    forward: new THREE.Vector3(),
+    fire: false,
+    targetables: [] as readonly unknown[],
+  };
 
   constructor(options: {
     definition: MissionDefinition;
     path: FlightPath;
     world: MissionWorldRuntime;
     objective: MissionObjectiveRuntime;
+    weapon?: MissionWeaponRuntime | null;
     legacy?: LegacyMissionAdapter | null;
   }) {
     this.definition = options.definition;
     this.path = options.path;
     this.world = options.world;
     this.objective = options.objective;
+    this.weapon = options.weapon ?? null;
     this.legacy = options.legacy ?? null;
   }
 
   reset(): void {
     this.world.reset();
+    this.weapon?.reset();
     this.objective.reset();
   }
 
@@ -231,7 +302,7 @@ export class MissionRuntime {
     return this.objective.update(frame);
   }
 
-  /** Common frame order: world motion -> all contacts -> hull priority -> objective. */
+  /** Common frame order: world motion -> all contacts -> hull -> weapon -> objective. */
   simulate(frame: MissionSimulationFrame): MissionSimulationOutcome {
     this.world.updateSimulation(frame.dt, frame.body.position);
     let nearest = Infinity;
@@ -261,14 +332,84 @@ export class MissionRuntime {
       ? 0
       : Math.min(1, Math.max(0, 1 - nearest / frame.proximityRange));
     const hullFailed = frame.body.hull <= 0;
-    const terminal = frame.resolveObjective && !hullFailed
-      ? this.objective.update({
+    let terminal: ObjectiveTerminalState | null = null;
+    if (frame.resolveObjective && !hullFailed) {
+      if (this.weapon) {
+        const weaponFrame = this.weaponUpdateFrame;
+        weaponFrame.dt = frame.dt;
+        weaponFrame.elapsed = frame.elapsed;
+        weaponFrame.position.copy(frame.body.position);
+        weaponFrame.forward.copy(frame.forward);
+        weaponFrame.fire = frame.fire;
+        weaponFrame.targetables = this.world.targetables;
+        this.weapon.update(weaponFrame);
+      }
+      terminal = this.objective.update({
         position: frame.body.position,
         speed: frame.body.speed,
         elapsed: frame.elapsed,
-      })
-      : null;
+      });
+    }
     return { proximity, hullFailed, terminal };
+  }
+
+  /** Aggregates weapon then objective rewards in simulation order into one reusable buffer. */
+  drainRewardEvents(out: MissionRewardEvent[]): number {
+    const start = out.length;
+    if (start > MISSION_REWARD_EVENT_CAPACITY) {
+      throw new Error('Mission reward output already exceeds its declared capacity');
+    }
+    if (this.weapon) this.drainRewardsFrom(this.weapon, out);
+    this.drainRewardsFrom(this.objective, out);
+    return out.length - start;
+  }
+
+  /** Drains weapon feedback without adapting it to audio or presentation. */
+  drainWeaponEvents(out: MissionWeaponEvent[]): number {
+    if (out.length > MISSION_WEAPON_EVENT_CAPACITY) {
+      throw new Error('Mission weapon output already exceeds its declared capacity');
+    }
+    if (!this.weapon) return 0;
+    const start = out.length;
+    const reported = this.weapon.drainEvents(out);
+    return this.validateDrain(
+      reported,
+      out,
+      start,
+      MISSION_WEAPON_EVENT_CAPACITY,
+      'Mission weapon',
+    );
+  }
+
+  private drainRewardsFrom(source: MissionRewardSource, out: MissionRewardEvent[]): number {
+    const start = out.length;
+    const reported = source.drainRewardEvents(out);
+    return this.validateDrain(
+      reported,
+      out,
+      start,
+      MISSION_REWARD_EVENT_CAPACITY,
+      'Mission reward',
+    );
+  }
+
+  private validateDrain<T>(
+    reported: number,
+    out: T[],
+    start: number,
+    capacity: number,
+    label: string,
+  ): number {
+    const appended = out.length - start;
+    if (!Number.isInteger(reported) || reported < 0 || reported !== appended) {
+      out.length = start;
+      throw new Error(`${label} drain returned an invalid event count`);
+    }
+    if (out.length > capacity) {
+      out.length = start;
+      throw new Error(`${label} drain exceeded its declared capacity`);
+    }
+    return appended;
   }
 
   recordId(seed: number): string {
@@ -285,6 +426,7 @@ export class MissionRuntime {
 
   dispose(): void {
     this.objective.dispose();
+    this.weapon?.dispose();
     this.world.dispose();
   }
 }

@@ -1,5 +1,9 @@
 import * as THREE from 'three';
-import type { StrikeMissionResult, StrikeObjectiveTelemetry } from '../../core/contracts.ts';
+import type {
+  MissionRewardEvent,
+  StrikeMissionResult,
+  StrikeObjectiveTelemetry,
+} from '../../core/contracts.ts';
 import type {
   MissionObjectiveRuntime,
   MissionResultInput,
@@ -123,6 +127,10 @@ export class DeadSignalObjective implements MissionObjectiveRuntime {
 
   bestRunSplits(): readonly number[] {
     return [];
+  }
+
+  drainRewardEvents(_out: MissionRewardEvent[]): number {
+    return 0;
   }
 
   buildResult(input: MissionResultInput): StrikeMissionResult {

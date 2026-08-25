@@ -11,7 +11,10 @@ import type { HudHost, Locale, MissionResult, QualityLevel, Settings } from '../
 import { PRECISION_MAX_OFFSET } from '../core/Courses.ts';
 import {
   ACTIVE_MISSION_ORDER,
+  getMissionDefinition,
+  type MasteryId,
   type MissionCapability,
+  type MissionChapter,
   type MissionId,
 } from '../core/Missions.ts';
 import type { Translator } from '../i18n/index.ts';
@@ -59,16 +62,15 @@ export type CampaignNavigationError = 'navigation-failed' | 'storage-unavailable
 
 export interface CampaignMissionView {
   readonly id: MissionId;
-  readonly chapter?: number;
-  readonly capabilities?: readonly MissionCapability[];
+  readonly chapter: MissionChapter;
+  readonly capabilities: readonly MissionCapability[];
+  readonly mastery: readonly { readonly id: MasteryId; readonly complete: boolean }[];
   readonly state: CampaignMissionState;
   readonly highestRank: string | null;
   readonly objectives: {
     readonly firstClear: boolean;
     readonly cleanClear: boolean;
     readonly precision: boolean;
-    readonly allNodes?: boolean;
-    readonly accuracy?: boolean;
   };
 }
 
@@ -98,21 +100,24 @@ const CAMPAIGN_BRIEF_KEYS = [
 ] as const;
 
 function defaultCampaignView(): CampaignViewModel {
+  const activeMissionId = ACTIVE_MISSION_ORDER[0]!;
   return {
-    activeMissionId: 'cairn-drift',
+    activeMissionId,
     nextMissionId: null,
     newlyUnlockedMissionId: null,
     navigationError: null,
-    missions: [
-      {
-        id: 'cairn-drift',
-        chapter: 1,
-        capabilities: [],
-        state: 'available',
+    missions: ACTIVE_MISSION_ORDER.map((id, index) => {
+      const definition = getMissionDefinition(id);
+      return {
+        id,
+        chapter: definition.chapter,
+        capabilities: definition.capabilities,
+        mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+        state: index === 0 ? 'available' : 'locked',
         highestRank: null,
         objectives: { firstClear: false, cleanClear: false, precision: false },
-      },
-    ],
+      };
+    }),
   };
 }
 
@@ -658,9 +663,9 @@ export class Screens {
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
       nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route?.capabilities?.includes('fire')
-        ? route.objectives.allNodes && route.objectives.accuracy ? '1' : '0'
-        : route?.objectives.precision ? '1' : '0';
+      nodes.mastery.precision.dataset['complete'] = route?.mastery.every(
+        (entry) => entry.complete,
+      ) ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -668,9 +673,15 @@ export class Screens {
   }
 
   private campaignMission(id: MissionId = this.campaign.activeMissionId): CampaignMissionView {
-    return this.campaign.missions.find((mission) => mission.id === id) ?? {
+    const mission = this.campaign.missions.find((candidate) => candidate.id === id);
+    if (mission) return mission;
+    const definition = getMissionDefinition(id);
+    return {
       id,
-      state: id === 'cairn-drift' ? 'available' : 'locked',
+      chapter: definition.chapter,
+      capabilities: definition.capabilities,
+      mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+      state: ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked',
       highestRank: null,
       objectives: { firstClear: false, cleanClear: false, precision: false },
     };
@@ -701,7 +712,11 @@ export class Screens {
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
-    const strike = route.capabilities?.includes('fire') === true;
+    const masteryLabel = (id: MasteryId): string => id === 'all-nodes'
+      ? copy.allNodes ?? copy.precision
+      : id === 'accuracy'
+        ? copy.accuracy ?? copy.precision
+        : copy.precision;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
       {
@@ -712,12 +727,13 @@ export class Screens {
         target: true,
       },
       { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
-      ...(strike
-        ? [
-            { id: 'all-nodes', label: copy.allNodes ?? copy.precision, complete: route.objectives.allNodes === true, value: '', target: true },
-            { id: 'accuracy', label: copy.accuracy ?? copy.precision, complete: route.objectives.accuracy === true, value: '', target: true },
-          ]
-        : [{ id: 'precision', label: copy.precision, complete: route.objectives.precision, value: '', target: true }]),
+      ...route.mastery.map((entry) => ({
+        id: entry.id,
+        label: masteryLabel(entry.id),
+        complete: entry.complete,
+        value: '',
+        target: true,
+      })),
     ];
     const focusId = result
       ? rows.find((row) => row.target && !row.complete)?.id ?? null
@@ -1108,7 +1124,7 @@ export class Screens {
     for (let index = 0; index < nodes.length; index++) {
       const node = nodes[index]!;
       const capability = node.dataset['controlCapability'] as MissionCapability | undefined;
-      node.hidden = capability === undefined || !mission.capabilities?.includes(capability);
+      node.hidden = capability === undefined || !mission.capabilities.includes(capability);
     }
   }
 
@@ -1756,6 +1772,7 @@ export class Screens {
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
+    delete body.dataset['failureReason'];
     this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
@@ -2073,6 +2090,7 @@ export class Screens {
     const body = this.nResultBody;
     body.textContent = '';
     delete body.dataset['state'];
+    delete body.dataset['failureReason'];
     this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     const head = el('header', 'lv-res-head');
@@ -2154,20 +2172,31 @@ export class Screens {
   }
 
   /**
-   * Reuses the results shell for a terminal hull breach without presenting a failed run as a
-   * result. Retry remains primary and the route strip is the only alternate exit. The N chip
-   * matches Input's real restart binding, so the visible shortcut and action path agree.
+   * Reuses the results shell for terminal failure without presenting a failed run as a result.
+   * An objective reason selects generic mission-failure copy; no reason preserves hull breach.
    */
-  showFailure(elapsed: number): void {
+  showFailure(elapsed: number, reason?: string): void {
     const m = this.translator.messages;
     const body = this.nResultBody;
     body.textContent = '';
     body.dataset['state'] = 'failure';
-    this.views.get('results')?.setAttribute('aria-label', m.a11y.hullBreach);
+    if (reason === undefined) delete body.dataset['failureReason'];
+    else body.dataset['failureReason'] = reason;
+    this.views.get('results')?.setAttribute(
+      'aria-label',
+      reason === undefined ? m.a11y.hullBreach : m.a11y.missionFailed,
+    );
 
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
+    if (reason !== undefined) {
+      head.append(
+        englishText('div', 'lv-kicker', m.results.runComplete),
+        englishText('h2', 'lv-res-title', m.results.missionFailed),
+      );
+    } else {
+      head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
+    }
 
     const timeBlock = el('div', 'lv-res-timeblock');
     timeBlock.style.setProperty('--n', '1');
