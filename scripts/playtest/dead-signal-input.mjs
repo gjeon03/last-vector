@@ -18,6 +18,9 @@ const REQUIRED_METHODS = [
   'pauseMenu',
   'installProgress',
   'routeUrl',
+  'settings',
+  'setSettings',
+  'cameraMode',
   'errors',
 ];
 
@@ -204,5 +207,82 @@ async function runInputProof({ report, session, options }) {
     verify(countdownPhase === 'countdown' && countdown.fire === false,
       'A new countdown inherited mouse fire.', { countdownPhase, countdown });
     return { lockLoss, blurred, reconstructed, resumed, countdownPhase, countdown };
+  });
+
+  await report.check({
+    id: 'INPUT.camera-three-mode-cycle',
+    name: 'C cycles the shared three-mode camera and SettingsStore sanitises it',
+    assertion:
+      'Real KeyC events cycle chase to cockpit to far-chase to chase; far-chase survives a reload, '
+      + 'while an invalid persisted mode sanitises to chase.',
+  }, async () => {
+    const pressCamera = async () => {
+      await key('keydown', 'KeyC', { key: 'c' });
+      await key('keyup', 'KeyC', { key: 'c' });
+      await step();
+      return {
+        applied: await callHarness(page, 'cameraMode'),
+        stored: (await callHarness(page, 'settings')).cameraMode,
+      };
+    };
+    const enterDrivenFlight = async () => {
+      await callHarness(page, 'ready', [], options.timeoutMs);
+      await callHarness(page, 'setDriven', [true]);
+      await callHarness(page, 'setFixedTimestep', [1 / 60]);
+      await callHarness(page, 'startRun', [{ skipIntro: true }]);
+      await callHarness(page, 'setAutopilot', [false]);
+      await callHarness(page, 'setInput', [null]);
+      await step();
+    };
+
+    await enterDrivenFlight();
+    await callHarness(page, 'setSettings', [{ cameraMode: 'chase' }]);
+    await step();
+    const initial = {
+      applied: await callHarness(page, 'cameraMode'),
+      stored: (await callHarness(page, 'settings')).cameraMode,
+    };
+    const cockpit = await pressCamera();
+    const farChase = await pressCamera();
+
+    await page.reload({ waitUntil: 'load', timeout: options.timeoutMs });
+    await waitForHarness(page, options.timeoutMs);
+    await enterDrivenFlight();
+    const persisted = {
+      applied: await callHarness(page, 'cameraMode'),
+      stored: (await callHarness(page, 'settings')).cameraMode,
+    };
+    const chaseAgain = await pressCamera();
+
+    const validSettings = await callHarness(page, 'settings');
+    await page.evaluate((settings) => {
+      window.localStorage.setItem(
+        'last-vector.settings.v1',
+        JSON.stringify({ ...settings, cameraMode: 'not-a-camera' }),
+      );
+    }, validSettings);
+    await page.reload({ waitUntil: 'load', timeout: options.timeoutMs });
+    await waitForHarness(page, options.timeoutMs);
+    await enterDrivenFlight();
+    const sanitised = {
+      applied: await callHarness(page, 'cameraMode'),
+      stored: (await callHarness(page, 'settings')).cameraMode,
+    };
+
+    verify(initial.applied === 'chase' && initial.stored === 'chase'
+      && cockpit.applied === 'cockpit' && cockpit.stored === 'cockpit'
+      && farChase.applied === 'far-chase' && farChase.stored === 'far-chase'
+      && chaseAgain.applied === 'chase' && chaseAgain.stored === 'chase',
+    'Real C input did not complete the exact chase/cockpit/far-chase/chase cycle.', {
+      initial,
+      cockpit,
+      farChase,
+      chaseAgain,
+    });
+    verify(persisted.applied === 'far-chase' && persisted.stored === 'far-chase',
+      'The far-chase preference did not survive a SettingsStore reload.', { persisted });
+    verify(sanitised.applied === 'chase' && sanitised.stored === 'chase',
+      'An invalid persisted camera mode did not sanitise to chase.', { sanitised });
+    return { initial, cockpit, farChase, persisted, chaseAgain, sanitised };
   });
 }

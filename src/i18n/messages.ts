@@ -178,6 +178,7 @@ export interface SettingMessages {
   raw: string;
   chase: string;
   cockpit: string;
+  farChase: string;
   low: string;
   medium: string;
   high: string;
@@ -226,8 +227,10 @@ export interface EventMessages {
   keyboardFlightAvailable: string;
   cockpitView: string;
   chaseView: string;
+  farChaseView: string;
   pilotCameraActive: string;
   exteriorCameraActive: string;
+  farExteriorCameraActive: string;
   engage: string;
   hullImpact: string;
   boostDepletedTitle: string;

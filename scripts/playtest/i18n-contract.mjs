@@ -609,7 +609,7 @@ await report.check(
       'screens.briefingLine3': '순서대로 통과하라. 좁은 구간에서는 암석이 바짝 파고들며, 제동만이 선회 공간을 만든다.',
       'screens.pauseDetail': '드리프트는 계속된다. 항로는 기다려 주지 않는다.',
       'controls.mouseSteer': '조향 — 자동 복귀 가상 스틱',
-      'controls.cameraToggle': '추적 / 1인칭 조종석 전환',
+      'controls.cameraToggle': '추적 / 조종석 / 원거리 추적 순환',
       'controls.pointerLockNote': '출격하면 마우스가 고정됩니다. ESC를 누르면 마우스가 풀리고 비행이 일시정지됩니다.',
       'settings.defaultCameraHint': '비행 중 C를 눌러 시점을 전환합니다.',
       'settings.renderScaleHint': '내부 해상도입니다. 품질보다 먼저 낮추세요.',

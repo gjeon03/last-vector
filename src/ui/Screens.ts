@@ -319,6 +319,7 @@ const SETTING_GROUPS = [
         options: [
           ['chase', 'chase'],
           ['cockpit', 'cockpit'],
+          ['far-chase', 'farChase'],
         ],
       },
       {

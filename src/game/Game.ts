@@ -106,11 +106,18 @@ const KEYBOARD_FLIGHT_MESSAGE: CalloutSubMessage = Object.freeze({
 });
 const CAMERA_TITLE_MESSAGES: Readonly<Record<CameraMode, CalloutTitleMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-title.camera-view', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-title.camera-view', mode: 'far-chase' }),
   chase: Object.freeze({ type: 'callout-title.camera-view', mode: 'chase' }),
 });
 const CAMERA_SUB_MESSAGES: Readonly<Record<CameraMode, CalloutSubMessage>> = Object.freeze({
   cockpit: Object.freeze({ type: 'callout-sub.camera-active', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-sub.camera-active', mode: 'far-chase' }),
   chase: Object.freeze({ type: 'callout-sub.camera-active', mode: 'chase' }),
+});
+const NEXT_CAMERA_MODE: Readonly<Record<CameraMode, CameraMode>> = Object.freeze({
+  chase: 'cockpit',
+  cockpit: 'far-chase',
+  'far-chase': 'chase',
 });
 const ENGAGE_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.engage' });
 const HULL_IMPACT_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.hull-impact' });
@@ -537,7 +544,7 @@ export class Game {
         this.restart();
       }
       if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
-        const next: CameraMode = this.settings.value.cameraMode === 'chase' ? 'cockpit' : 'chase';
+        const next = NEXT_CAMERA_MODE[this.settings.value.cameraMode];
         this.settings.set('cameraMode', next);
         // Keep the public camera contract synchronous with the key action. The pose itself is
         // resolved in updateVisuals, but projection state (notably the cockpit near plane) must

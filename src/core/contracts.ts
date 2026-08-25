@@ -345,7 +345,7 @@ export interface HudHost {
 }
 
 export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
-export type CameraMode = 'chase' | 'cockpit';
+export type CameraMode = 'chase' | 'cockpit' | 'far-chase';
 
 export interface Settings {
   quality: QualityLevel;
