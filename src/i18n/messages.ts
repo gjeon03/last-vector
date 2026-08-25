@@ -261,6 +261,7 @@ export interface ResultMessages {
   versusBest: string;
   runAgain: string;
   returnToTitle: string;
+  missionFailed: string;
   hullBreach: string;
   time: string;
   retry: string;
@@ -298,6 +299,7 @@ export interface A11yMessages {
   settings: string;
   controls: string;
   runComplete: string;
+  missionFailed: string;
   hullBreach: string;
 }
 

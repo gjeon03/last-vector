@@ -44,9 +44,16 @@ import { ProgressStore } from '../core/Progress.ts';
 import {
   createGameMissionRuntime,
   type GameMissionRuntimeFactory,
+  type MissionRewardEvent,
   type MissionRuntime,
+  type MissionWeaponEvent,
   type WorldContact,
 } from './MissionRuntime.ts';
+import {
+  buildCampaignViewModel,
+  consumeMissionFrameEvents,
+  resolveAutopilotButton,
+} from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
 import type {
   AudioBus,
@@ -167,6 +174,7 @@ const FAILURE_DRIFT_COMMAND: FlightCommand = {
   throttle: 0,
   strafeX: 0,
   strafeY: 0,
+  fire: false,
   boost: false,
   brake: false,
   stickX: 0,
@@ -286,6 +294,8 @@ export class Game {
   private wasBoosting = false;
   private wasBoostLocked = false;
   private gateTickTimer = 0;
+  private readonly rewardEvents: MissionRewardEvent[] = [];
+  private readonly weaponEvents: MissionWeaponEvent[] = [];
 
   private autopilot = false;
   private autopilotSkill = 1;
@@ -356,6 +366,7 @@ export class Game {
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly scratchEuler = new THREE.Euler();
+  private readonly missionForward = new THREE.Vector3();
   private readonly onWorldContact = (
     _contact: WorldContact,
     penetration: number,
@@ -492,7 +503,9 @@ export class Game {
     }
 
     // --- input, ui, audio -------------------------------------------------------------
-    this.input = new Input(this.canvas);
+    this.input = new Input(this.canvas, {
+      fireEnabled: this.missionDefinition.capabilities.includes('fire'),
+    });
     this.input.onLockChange = (locked) => this.overlay.setPointerLocked(locked);
     this.input.onLockError = (reason) => {
       // Surfaced, not swallowed: a mouse that does nothing with no explanation is worse than
@@ -696,24 +709,12 @@ export class Game {
   }
 
   private campaignViewModel(): CampaignViewModel {
-    const progress = this.progressStore.snapshot();
-    const mission = progress.missions[this.missionDefinition.id];
-    return {
-      activeMissionId: this.missionDefinition.id,
-      nextMissionId: null,
-      newlyUnlockedMissionId: this.newlyUnlockedMissionId,
-      navigationError: this.campaignNavigationError,
-      missions: [{
-        id: this.missionDefinition.id,
-        state: mission?.cleared ? 'cleared' : 'available',
-        highestRank: mission?.highestRank ?? null,
-        objectives: {
-          firstClear: mission?.cleared === true,
-          cleanClear: mission?.cleanClear === true,
-          precision: mission?.mastery.precision === true,
-        },
-      }],
-    };
+    return buildCampaignViewModel(
+      this.progressStore.snapshot(),
+      this.missionDefinition.id,
+      this.newlyUnlockedMissionId,
+      this.campaignNavigationError,
+    );
   }
 
   private applyLocale(locale: Locale): void {
@@ -1257,10 +1258,13 @@ export class Game {
     }
 
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
+    this.ship.getForward(this.missionForward);
     const missionFrame = this.mission.simulate({
       dt,
       elapsed: this.elapsed,
       body: this.ship,
+      forward: this.missionForward,
+      fire: command.fire,
       proximityRange: FLIGHT_THRESHOLDS.proximityRange,
       resolveContacts: this.phase !== 'failed',
       resolveObjective: this.phase === 'flying',
@@ -1275,8 +1279,15 @@ export class Game {
          deterministically produce a breach rather than a saved result. */
       if (missionFrame.hullFailed) this.checkFailure();
       if (this.phase === 'flying' && missionFrame.terminal) {
+        consumeMissionFrameEvents(
+          this.mission,
+          missionFrame,
+          this.ship,
+          this.rewardEvents,
+          this.weaponEvents,
+        );
         const terminal = missionFrame.terminal;
-        if (terminal.status === 'failed') this.failObjective();
+        if (terminal.status === 'failed') this.failObjective(terminal.reason);
         else if (terminal.status === 'succeeded') this.finish();
       }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
@@ -1351,8 +1362,19 @@ export class Game {
       alignment,
       targetDistance: distance,
     });
-    command.brake = controls?.brake ?? false;
-    command.boost = controls?.boost ?? false;
+    // Generic runtimes may use the shared autopilot with independent player buttons. Preserve
+    // those only during active flight; title/briefing attract input remains deliberately neutral.
+    const preserveGenericButtons = legacy === null && this.phase === 'flying';
+    command.brake = resolveAutopilotButton(
+      controls?.brake,
+      command.brake,
+      preserveGenericButtons,
+    );
+    command.boost = resolveAutopilotButton(
+      controls?.boost,
+      command.boost,
+      preserveGenericButtons,
+    );
     command.strafeX = 0;
     command.strafeY = 0;
     void dt;
@@ -1393,14 +1415,14 @@ export class Game {
     }
   }
 
-  private failObjective(): void {
+  private failObjective(reason: string): void {
     if (this.phase !== 'flying') return;
     this.autopilot = false;
     this.result = null;
     this.cancelCountdownClear();
     this.overlay.setCountdown(null);
     this.setPhase('failed');
-    this.overlay.showFailure(this.elapsed);
+    this.overlay.showFailure(this.elapsed, reason);
     this.input.releaseLock();
   }
 
@@ -2689,6 +2711,7 @@ export class Game {
       throttle: c.throttle,
       strafeX: c.strafeX,
       strafeY: c.strafeY,
+      fire: c.fire,
       boost: c.boost,
       brake: c.brake,
     };

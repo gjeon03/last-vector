@@ -206,8 +206,8 @@ export class Overlay {
     this.screens.showResult(result);
   }
 
-  showFailure(elapsed: number): void {
-    this.screens.showFailure(elapsed);
+  showFailure(elapsed: number, reason?: string): void {
+    this.screens.showFailure(elapsed, reason);
   }
 
   setCountdown(value: number | null): void {
