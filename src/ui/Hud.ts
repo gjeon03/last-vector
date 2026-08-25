@@ -14,7 +14,6 @@ import type { LogLine, Telemetry } from '../core/contracts.ts';
 import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
 import { radioDurationSeconds } from '../core/RadioSchedule.ts';
 import type { Messages, Translator } from '../i18n/index.ts';
-import { LastAscentHud } from './LastAscentHud.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -114,9 +113,17 @@ export function retrigger(node: HTMLElement, cls: string): void {
 
 const HUD_EN_TOKENS = [
   'VESPER TERMINUS',
+  'BLACKOUT RELAY',
+  'RELAY CHARGE',
+  'COLLECTOR ARM',
   'W A S D',
   'TERMINUS',
   'Kestrel',
+  'VECTOR',
+  'BOOST',
+  'DRIVE',
+  'NETWORK',
+  'CORE',
   'CAIRN',
 ] as const;
 
@@ -329,7 +336,10 @@ export class Hud {
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
   private readonly nObjectiveKind: HTMLElement;
-  private readonly nStrikeStatus: HTMLElement;
+  private readonly nCollectionStatus: HTMLElement;
+  private readonly nCollectionSummary: HTMLElement;
+  private readonly nCollectionSources: HTMLElement;
+  private readonly nCollectionSourcePips: HTMLElement[] = [];
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -351,7 +361,6 @@ export class Hud {
   private readonly nRadioWho: HTMLElement;
   private readonly nRadioText: HTMLElement;
   private readonly flightReadableRegions: HTMLElement[] = [];
-  private readonly escapeHud: LastAscentHud;
 
   /* eased values */
   private readonly eThrottle = new Eased(0, 14);
@@ -393,7 +402,8 @@ export class Hud {
   private pGateName = '';
   private pGateNameType = '';
   private pObjectiveKind = '';
-  private pStrikeStatus = '';
+  private pCollectionStatus = '';
+  private pCollectionSourceBits = -1;
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -424,6 +434,7 @@ export class Hud {
 
   /* rolling feeds */
   private readonly logNodes = new Map<number, HTMLElement>();
+  private readonly collectionLabels = new Map<string, string>();
   private readonly logPool: HTMLElement[] = [];
   private readonly logAlpha = new Map<number, number>();
   private readonly splitNodes: HTMLElement[] = [];
@@ -586,21 +597,27 @@ export class Hud {
     this.nSplitFeed = el('ul', 'lv-splitfeed');
     this.nObjectiveKind = el('div', 'lv-right-k', this.messages.hud.nextMarker);
     this.nObjectiveKind.lang = 'en';
-    this.nStrikeStatus = el('div', 'lv-strikestatus', '');
-    this.nStrikeStatus.lang = 'en';
-    this.nStrikeStatus.hidden = true;
+    this.nCollectionStatus = el('div', 'lv-collection-status');
+    this.nCollectionStatus.lang = 'en';
+    this.nCollectionStatus.hidden = true;
+    this.nCollectionSummary = el('div', 'lv-collection-summary');
+    this.nCollectionSources = el('div', 'lv-collection-sources');
+    this.nCollectionSources.setAttribute('aria-hidden', 'true');
+    for (let index = 0; index < 5; index++) {
+      const pip = el('i', 'lv-collection-source');
+      this.nCollectionSourcePips.push(pip);
+      this.nCollectionSources.appendChild(pip);
+    }
+    this.nCollectionStatus.append(this.nCollectionSummary, this.nCollectionSources);
     right.append(
       this.nObjectiveKind,
       gateCount,
       this.nGateName,
-      this.nStrikeStatus,
+      this.nCollectionStatus,
       times,
       this.nSplitFeed,
     );
     frame.appendChild(right);
-
-    this.escapeHud = new LastAscentHud(this.translator);
-    frame.appendChild(this.escapeHud.element);
 
     /* ---- centre-upper callout ---- */
     this.nCallout = el('div', 'lv-callout');
@@ -820,6 +837,7 @@ export class Hud {
   dispose(): void {
     this.logNodes.clear();
     this.logAlpha.clear();
+    this.collectionLabels.clear();
     this.el.remove();
   }
 
@@ -848,7 +866,6 @@ export class Hud {
     this.cleared = false;
 
     this.updateText(t, d);
-    this.escapeHud.update(t);
     this.updateBars(t, d);
     this.updateCallout(t, d);
     this.updateLog(t.log, d);
@@ -919,35 +936,23 @@ export class Hud {
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
-    const strike = t.objective.kind === 'strike' ? t.objective : null;
-    const escape = t.objective.kind === 'escape' ? t.objective : null;
-    this.vs.coreHot = strike?.act === 'core'
-      && strike.coreExposed === true
-      && strike.coreDestroyed !== true;
+    const collection = t.objective.kind === 'collection' ? t.objective : null;
+    this.vs.coreHot = false;
     const objectiveKind = t.objective.kind;
     if (objectiveKind !== this.pObjectiveKind) {
       this.pObjectiveKind = objectiveKind;
-      this.nObjectiveKind.textContent = strike
-        ? this.messages.hud.nextTarget
-        : escape
-          ? this.messages.hud.safeCorridors
-          : this.messages.hud.nextMarker;
-      this.nStrikeStatus.hidden = strike === null;
+      this.nObjectiveKind.textContent = collection
+        ? this.messages.hud.relayCharge
+        : this.messages.hud.nextMarker;
+      this.nCollectionStatus.hidden = collection === null;
     }
-    /* Each objective owns its counter: accepted splits, safe corridors, or destroyed shields. */
-    const total = Math.max(
-      1,
-      strike?.shieldNodesTotal
-        ?? strike?.targetsRequired
-        ?? escape?.checkpointTotal
-        ?? t.gate.total,
-    );
+    const total = Math.max(1, collection?.required ?? t.gate.total);
     const cleared = clamp(
-      strike?.targetsDestroyed ?? escape?.checkpoint ?? t.splits.length,
+      collection?.collected ?? t.splits.length,
       0,
       total,
     );
-    const current = strike ? cleared : Math.min(cleared + 1, total);
+    const current = collection ? cleared : Math.min(cleared + 1, total);
     if (current !== this.pGateCur) {
       this.pGateCur = current;
       this.nGateCur.set(current);
@@ -956,31 +961,45 @@ export class Hud {
       this.pGateTot = total;
       this.nGateTot.textContent = PAD2(total);
     }
-    const gateNameType = t.gate.nameMessage?.type ?? '';
-    if (t.gate.name !== this.pGateName || gateNameType !== this.pGateNameType) {
-      this.pGateName = t.gate.name;
+    const targetName = collection
+      ? collection.primarySourceId ?? t.guidance.label
+      : t.gate.name;
+    const gateNameType = collection ? '' : t.gate.nameMessage?.type ?? '';
+    if (targetName !== this.pGateName || gateNameType !== this.pGateNameType) {
+      this.pGateName = targetName;
       this.pGateNameType = gateNameType;
-      if (t.gate.nameMessage) {
+      if (!collection && t.gate.nameMessage) {
         this.writeDynamicText(this.nGateName, this.translator.domain(t.gate.nameMessage));
         this.nGateName.lang = 'en';
       } else {
-        this.nGateName.textContent = t.gate.name;
+        this.nGateName.textContent = targetName;
         this.nGateName.lang = 'en';
       }
       retrigger(this.nGateName, 'is-in');
     }
-    if (strike) {
-      const accuracy = (strike.shotsFired ?? 0) > 0
-        ? Math.round((strike.shotsHit ?? 0) / (strike.shotsFired ?? 1) * 100)
-        : 0;
-      const status = strike.act === 'extract'
-        ? `${this.messages.hud.extracting} · TURN ${strike.extractionTurnsCleared ?? 0}/${strike.extractionTurnsTotal ?? 2} · ${this.messages.hud.blast} ${(strike.blastSeconds ?? 0).toFixed(1)}S`
-        : strike.act === 'core'
-          ? `${this.messages.hud.arrayCore} · ${strike.coreExposed ? 'EXPOSED' : 'LOCKED'}`
-          : `${this.messages.hud.shieldNodes} ${strike.targetsDestroyed}/${strike.shieldNodesTotal ?? strike.targetsRequired} · ${strike.targetsRequired} REQUIRED · ${this.messages.hud.accuracy} ${accuracy}%`;
-      if (status !== this.pStrikeStatus) {
-        this.pStrikeStatus = status;
-        this.nStrikeStatus.textContent = status;
+    if (collection) {
+      const status = `${this.messages.hud.chargeProgress(collection.charge, collection.chargeRequired)} · ${this.messages.hud.coreProgress(collection.collected, collection.required)}`;
+      if (status !== this.pCollectionStatus) {
+        this.pCollectionStatus = status;
+        this.nCollectionSummary.textContent = status;
+      }
+      let sourceBits = 0;
+      for (let index = 0; index < collection.sources.length; index++) {
+        const source = collection.sources[index]!;
+        if (source.collected) sourceBits |= 1 << index;
+        if (source.primary) sourceBits |= 1 << (index + 5);
+      }
+      if (sourceBits !== this.pCollectionSourceBits) {
+        this.pCollectionSourceBits = sourceBits;
+        for (let index = 0; index < this.nCollectionSourcePips.length; index++) {
+          const source = collection.sources[index];
+          const pip = this.nCollectionSourcePips[index]!;
+          pip.hidden = source === undefined;
+          if (!source) continue;
+          pip.dataset['collected'] = source.collected ? '1' : '0';
+          pip.dataset['primary'] = source.primary ? '1' : '0';
+          pip.title = source.id;
+        }
       }
     }
 
@@ -1022,9 +1041,8 @@ export class Hud {
         node.classList.toggle('is-next', i === cleared);
       }
     }
-    const objectiveProgress = strike?.pathProgress ?? escape?.pathProgress;
-    const prog = objectiveProgress !== undefined
-      ? clamp(objectiveProgress, 0, 1)
+    const prog = collection
+      ? cleared / total
       : t.courseTotal > 0
         ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1)
         : cleared / total;
@@ -1239,12 +1257,15 @@ export class Hud {
   }
 
   private updateSplits(t: Telemetry, dt: number): void {
-    if (t.bestSplits.length !== this.pBestSplitCount || t.gate.total !== this.pSplitTotal) {
+    const splitTotal = t.objective.kind === 'collection'
+      ? t.objective.required
+      : t.gate.total;
+    if (t.bestSplits.length !== this.pBestSplitCount || splitTotal !== this.pSplitTotal) {
       this.pBestSplitCount = t.bestSplits.length;
-      this.pSplitTotal = t.gate.total;
+      this.pSplitTotal = splitTotal;
       this.splitComparable =
-        t.gate.total > 0 &&
-        t.bestSplits.length === t.gate.total &&
+        splitTotal > 0 &&
+        t.bestSplits.length === splitTotal &&
         t.bestSplits.every((split) => Number.isFinite(split) && split >= 0);
       this.nSplitFeed.dataset['delta'] = this.splitComparable ? '1' : '0';
     }
@@ -1325,7 +1346,7 @@ export class Hud {
     }
     /* Explicit impact signal. The old heuristic watched `hull` fall frame to frame, which
        missed a glancing contact that cost no hull and misfired whenever the value was
-       re-clamped. `impactFlash` spikes on the strike and decays on its own, so the pulse is
+       re-clamped. `impactFlash` spikes on contact and decays on its own, so the pulse is
        retriggered on the leading edge only. */
     if (t.impactFlash > 0.05 && this.pImpactFlash <= 0.05) {
       retrigger(this.nImpact, 'is-hit');
@@ -1389,28 +1410,30 @@ export class Hud {
     vs.slipX = this.eSlipX.step(dt);
     vs.slipY = this.eSlipY.step(dt);
 
-    /* --- gate director --- */
-    const gate = t.gate;
-    this.eGateOn.target = gate.anchor.onScreen ? 1 : 0;
+    /* --- objective director --- */
+    const collection = t.objective.kind === 'collection';
+    const anchor = collection ? t.guidance.anchor : t.gate.anchor;
+    const distance = collection ? t.guidance.distance : t.gate.distance;
+    this.eGateOn.target = anchor.onScreen ? 1 : 0;
     vs.gateOn = this.eGateOn.step(dt);
-    vs.gateAngle = gate.anchor.angle;
-    vs.gateDist = gate.distance;
-    this.eAlign.target = clamp(gate.alignment, 0, 1);
+    vs.gateAngle = anchor.angle;
+    vs.gateDist = distance;
+    this.eAlign.target = collection ? 1 : clamp(t.gate.alignment, 0, 1);
     vs.gateAlign = this.eAlign.step(dt);
 
     /* Upper clamp is 0.26h, not 0.34h: past that the brackets stop reading as a reticle and
        start reading as four unrelated corner marks parked near the screen edges. */
-    const targetR = clamp((140 / Math.max(gate.distance, 60)) * h * 0.62, h * 0.022, h * 0.26);
+    const targetR = clamp((140 / Math.max(distance, 60)) * h * 0.62, h * 0.022, h * 0.26);
     this.eGateR.target = targetR;
     vs.gateR = this.eGateR.step(dt);
-    vs.gateX = w * 0.5 + gate.anchor.x * w * 0.5;
-    vs.gateY = h * 0.5 - gate.anchor.y * h * 0.5;
+    vs.gateX = w * 0.5 + anchor.x * w * 0.5;
+    vs.gateY = h * 0.5 - anchor.y * h * 0.5;
     vs.proximity = this.eProx.value;
 
     const dx = vs.gateX - w * 0.5;
     const dy = vs.gateY - h * 0.5;
     const boreR = Math.sqrt(dx * dx + dy * dy);
-    vs.bore = gate.anchor.onScreen ? clamp(1 - boreR / (h * 0.055), 0, 1) : 0;
+    vs.bore = anchor.onScreen ? clamp(1 - boreR / (h * 0.055), 0, 1) : 0;
 
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
@@ -1418,13 +1441,75 @@ export class Hud {
 
     this.drawRollArc(ctx, w, h, vs);
     this.drawProximity(ctx, w, h, vs);
+    if (t.objective.kind === 'collection') {
+      this.drawCollectionMarkers(ctx, w, h, t.objective, alpha);
+    }
     if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs, Math.min(w, h));
     if (vs.gateOn < 0.99) this.drawChaseArrow(ctx, w, h, vs);
     this.drawFlightMarker(ctx, w, h, vs);
     this.drawPipper(ctx, w, h, vs);
 
     ctx.globalAlpha = 1;
-    this.placeGateTag(w, h, vs, gate.anchor.onScreen);
+    this.placeGateTag(w, h, vs, anchor.onScreen);
+  }
+
+  /** Five quiet source marks; only the common guidance target receives the large director. */
+  private drawCollectionMarkers(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    objective: Extract<Telemetry['objective'], { kind: 'collection' }>,
+    alpha: number,
+  ): void {
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const edgeX = Math.max(24, cx - 48);
+    const edgeY = Math.max(24, cy - 48);
+    ctx.save();
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+
+    for (const source of objective.sources) {
+      if (source.collected) continue;
+      const anchor = source.anchor;
+      let x: number;
+      let y: number;
+      if (anchor.onScreen) {
+        x = cx + anchor.x * cx;
+        y = cy - anchor.y * cy;
+      } else {
+        const dx = Math.cos(anchor.angle);
+        const dy = -Math.sin(anchor.angle);
+        const edgeScale = Math.min(
+          edgeX / Math.max(Math.abs(dx), 0.001),
+          edgeY / Math.max(Math.abs(dy), 0.001),
+        );
+        x = cx + dx * edgeScale;
+        y = cy + dy * edgeScale;
+      }
+
+      const size = source.primary ? 6 : 4.5;
+      const colour = source.primary ? UI.accent : UI.primary;
+      ctx.globalAlpha = alpha * (source.primary ? 0.95 : 0.72);
+      ctx.beginPath();
+      ctx.moveTo(x, y - size);
+      ctx.lineTo(x + size, y);
+      ctx.lineTo(x, y + size);
+      ctx.lineTo(x - size, y);
+      ctx.closePath();
+      casedStroke(ctx, colour, source.primary ? 1.5 : 1, 3);
+      if (anchor.onScreen && !source.primary) {
+        let label = this.collectionLabels.get(source.id);
+        if (label === undefined) {
+          label = source.id.startsWith('CORE-') ? source.id.slice(5) : source.id;
+          this.collectionLabels.set(source.id, label);
+        }
+        ctx.fillStyle = UI.primary;
+        ctx.fillText(label, x, y - size - 4);
+      }
+    }
+    ctx.restore();
   }
 
   /** Compact roll scale sat above the pipper. Reads as part of the sight, not a horizon line. */

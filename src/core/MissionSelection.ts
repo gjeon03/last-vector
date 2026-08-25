@@ -72,6 +72,9 @@ export function buildMissionUrl(
   const url = current instanceof URL ? new URL(current.href) : new URL(current, base);
   url.searchParams.set('mission', isMissionId(missionId) ? missionId : DEFAULT_MISSION_ID);
   url.searchParams.delete('course');
+  // Layout identity belongs only to a specific BLACKOUT RELAY launch descriptor. Chapter
+  // navigation always starts a fresh layout instead of leaking the previous run across missions.
+  url.searchParams.delete('layout');
   if (options.preserveSeed !== true) url.searchParams.delete('seed');
   return url.href;
 }

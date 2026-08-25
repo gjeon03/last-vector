@@ -13,7 +13,6 @@ import type {
   MissionRewardEvent,
   MissionRuntime,
   MissionSimulationOutcome,
-  MissionWeaponEvent,
 } from './MissionRuntime.ts';
 
 /** Legacy automation wins; generic input survives only when the caller declares active flight. */
@@ -64,20 +63,15 @@ export function buildCampaignViewModel(
   };
 }
 
-/**
- * Consumes discrete runtime output only after an active objective update on a surviving frame.
- * Weapon feedback is intentionally transported and cleared without common-layer audio mapping.
- */
+/** Consumes discrete objective rewards after every surviving active frame. */
 export function consumeMissionFrameEvents(
-  mission: Pick<MissionRuntime, 'drainRewardEvents' | 'drainWeaponEvents'>,
+  mission: Pick<MissionRuntime, 'drainRewardEvents'>,
   outcome: MissionSimulationOutcome,
   ship: Pick<Ship, 'rechargeBoost'>,
   rewardEvents: MissionRewardEvent[],
-  weaponEvents: MissionWeaponEvent[],
 ): void {
-  if (outcome.hullFailed || outcome.terminal === null) return;
-
   rewardEvents.length = 0;
+  if (outcome.hullFailed) return;
   const rewardCount = mission.drainRewardEvents(rewardEvents);
   for (let index = 0; index < rewardCount; index++) {
     const event = rewardEvents[index]!;
@@ -86,6 +80,4 @@ export function consumeMissionFrameEvents(
     if (amount > 0) ship.rechargeBoost(amount);
   }
 
-  weaponEvents.length = 0;
-  mission.drainWeaponEvents(weaponEvents);
 }

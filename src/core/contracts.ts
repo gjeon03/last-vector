@@ -40,6 +40,7 @@ export type CalloutTitleMessage =
   | { type: 'callout-title.engage' }
   | { type: 'callout-title.hull-impact' }
   | { type: 'callout-title.boost-depleted' }
+  | { type: 'callout-title.core-acquired'; core: number }
   | { type: 'callout-title.gate-cleared'; accuracy: GateAccuracy }
   | { type: 'callout-title.gate-missed'; blockedBy?: GateMissCause };
 
@@ -47,6 +48,7 @@ export type CalloutSubMessage =
   | { type: 'callout-sub.keyboard-flight-available' }
   | { type: 'callout-sub.camera-active'; mode: CameraMode }
   | { type: 'callout-sub.boost-recharging' }
+  | { type: 'callout-sub.relay-charge'; charge: number; required: number }
   | { type: 'callout-sub.gate-progress'; remaining: number; courseId?: CourseId }
   | { type: 'callout-sub.gate-realign' }
   | { type: 'callout-sub.gate-shear-window' };
@@ -55,6 +57,7 @@ export type LogMessage =
   | { type: 'log.pointer-lock-refused'; reason: string }
   | { type: 'log.hull-contact'; percent: number }
   | { type: 'log.boost-depleted' }
+  | { type: 'log.core-acquired'; core: number; seconds: number }
   | { type: 'log.gate-cleared'; gate: number; seconds: number; courseId?: CourseId }
   | {
       type: 'log.gate-missed';
@@ -106,38 +109,30 @@ export interface GateRaceObjectiveTelemetry {
   complete: boolean;
 }
 
-export interface EscapeObjectiveTelemetry {
-  kind: 'escape';
-  pathProgress: number;
-  shockwaveProgress: number;
-  checkpoint: number;
-  checkpointTotal: number;
+export interface CollectionSourceTelemetry {
+  readonly id: string;
+  readonly position: readonly [number, number, number];
+  readonly anchor: ScreenAnchor;
+  distance: number;
+  collected: boolean;
+  primary: boolean;
 }
 
-export interface StrikeObjectiveTelemetry {
-  kind: 'strike';
-  targetsDestroyed: number;
-  targetsRequired: number;
-  coreDestroyed: boolean;
-  extracting: boolean;
-  /** Authored strike detail. Optional for foundation-era synthetic telemetry. */
-  act?: 'ingress' | 'shield-run' | 'core' | 'extract';
-  shieldNodesTotal?: number;
-  calibrationDestroyed?: boolean;
-  coreExposed?: boolean;
-  shotsFired?: number;
-  shotsHit?: number;
-  blastSeconds?: number | null;
-  pathProgress?: number;
-  /** Objective-owned sequential extraction turns; absent on foundation-era fixtures. */
-  extractionTurnsCleared?: number;
-  extractionTurnsTotal?: number;
+export interface CollectionObjectiveTelemetry {
+  kind: 'collection';
+  collected: number;
+  required: number;
+  activeTotal: number;
+  charge: number;
+  chargeRequired: number;
+  primarySourceId: string | null;
+  primaryDistance: number | null;
+  sources: readonly CollectionSourceTelemetry[];
 }
 
 export type ObjectiveTelemetry =
   | GateRaceObjectiveTelemetry
-  | EscapeObjectiveTelemetry
-  | StrikeObjectiveTelemetry;
+  | CollectionObjectiveTelemetry;
 
 export interface Telemetry {
   phase: Phase;
@@ -274,29 +269,18 @@ export interface GateRaceMissionResult extends MissionResultBase {
   maxGateOffset: number;
 }
 
-export interface EscapeMissionResult extends MissionResultBase {
-  kind: 'escape';
+export interface CollectionMissionResult extends MissionResultBase {
+  kind: 'collection';
   bestTime: number | null;
   isNewBest: boolean;
-  checkpointsCleared: number;
-  checkpointsTotal: number;
-  secondsAhead: number;
+  collected: number;
+  required: number;
+  activeTotal: number;
+  charge: number;
+  chargeRequired: number;
 }
 
-export interface StrikeMissionResult extends MissionResultBase {
-  kind: 'strike';
-  bestTime: number | null;
-  isNewBest: boolean;
-  targetsDestroyed: number;
-  targetsRequired: number;
-  /** Authored target count when the success threshold is smaller than the mastery total. */
-  targetsTotal?: number;
-  shotsFired: number;
-  shotsHit: number;
-  coreDestroyed: boolean;
-}
-
-export type MissionResult = GateRaceMissionResult | EscapeMissionResult | StrikeMissionResult;
+export type MissionResult = GateRaceMissionResult | CollectionMissionResult;
 /** Current shipped objective result; retained as a narrow compatibility name. */
 export type RunResult = GateRaceMissionResult;
 
@@ -347,6 +331,8 @@ export interface HudHost {
   selectMission(missionId: MissionId): void;
   /** Returns to the title mission view without changing the active boot-built world. */
   showMissionSelect(): void;
+  /** Reloads the active collection mission with a validated layout different from this run. */
+  newLayout(): void;
   /** Requests a persisted locale change; the game accepts it only while the title is active. */
   requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
@@ -417,9 +403,6 @@ export type SfxEvent =
   | 'newBest'
   | 'impact'
   | 'scrape'
-  | 'weaponFire'
-  | 'weaponHit'
-  | 'targetDestroy'
   | 'warnProximity'
   | 'uiHover'
   | 'uiClick'

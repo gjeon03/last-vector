@@ -39,11 +39,17 @@ export interface ScreenMessages {
   transitTo: string;
   destination: string;
   markers: string;
+  sources: string;
+  required: string;
   corridor: string;
   primary: string;
+  relay: string;
   hull: string;
   drift: string;
+  field: string;
   closing: string;
+  blackout: string;
+  live: string;
   coreControls: string;
   briefingLine1: string;
   briefingLine2: string;
@@ -69,11 +75,10 @@ export interface ScreenMessages {
  */
 export type CampaignMessageCourseId =
   | 'cairn-drift'
-  | 'last-ascent'
+  | 'relay-harvest'
   | 'needle-grave'
   | 'wreckline'
-  | 'ringfall'
-  | 'dead-signal';
+  | 'ringfall';
 
 export interface CampaignRouteMessages {
   /** Compact catalog label; canonical telemetry remains in the course definition. */
@@ -102,8 +107,6 @@ export interface CampaignRouteMessages {
     highestRank: string;
     cleanClear: string;
     precision: string;
-    allNodes?: string;
-    accuracy?: string;
   };
 }
 
@@ -138,7 +141,6 @@ export interface ControlMessages {
   throttle: string;
   roll: string;
   boost: string;
-  fire: string;
   brake: string;
   strafeHorizontal: string;
   strafeVertical: string;
@@ -199,12 +201,9 @@ export interface HudMessages {
   elapsed: string;
   best: string;
   nextMarker: string;
-  nextTarget: string;
-  shieldNodes: string;
-  arrayCore: string;
-  extracting: string;
-  blast: string;
-  accuracy: string;
+  relayCharge: string;
+  cores: string;
+  primaryCore: string;
   departure: string;
   charging: string;
   locked: string;
@@ -218,15 +217,8 @@ export interface HudMessages {
   meterPercent: (percent: number) => string;
   boostUsable: (seconds: number) => string;
   boostRecharging: (percent: number) => string;
-  shockfront: string;
-  separation: string;
-  safeCorridors: string;
-  ascentAct: string;
-  debrisAct: string;
-  escapeAct: string;
-  shockfrontClosing: string;
-  shockfrontCritical: string;
-  escapeStatus: (separationMetres: number, checkpoint: number, total: number) => string;
+  coreProgress: (collected: number, required: number) => string;
+  chargeProgress: (charge: number, required: number) => string;
 }
 
 export interface EventMessages {
@@ -246,6 +238,9 @@ export interface EventMessages {
   boostDepletedTitle: string;
   boostRechargingSub: string;
   boostDepletedLog: string;
+  coreAcquired: (core: number) => string;
+  relayChargeCallout: (charge: number, required: number) => string;
+  coreAcquiredLog: (core: number, seconds: number) => string;
   gateDeadCentre: string;
   gateClean: string;
   gateCleared: string;
@@ -276,9 +271,8 @@ export interface ResultMessages {
   marker: string;
   topSpeed: string;
   widestMarker: string;
-  shieldNodes: string;
-  accuracy: string;
-  core: string;
+  coresRecovered: string;
+  relayCharge: string;
   hull: string;
   clean: string;
   damaged: string;
@@ -286,11 +280,9 @@ export interface ResultMessages {
   elapsed: string;
   versusBest: string;
   runAgain: string;
+  newLayout: string;
   returnToTitle: string;
   missionFailed: string;
-  insufficientNodes: string;
-  coreWindowMissed: string;
-  blastTimeout: string;
   hullBreach: string;
   time: string;
   retry: string;
@@ -299,12 +291,7 @@ export interface ResultMessages {
   terminus: string;
   splitDelta: (delta: string) => string;
   bestComparison: (delta: string, best: string) => string;
-  extractionConfirmed: string;
-  safeCorridors: string;
-  shockfrontMargin: string;
-  secondsUnit: string;
-  shockfrontOverrun: string;
-  shockfrontOverrunDetail: string;
+  relayStabilised: string;
 }
 
 export interface CockpitMessages {
@@ -335,9 +322,6 @@ export interface A11yMessages {
   controls: string;
   runComplete: string;
   missionFailed: string;
-  insufficientNodes: string;
-  coreWindowMissed: string;
-  blastTimeout: string;
   hullBreach: string;
 }
 

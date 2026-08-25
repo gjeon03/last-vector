@@ -375,21 +375,6 @@ export class ProgressStore {
       && getMissionDefinition(missionId).mastery.includes('precision')) {
       mastery.precision = true;
     }
-    if (result.kind === 'escape'
-      && result.checkpointsCleared === result.checkpointsTotal
-      && getMissionDefinition(missionId).mastery.includes('precision')) {
-      mastery.precision = true;
-    }
-    if (result.kind === 'strike') {
-      const definition = getMissionDefinition(missionId);
-      if (definition.mastery.includes('all-nodes') && result.targetsDestroyed >= 6) {
-        mastery['all-nodes'] = true;
-      }
-      const accuracy = result.shotsFired > 0 ? result.shotsHit / result.shotsFired : 0;
-      if (definition.mastery.includes('accuracy') && accuracy >= 0.75) {
-        mastery.accuracy = true;
-      }
-    }
     this.current.missions[missionId] = {
       cleared: true,
       clearedAt: previous.clearedAt ?? this.now(),

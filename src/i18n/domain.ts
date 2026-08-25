@@ -29,6 +29,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       return messages.events.hullImpact;
     case 'callout-title.boost-depleted':
       return messages.events.boostDepletedTitle;
+    case 'callout-title.core-acquired':
+      return messages.events.coreAcquired(message.core);
     case 'callout-title.gate-cleared':
       if (message.accuracy === 'dead-centre') return messages.events.gateDeadCentre;
       if (message.accuracy === 'clean') return messages.events.gateClean;
@@ -46,6 +48,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
         : messages.events.exteriorCameraActive;
     case 'callout-sub.boost-recharging':
       return messages.events.boostRechargingSub;
+    case 'callout-sub.relay-charge':
+      return messages.events.relayChargeCallout(message.charge, message.required);
     case 'callout-sub.gate-progress':
       if (message.courseId) {
         return messages.campaign.routes[message.courseId].gateProgress(message.remaining);
@@ -61,6 +65,8 @@ export function renderDomainMessage(messages: Messages, message: DomainMessage):
       return messages.events.hullContact(message.percent);
     case 'log.boost-depleted':
       return messages.events.boostDepletedLog;
+    case 'log.core-acquired':
+      return messages.events.coreAcquiredLog(message.core, message.seconds);
     case 'log.gate-cleared':
       if (message.courseId) {
         return messages.campaign.routes[message.courseId].gateClearedLog(message.gate, message.seconds);

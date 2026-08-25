@@ -17,17 +17,11 @@ export interface FlightCommand {
   throttle: number;
   strafeX: number;
   strafeY: number;
-  fire: boolean;
   boost: boolean;
   brake: boolean;
   /** Pixels of raw mouse motion this frame, for the reticle's own inertia. */
   stickX: number;
   stickY: number;
-}
-
-export interface InputOptions {
-  /** Construction-time capability only. Chapter code owns any future FIRE binding. */
-  readonly fireEnabled?: boolean;
 }
 
 const KEY_ALIASES: Record<string, string> = {
@@ -47,7 +41,6 @@ export class Input {
     throttle: 0.85,
     strafeX: 0,
     strafeY: 0,
-    fire: false,
     boost: false,
     brake: false,
     stickX: 0,
@@ -56,7 +49,6 @@ export class Input {
 
   sensitivity = 1;
   invertY = false;
-  readonly fireEnabled: boolean;
   /** When set, the harness fully overrides the human. */
   private override: HarnessInput | null = null;
 
@@ -76,7 +68,7 @@ export class Input {
   private shiftHeld = false;
   private stickX = 0;
   /** Mouse-button flight actions. See handleMouseButton for why these are not synthetic keys. */
-  private mouseFire = false;
+  private mouseBoost = false;
   private mouseBrake = false;
   private stickY = 0;
   private mouseDx = 0;
@@ -102,9 +94,8 @@ export class Input {
   lockRefused = false;
   onAction: ((action: 'restart' | 'view' | 'match') => void) | null = null;
 
-  constructor(canvas: HTMLElement, options: InputOptions = {}) {
+  constructor(canvas: HTMLElement) {
     this.canvas = canvas;
-    this.fireEnabled = options.fireEnabled === true;
     window.addEventListener('keydown', this.handleKeyDown, { passive: false });
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('blur', this.handleBlur);
@@ -176,7 +167,7 @@ export class Input {
     this.stickY = 0;
     this.mouseDx = 0;
     this.mouseDy = 0;
-    this.mouseFire = false;
+    this.mouseBoost = false;
     this.mouseBrake = false;
     /* Quarantine non-modifier menu input at the run boundary. W/S also navigate the interface,
        so an OS repeat from the same physical press must not silently preload the countdown. Shift
@@ -200,7 +191,6 @@ export class Input {
       c.throttle = clamp01(o.throttle ?? 1);
       c.strafeX = clamp(o.strafeX ?? 0, -1, 1);
       c.strafeY = clamp(o.strafeY ?? 0, -1, 1);
-      c.fire = o.fire ?? false;
       c.boost = o.boost ?? false;
       c.brake = o.brake ?? false;
       c.stickX = c.yaw;
@@ -240,7 +230,7 @@ export class Input {
     if (this.held('KeyS')) this.throttle -= throttleRate * dt;
     this.throttle = clamp01(this.throttle);
 
-    let boost = this.shiftHeld || this.held('ShiftLeft') || this.held('ShiftRight');
+    let boost = this.shiftHeld || this.held('ShiftLeft') || this.held('ShiftRight') || this.mouseBoost;
     let brake = this.held('Space') || this.mouseBrake;
 
     // --- gamepad -------------------------------------------------------------------
@@ -265,7 +255,6 @@ export class Input {
     c.strafeX = clamp(strafeX, -1, 1);
     c.strafeY = clamp(strafeY, -1, 1);
     c.throttle = this.throttle;
-    c.fire = this.fireEnabled && this.mouseFire;
     c.boost = boost;
     c.brake = brake;
     return c;
@@ -343,7 +332,7 @@ export class Input {
     }
     this.keys.clear();
     this.shiftHeld = false;
-    this.mouseFire = false;
+    this.mouseBoost = false;
     this.mouseBrake = false;
     this.mouseDx = 0;
     this.mouseDy = 0;
@@ -360,7 +349,7 @@ export class Input {
       /* The half of the latch fix that handleMouseButton cannot do for itself: the mouseup that
          follows a lock loss is dropped by its guard, so the release has to happen HERE, on the
          transition. A physically held keyboard boost is untouched — these are mouse-only state. */
-      this.mouseFire = false;
+      this.mouseBoost = false;
       this.mouseBrake = false;
     }
     this.onLockChange?.(locked);
@@ -392,7 +381,7 @@ export class Input {
   private readonly handleMouseButton = (e: MouseEvent): void => {
     if (!this.locked) return;
     const down = e.type === 'mousedown';
-    if (e.button === 0 && this.fireEnabled) this.mouseFire = down;
+    if (e.button === 0) this.mouseBoost = down;
     if (e.button === 2) this.mouseBrake = down;
   };
 

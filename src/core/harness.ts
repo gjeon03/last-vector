@@ -41,7 +41,6 @@ export interface HarnessInput {
   strafeX?: number;
   /** -1..1 vertical strafe, positive = up. */
   strafeY?: number;
-  fire?: boolean;
   boost?: boolean;
   brake?: boolean;
 }
@@ -225,7 +224,8 @@ export interface HarnessLocaleState {
 
 /** Stable, JSON-safe identity for the one route whose world was built at boot. */
 export interface HarnessCourseState {
-  courseId: CourseId;
+  /** Historical field name; active launches are now keyed by the mission catalog. */
+  courseId: MissionId;
   recordId: string;
   seed: number;
   gateCount: number;
@@ -240,7 +240,7 @@ export interface HarnessCatalogState {
   /** Sanitized identities, including dormant definitions retained for migration. */
   recognizedOrder: readonly CourseId[];
   courses: ReadonlyArray<{
-    id: CourseId;
+    id: CourseId | MissionId;
     order: number;
     defaultSeed: number;
     recordId: string;

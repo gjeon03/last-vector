@@ -6,18 +6,12 @@ import {
   type FlightPathDefinition,
   type RadioAuthoringDefinition,
 } from './Courses.ts';
-import {
-  LAST_ASCENT_DEFAULT_SEED,
-  LAST_ASCENT_PATH,
-  LAST_ASCENT_PRESENTATION_COURSE,
-  LAST_ASCENT_RADIO,
-} from '../game/missions/LastAscentDefinition.ts';
-import { DEAD_SIGNAL_MISSION } from '../game/missions/DeadSignalMission.ts';
 
-export type MissionId = 'cairn-drift' | 'last-ascent' | 'dead-signal';
-export type MissionChapter = 1 | 2 | 3;
-export type MissionCapability = 'fire';
-export type MasteryId = 'precision' | 'all-nodes' | 'accuracy';
+export type MissionId = 'cairn-drift' | 'relay-harvest';
+export type MissionChapter = 1 | 2;
+/** Reserved for genuine player verbs shared across future objective implementations. */
+export type MissionCapability = never;
+export type MasteryId = 'precision';
 
 export interface GateRaceObjectiveDefinition {
   readonly kind: 'gate-race';
@@ -25,44 +19,29 @@ export interface GateRaceObjectiveDefinition {
   readonly gates: CourseDefinition;
 }
 
-/** Contract only. A chapter branch supplies authored values when its mission exists. */
-export interface EscapeObjectiveDefinition {
-  readonly kind: 'escape';
+export interface CollectionObjectiveDefinition {
+  readonly kind: 'collection';
   readonly path: FlightPathDefinition;
-  readonly shockwave: {
-    readonly speed: number;
-    readonly startProgress: number;
-    readonly catchProgress: number;
-  };
+  readonly activeSources: 5;
+  readonly requiredSources: 3;
+  readonly chargePerSource: 20;
+  readonly chargeRequired: 60;
 }
 
-/** Contract only. The foundation does not ship target groups or weapon capability. */
-export interface StrikeObjectiveDefinition {
-  readonly kind: 'strike';
-  readonly path: FlightPathDefinition;
-  readonly targets: readonly {
-    readonly id: string;
-    readonly required: boolean;
-    readonly hitPoints: number;
-  }[];
-  readonly extraction: {
-    readonly startProgress: number;
-    readonly timeoutSeconds: number;
-  };
-}
-
-export type ObjectiveDefinition =
-  | GateRaceObjectiveDefinition
-  | EscapeObjectiveDefinition
-  | StrikeObjectiveDefinition;
+export type ObjectiveDefinition = GateRaceObjectiveDefinition | CollectionObjectiveDefinition;
 
 /**
- * Serializable authoring boundary. Render objects and collision arrays belong to World at
- * runtime; storage, interface and success state never do.
+ * Serializable presentation boundary. The selected runtime remains the sole owner of render
+ * objects and collision arrays; the optional source course exists only for the legacy CAIRN
+ * adapter and is never used to fake another mission into a gate race.
  */
 export interface WorldDefinition {
-  readonly kind: 'frontier';
-  readonly sourceCourse: CourseDefinition;
+  readonly kind: 'frontier' | 'relay-field';
+  readonly sourceCourse: CourseDefinition | null;
+  readonly canonicalSector: string;
+  readonly canonicalDestination: string;
+  readonly sunDirection: readonly [number, number, number];
+  readonly attractLoopDistance: number;
 }
 
 export interface MissionDefinition {
@@ -82,47 +61,103 @@ export const CAIRN_MISSION: MissionDefinition = {
   chapter: 1,
   rulesetVersion: CAIRN_DRIFT.rulesetVersion,
   defaultSeed: CAIRN_DRIFT.defaultSeed,
-  world: { kind: 'frontier', sourceCourse: CAIRN_DRIFT },
+  world: {
+    kind: 'frontier',
+    sourceCourse: CAIRN_DRIFT,
+    canonicalSector: CAIRN_DRIFT.text.canonicalSector,
+    canonicalDestination: CAIRN_DRIFT.text.canonicalDestination,
+    sunDirection: CAIRN_DRIFT.world.sunDirection,
+    attractLoopDistance: CAIRN_DRIFT.geometry.gateSpacing * 2.2,
+  },
   objective: { kind: 'gate-race', path: CAIRN_DRIFT.geometry, gates: CAIRN_DRIFT },
   mastery: ['precision'],
   radio: CAIRN_DRIFT.radio,
   capabilities: [],
 };
 
-export const LAST_ASCENT_MISSION: MissionDefinition = {
-  id: 'last-ascent',
+/** A short straight launch corridor. The collection objective, not this line, owns navigation. */
+export const RELAY_HARVEST_PATH: FlightPathDefinition = Object.freeze({
+  legs: Object.freeze([
+    Object.freeze({
+      turn: 0,
+      climb: 0,
+      length: 4.6,
+      bank: 0,
+      clearance: 5_500,
+      label: 'relay field',
+    }),
+  ]),
+  gateSpacing: 10_000,
+  gateRadius: 220,
+  finalGateRadiusScale: 1,
+  leadInControlMetres: 1_000,
+  startOffsetMetres: -1_000,
+  runOutSteps: 3,
+  runOutStepMetres: 2_000,
+  terminusStandoff: 2_000,
+  sampleCount: 96,
+});
+
+const RELAY_RADIO: readonly RadioAuthoringDefinition[] = Object.freeze([
+  Object.freeze({
+    afterGate: 0,
+    speaker: 'Control',
+    messageKey: 'radio1',
+    safeWindowSeconds: 8,
+  }),
+  Object.freeze({
+    afterGate: 1,
+    speaker: 'Control',
+    messageKey: 'radio2',
+    safeWindowSeconds: 8,
+  }),
+  Object.freeze({
+    afterGate: 2,
+    speaker: 'Control',
+    messageKey: 'radio3',
+    safeWindowSeconds: 8,
+  }),
+]);
+
+export const RELAY_HARVEST_MISSION: MissionDefinition = Object.freeze({
+  id: 'relay-harvest',
   chapter: 2,
   rulesetVersion: 1,
-  defaultSeed: LAST_ASCENT_DEFAULT_SEED,
-  world: { kind: 'frontier', sourceCourse: LAST_ASCENT_PRESENTATION_COURSE },
-  objective: {
-    kind: 'escape',
-    path: LAST_ASCENT_PATH,
-    shockwave: {
-      speed: 0.0055,
-      startProgress: -0.08,
-      catchProgress: 0.3325,
-    },
-  },
-  mastery: ['precision'],
-  radio: LAST_ASCENT_RADIO,
-  capabilities: [],
-};
+  defaultSeed: 0x52454c59,
+  world: Object.freeze({
+    kind: 'relay-field',
+    sourceCourse: null,
+    canonicalSector: 'THE BLACKOUT RELAY',
+    canonicalDestination: 'RELAY HEART',
+    sunDirection: Object.freeze([0.48, 0.22, -0.85] as const),
+    attractLoopDistance: 18_000,
+  }),
+  objective: Object.freeze({
+    kind: 'collection',
+    path: RELAY_HARVEST_PATH,
+    activeSources: 5,
+    requiredSources: 3,
+    chargePerSource: 20,
+    chargeRequired: 60,
+  }),
+  mastery: Object.freeze([]),
+  radio: RELAY_RADIO,
+  capabilities: Object.freeze([]),
+});
 
 export const ACTIVE_MISSION_ORDER = [
   'cairn-drift',
-  'last-ascent',
-  'dead-signal',
+  'relay-harvest',
 ] as const satisfies readonly MissionId[];
+
 export const DORMANT_COURSE_ORDER = KNOWN_COURSE_ORDER.filter(
   (id): id is Exclude<CourseId, MissionId> => id !== 'cairn-drift',
 );
 
-export const MISSION_CATALOG: Readonly<Record<MissionId, MissionDefinition>> = {
+export const MISSION_CATALOG: Readonly<Record<MissionId, MissionDefinition>> = Object.freeze({
   'cairn-drift': CAIRN_MISSION,
-  'last-ascent': LAST_ASCENT_MISSION,
-  'dead-signal': DEAD_SIGNAL_MISSION,
-};
+  'relay-harvest': RELAY_HARVEST_MISSION,
+});
 
 export const DEFAULT_MISSION_ID: MissionId = 'cairn-drift';
 

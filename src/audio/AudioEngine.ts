@@ -86,7 +86,6 @@ const DUCKING_EVENTS: ReadonlySet<SfxEvent> = new Set<SfxEvent>([
   'finish',
   'newBest',
   'impact',
-  'targetDestroy',
 ]);
 
 /**

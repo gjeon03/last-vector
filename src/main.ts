@@ -11,14 +11,18 @@ import {
 } from './core/Courses.ts';
 import {
   ACTIVE_MISSION_ORDER,
+  DORMANT_COURSE_ORDER,
   getMissionDefinition,
   getNextMission,
-  isMissionId,
   missionRecordId,
 } from './core/Missions.ts';
 import { resolveMissionSelection } from './core/MissionSelection.ts';
 import { ProgressStore } from './core/Progress.ts';
 import { getMissionRuntimeFactory } from './game/missions/MissionFactories.ts';
+import {
+  VALIDATED_RELAY_HARVEST_LAYOUTS,
+  selectRelayHarvestLayoutIndex,
+} from './game/missions/RelayHarvestLayout.ts';
 import {
   consumeLocaleHandoff,
   createTranslator,
@@ -133,11 +137,37 @@ async function boot(): Promise<void> {
   const seedParam = search.get('seed');
   const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
   const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
-  const missionResolution = resolveMissionSelection({
+  let missionResolution = resolveMissionSelection({
     mission: search.get('mission'),
     legacyCourse: search.get('course'),
   }, progressStore.snapshot());
   const missionDefinition = getMissionDefinition(missionResolution.missionId);
+  const actualSeed = seed ?? missionDefinition.defaultSeed;
+  let layoutIndex: number | undefined;
+  const canonicalUrl = new URL(window.location.href);
+  if (missionDefinition.id === 'relay-harvest') {
+    const rawLayout = search.get('layout');
+    const parsedLayout = rawLayout !== null && /^\d+$/u.test(rawLayout)
+      ? Number.parseInt(rawLayout, 10)
+      : -1;
+    const validLayout = Number.isInteger(parsedLayout)
+      && parsedLayout >= 0
+      && parsedLayout < VALIDATED_RELAY_HARVEST_LAYOUTS.length;
+    layoutIndex = validLayout ? parsedLayout : selectRelayHarvestLayoutIndex(actualSeed);
+    if (!validLayout && rawLayout !== null) {
+      missionResolution = {
+        ...missionResolution,
+        diagnostic: `invalid layout parameter: ${rawLayout}`,
+      };
+    }
+    if (rawLayout !== String(layoutIndex)) {
+      canonicalUrl.searchParams.set('layout', String(layoutIndex));
+      window.history.replaceState(window.history.state, '', canonicalUrl.href);
+    }
+  } else if (canonicalUrl.searchParams.has('layout')) {
+    canonicalUrl.searchParams.delete('layout');
+    window.history.replaceState(window.history.state, '', canonicalUrl.href);
+  }
 
   let game: Game;
   try {
@@ -154,6 +184,7 @@ async function boot(): Promise<void> {
       missionDefinition,
       missionResolution,
       missionRuntimeFactory: getMissionRuntimeFactory(missionDefinition.id),
+      ...(layoutIndex === undefined ? {} : { layoutIndex }),
       ...(seed === undefined ? {} : { seed }),
     });
   } catch (error) {
@@ -259,27 +290,47 @@ function installHarness(game: Game): void {
     catalog: () => ({
       order: [...ACTIVE_MISSION_ORDER],
       recognizedOrder: [...KNOWN_COURSE_ORDER],
-      courses: KNOWN_COURSE_ORDER.map((id) => {
-        const definition = getCourseDefinition(id);
-        const active = isMissionId(id);
-        return {
-          id,
-          order: definition.order,
-          defaultSeed: definition.defaultSeed,
-          recordId: active
-            ? missionRecordId(getMissionDefinition(id), definition.defaultSeed)
-            : courseRecordId(definition, definition.defaultSeed),
-          active,
-          nextCourseId: active ? getNextMission(id) : null,
-          gateCount: definition.geometry.legs.length,
-          sector: definition.text.canonicalSector,
-          destination: definition.text.canonicalDestination,
-          objectives: [...definition.objectives],
-          shearGates: [...(definition.shear?.gates ?? [])],
-          landmarkKind: definition.world.landmarkKind,
-          radio: definition.radio.map((line) => ({ ...line })),
-        };
-      }),
+      courses: [
+        ...ACTIVE_MISSION_ORDER.map((id) => {
+          const definition = getMissionDefinition(id);
+          const gateRace = definition.objective.kind === 'gate-race'
+            ? definition.objective.gates
+            : null;
+          return {
+            id,
+            order: definition.chapter,
+            defaultSeed: definition.defaultSeed,
+            recordId: missionRecordId(definition, definition.defaultSeed),
+            active: true,
+            nextCourseId: getNextMission(id),
+            gateCount: gateRace?.geometry.legs.length ?? 0,
+            sector: definition.world.canonicalSector,
+            destination: definition.world.canonicalDestination,
+            objectives: [...(gateRace?.objectives ?? [])],
+            shearGates: [...(gateRace?.shear?.gates ?? [])],
+            landmarkKind: gateRace?.world.landmarkKind ?? definition.world.kind,
+            radio: definition.radio.map((line) => ({ ...line })),
+          };
+        }),
+        ...DORMANT_COURSE_ORDER.map((id) => {
+          const definition = getCourseDefinition(id);
+          return {
+            id,
+            order: definition.order,
+            defaultSeed: definition.defaultSeed,
+            recordId: courseRecordId(definition, definition.defaultSeed),
+            active: false,
+            nextCourseId: null,
+            gateCount: definition.geometry.legs.length,
+            sector: definition.text.canonicalSector,
+            destination: definition.text.canonicalDestination,
+            objectives: [...definition.objectives],
+            shearGates: [...(definition.shear?.gates ?? [])],
+            landmarkKind: definition.world.landmarkKind,
+            radio: definition.radio.map((line) => ({ ...line })),
+          };
+        }),
+      ],
     }),
     progress: () => game.getCampaignProgress(),
     shear: () => game.getShearState(),

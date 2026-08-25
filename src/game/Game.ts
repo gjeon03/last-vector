@@ -34,9 +34,6 @@ import {
 } from '../i18n/index.ts';
 import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
-import {
-  type CourseDefinition,
-} from '../core/Courses.ts';
 import { hasRadioSafeWindow, radioDurationSeconds } from '../core/RadioSchedule.ts';
 import { CAIRN_MISSION, type MissionDefinition } from '../core/Missions.ts';
 import { buildMissionUrl, type MissionResolution } from '../core/MissionSelection.ts';
@@ -46,7 +43,6 @@ import {
   type GameMissionRuntimeFactory,
   type MissionRewardEvent,
   type MissionRuntime,
-  type MissionWeaponEvent,
   type WorldContact,
 } from './MissionRuntime.ts';
 import {
@@ -55,13 +51,7 @@ import {
   resolveAutopilotButton,
 } from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
-import { presentEscapeRewardEvents } from './missions/LastAscentEvents.ts';
-import {
-  escapePressureRank,
-  lastAscentPressureStage,
-  type EscapePressureStage,
-} from './missions/LastAscentPressure.ts';
-import { playDeadSignalWeaponFeedback } from './missions/DeadSignalAudio.ts';
+import { nextRelayHarvestLayoutIndex } from './missions/RelayHarvestLayout.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -188,7 +178,6 @@ const FAILURE_DRIFT_COMMAND: FlightCommand = {
   throttle: 0,
   strafeX: 0,
   strafeY: 0,
-  fire: false,
   boost: false,
   brake: false,
   stickX: 0,
@@ -241,6 +230,8 @@ export interface GameOptions {
     cancel(): void;
   };
   seed?: number;
+  /** Validated collection layout selected at boot; ignored by other mission runtimes. */
+  layoutIndex?: number;
 }
 
 export class Game {
@@ -270,8 +261,9 @@ export class Game {
   // every gate; with the star behind the camera the whole sector renders flat and frontal.
   private readonly lighting: ReturnType<typeof createLightingUniforms>;
   private readonly missionDefinition: MissionDefinition;
-  private readonly courseDefinition: CourseDefinition;
+  private readonly courseDefinition: MissionDefinition['world']['sourceCourse'];
   private readonly missionResolution: MissionResolution;
+  private readonly layoutIndex: number | null;
   private readonly progressStore: ProgressStore;
   private newlyUnlockedMissionId: MissionDefinition['id'] | null = null;
   private campaignNavigationError: CampaignViewModel['navigationError'] = null;
@@ -303,18 +295,12 @@ export class Game {
   private fadeTarget = 1;
   private damageFlash = 0;
   private proximity = 0;
-  private escapePressure: EscapePressureStage = 'nominal';
   private cinematicTime = 0;
   private boostBlend = 0;
   private wasBoosting = false;
   private wasBoostLocked = false;
   private gateTickTimer = 0;
   private readonly rewardEvents: MissionRewardEvent[] = [];
-  private readonly weaponEvents: MissionWeaponEvent[] = [];
-  private readonly onEscapeCheckpointReward = (sourceIndex: number): void => {
-    this.audio.play('checkpoint', 0.85);
-    this.queueRadio(sourceIndex + 1);
-  };
 
   private autopilot = false;
   private autopilotSkill = 1;
@@ -386,6 +372,7 @@ export class Game {
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly scratchEuler = new THREE.Euler();
   private readonly missionForward = new THREE.Vector3();
+  private readonly missionPreviousPosition = new THREE.Vector3();
   private readonly onWorldContact = (
     _contact: WorldContact,
     penetration: number,
@@ -434,8 +421,9 @@ export class Game {
       source: 'default',
       diagnostic: null,
     };
+    this.layoutIndex = options.layoutIndex ?? null;
     this.progressStore = options.progressStore ?? new ProgressStore();
-    const sun = this.courseDefinition.world.sunDirection;
+    const sun = this.missionDefinition.world.sunDirection;
     this.lighting = createLightingUniforms(new THREE.Vector3(sun[0], sun[1], sun[2]));
     this.localeStore = options.localeStore ?? new LocaleStore();
     this.selectedLocale = this.localeStore.get();
@@ -499,6 +487,7 @@ export class Game {
       lighting: this.lighting,
       initialQuality: profile,
       maximumQuality: maxProfile,
+      ...(options.layoutIndex === undefined ? {} : { layoutIndex: options.layoutIndex }),
     }, missionRuntimeFactory);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
@@ -527,9 +516,7 @@ export class Game {
     }
 
     // --- input, ui, audio -------------------------------------------------------------
-    this.input = new Input(this.canvas, {
-      fireEnabled: this.missionDefinition.capabilities.includes('fire'),
-    });
+    this.input = new Input(this.canvas);
     this.input.onLockChange = (locked) => this.overlay.setPointerLocked(locked);
     this.input.onLockError = (reason) => {
       // Surfaced, not swallowed: a mouse that does nothing with no explanation is worse than
@@ -664,6 +651,7 @@ export class Game {
       quitToTitle: () => this.toTitle(),
       selectMission: (missionId) => this.selectMission(missionId),
       showMissionSelect: () => this.showMissionSelect(),
+      newLayout: () => this.newLayout(),
       requestLocale: (locale) => this.applyLocale(locale),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
       getSettings: () => this.settings.value,
@@ -730,6 +718,24 @@ export class Game {
     this.toTitle();
     this.overlay.syncCampaign(this.campaignViewModel());
     this.overlay.focusStageSelection();
+  }
+
+  private newLayout(): void {
+    if (this.missionDefinition.id !== 'relay-harvest' || this.layoutIndex === null) return;
+    const target = new URL(window.location.href);
+    target.searchParams.set(
+      'layout',
+      String(nextRelayHarvestLayoutIndex(this.layoutIndex, this.seed)),
+    );
+    target.searchParams.set('mission', this.missionDefinition.id);
+    target.searchParams.delete('course');
+    target.searchParams.delete('briefing');
+    try {
+      window.location.assign(target.href);
+    } catch {
+      this.campaignNavigationError = 'navigation-failed';
+      this.overlay.syncCampaign(this.campaignViewModel());
+    }
   }
 
   private campaignViewModel(): CampaignViewModel {
@@ -871,8 +877,8 @@ export class Game {
       bestTime: readBestTime(this.mission.recordId(this.seed)),
       bestSplits: readBestSplits(this.mission.recordId(this.seed)),
       courseLength: this.mission.path.totalLength,
-      sectorName: this.courseDefinition.text.canonicalSector,
-      destinationName: this.courseDefinition.text.canonicalDestination,
+      sectorName: this.missionDefinition.world.canonicalSector,
+      destinationName: this.missionDefinition.world.canonicalDestination,
       callout: null,
       log: this.logLines,
       proximity: 0,
@@ -946,7 +952,6 @@ export class Game {
     this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
-    this.escapePressure = 'nominal';
     this.topSpeed = 0;
     this.impacts = 0;
     this.radioTriggeredAt.fill(-1);
@@ -1053,7 +1058,6 @@ export class Game {
     this.resetShipToStart(false);
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
-    this.escapePressure = 'nominal';
     this.autopilot = true;
     this.cinematic = true;
     // Authored vantages are still poses. Keeping one active here made ABORT RUN pin both ship and
@@ -1239,6 +1243,7 @@ export class Game {
        alive so N can still reach the restart action, but stick/throttle/gamepad state cannot add
        control authority behind the terminal overlay. */
     const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.resolveCommand(dt);
+    this.missionPreviousPosition.copy(this.ship.position);
 
     if (this.phase === 'countdown') {
       this.countdownTimer += dt;
@@ -1255,7 +1260,7 @@ export class Game {
           this.setPhase('flying');
           this.pushCallout({
             titleMessage: ENGAGE_MESSAGE,
-            sub: this.courseDefinition.text.canonicalDestination,
+            sub: this.missionDefinition.world.canonicalDestination,
             subMessage: undefined,
             tone: 'good',
             ttl: 1.6,
@@ -1289,8 +1294,8 @@ export class Game {
       dt,
       elapsed: this.elapsed,
       body: this.ship,
+      previousPosition: this.missionPreviousPosition,
       forward: this.missionForward,
-      fire: command.fire,
       proximityRange: FLIGHT_THRESHOLDS.proximityRange,
       resolveContacts: this.phase !== 'failed',
       resolveObjective: this.phase === 'flying',
@@ -1304,16 +1309,41 @@ export class Game {
          before course progression, so a lethal strike and terminus crossing in the same frame
          deterministically produce a breach rather than a saved result. */
       if (missionFrame.hullFailed) this.checkFailure();
-      if (this.phase === 'flying' && missionFrame.terminal) {
+      if (this.phase === 'flying') {
         consumeMissionFrameEvents(
           this.mission,
           missionFrame,
           this.ship,
           this.rewardEvents,
-          this.weaponEvents,
         );
-        presentEscapeRewardEvents(this.rewardEvents, this.onEscapeCheckpointReward);
-        playDeadSignalWeaponFeedback(this.weaponEvents, this.audio);
+        const objectiveTelemetry = this.mission.objective.telemetry();
+        const collectedBeforeRewards = objectiveTelemetry.kind === 'collection'
+          ? objectiveTelemetry.collected - this.rewardEvents.length
+          : 0;
+        for (let rewardIndex = 0; rewardIndex < this.rewardEvents.length; rewardIndex++) {
+          this.audio.play('checkpoint', 0.85);
+          if (objectiveTelemetry.kind === 'collection') {
+            const core = collectedBeforeRewards + rewardIndex + 1;
+            this.pushCallout({
+              titleMessage: { type: 'callout-title.core-acquired', core },
+              sub: undefined,
+              subMessage: {
+                type: 'callout-sub.relay-charge',
+                charge: objectiveTelemetry.charge,
+                required: objectiveTelemetry.chargeRequired,
+              },
+              tone: 'good',
+              ttl: 1.35,
+            });
+            this.pushLog({
+              message: { type: 'log.core-acquired', core, seconds: this.elapsed },
+              tone: 'good',
+            });
+            this.queueRadio(core);
+          }
+        }
+      }
+      if (this.phase === 'flying' && missionFrame.terminal) {
         const terminal = missionFrame.terminal;
         if (terminal.status === 'failed') this.failObjective(terminal.reason);
         else if (terminal.status === 'succeeded') this.finish();
@@ -1321,7 +1351,7 @@ export class Game {
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
       if (this.ship.position.distanceTo(this.mission.path.startPosition) >
-        this.courseDefinition.geometry.gateSpacing * 2.2) {
+        this.missionDefinition.world.attractLoopDistance) {
         this.resetShipToStart();
         this.chase.snapTo(this.ship);
       }
@@ -1839,15 +1869,21 @@ export class Game {
     t.guidance.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
     t.guidance.anchor.distance = num(guidance.distance);
     t.objective = this.mission.objective.telemetry();
-    const nextEscapePressure = t.objective.kind === 'escape'
-      ? lastAscentPressureStage(t.objective, this.escapePressure)
-      : 'nominal';
-    if (nextEscapePressure !== this.escapePressure) {
-      const escalated = escapePressureRank(nextEscapePressure)
-        > escapePressureRank(this.escapePressure);
-      this.escapePressure = nextEscapePressure;
-      if (this.phase === 'flying' && escalated) {
-        this.audio.play('warnProximity', nextEscapePressure === 'critical' ? 1 : 0.66);
+    if (t.objective.kind === 'collection') {
+      for (const source of t.objective.sources) {
+        this.tmpC.set(source.position[0], source.position[1], source.position[2]);
+        source.distance = num(this.ship.position.distanceTo(this.tmpC));
+        this.tmpA.copy(this.tmpC).project(this.chase.camera);
+        this.tmpB.copy(this.tmpC).applyMatrix4(this.chase.camera.matrixWorldInverse);
+        source.anchor.x = num(this.tmpA.x);
+        source.anchor.y = num(this.tmpA.y);
+        source.anchor.onScreen = this.tmpB.z < 0
+          && this.tmpA.z > -1
+          && this.tmpA.z < 1
+          && Math.abs(this.tmpA.x) <= 1
+          && Math.abs(this.tmpA.y) <= 1;
+        source.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+        source.anchor.distance = source.distance;
       }
     }
 
@@ -1963,6 +1999,10 @@ export class Game {
   // ---------------------------------------------------------------------------------
 
   private bindCourseEvents(): void {
+    const courseId = this.courseDefinition?.id;
+    if (this.mission.legacy && courseId === undefined) {
+      throw new Error('A legacy gate adapter requires a source course definition');
+    }
     this.mission.legacy?.bindGateEvents({
       onPass: (event) => {
         const recharge = this.ship.rechargeBoost(FLIGHT.boostCapacity * 0.25);
@@ -1991,7 +2031,7 @@ export class Game {
           subMessage: {
             type: 'callout-sub.gate-progress',
             remaining,
-            courseId: this.courseDefinition.id,
+            courseId,
           },
           tone: precision > 0.6 ? 'good' : 'neutral',
           ttl: 1.15,
@@ -2001,7 +2041,7 @@ export class Game {
             type: 'log.gate-cleared',
             gate: event.index + 1,
             seconds: event.time,
-            courseId: this.courseDefinition.id,
+            courseId,
           },
           tone: 'good',
         });
@@ -2024,7 +2064,7 @@ export class Game {
           message: {
             type: 'log.gate-missed',
             gate: event.gateIndex + 1,
-            courseId: this.courseDefinition.id,
+            courseId,
             blockedBy: event.blockedBy ?? undefined,
           },
           tone: 'warn',
@@ -2750,7 +2790,6 @@ export class Game {
       throttle: c.throttle,
       strafeX: c.strafeX,
       strafeY: c.strafeY,
-      fire: c.fire,
       boost: c.boost,
       brake: c.brake,
     };
@@ -2798,7 +2837,7 @@ export class Game {
   }
 
   getCourseState(): {
-    courseId: CourseDefinition['id'];
+    courseId: MissionDefinition['id'];
     recordId: string;
     seed: number;
     gateCount: number;
@@ -2807,7 +2846,7 @@ export class Game {
   } {
     const objective = this.mission.objective.telemetry();
     return {
-      courseId: this.courseDefinition.id,
+      courseId: this.missionDefinition.id,
       recordId: this.mission.recordId(this.seed),
       seed: this.seed,
       gateCount: objective.kind === 'gate-race'

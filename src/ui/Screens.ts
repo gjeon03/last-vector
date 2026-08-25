@@ -55,6 +55,7 @@ export type ScreenAction =
   | 'select-stage'
   | 'next-stage'
   | 'run-again'
+  | 'new-layout'
   | 'stage-select';
 
 export type CampaignMissionState = 'locked' | 'available' | 'cleared';
@@ -126,7 +127,6 @@ export type ControlId =
   | 'throttle'
   | 'roll'
   | 'boost'
-  | 'fire'
   | 'brake'
   | 'strafe-horizontal'
   | 'strafe-vertical'
@@ -152,7 +152,6 @@ interface ControlRow {
    * attention; the primer has neither.
    */
   readonly short?: keyof ControlMessages;
-  readonly capability?: MissionCapability;
 }
 
 /**
@@ -164,8 +163,7 @@ const CONTROLS: readonly ControlRow[] = [
   { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
   { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
   { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
-  { id: 'boost', groups: [['SHIFT']], action: 'boost', primer: true },
-  { id: 'fire', groups: [['LMB']], action: 'fire', primer: true, capability: 'fire' },
+  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
   { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
   { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
   { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
@@ -494,6 +492,12 @@ export class Screens {
      read from telemetry instead of typed — see setCourseFacts. */
   private nStatCorridor: HTMLElement | null = null;
   private nStatMarkers: HTMLElement | null = null;
+  private nStatMarkersLabel: HTMLElement | null = null;
+  private nStatCorridorLabel: HTMLElement | null = null;
+  private nStatPrimaryLabel: HTMLElement | null = null;
+  private nStatPrimaryValue: HTMLElement | null = null;
+  private nStatStateLabel: HTMLElement | null = null;
+  private nStatStateValue: HTMLElement | null = null;
   private pCorridor = -1;
   private pMarkers = -1;
 
@@ -581,10 +585,10 @@ export class Screens {
     );
     const activeMissionId = active?.id ?? fallback?.id ?? ACTIVE_MISSION_ORDER[0]!;
     this.campaign = { ...viewModel, activeMissionId };
-    this.syncControlCapabilities();
 
     const m = this.translator.messages;
     const routeCopy = m.campaign.routes[activeMissionId];
+    const collectionChapter = activeMissionId === 'relay-harvest';
     if (this.nTitleSector) this.nTitleSector.textContent = routeCopy.sectorName;
     if (this.nTitleTagline) {
       writeEnglishTokens(
@@ -598,8 +602,8 @@ export class Screens {
           'ENGINE SPINE',
           'VECTOR',
           'ORISON ARRAY',
-          'LAST ASCENT',
-          'ORBITAL EXTRACTION',
+          'BLACKOUT RELAY',
+          'RELAY HEART',
         ],
       );
     }
@@ -612,6 +616,26 @@ export class Screens {
         [routeCopy.destination],
       );
     }
+    if (this.nStatMarkersLabel) {
+      this.nStatMarkersLabel.textContent = collectionChapter ? m.screens.sources : m.screens.markers;
+    }
+    if (this.nStatCorridorLabel) {
+      this.nStatCorridorLabel.textContent = collectionChapter ? m.screens.required : m.screens.corridor;
+    }
+    if (this.nStatPrimaryLabel) {
+      this.nStatPrimaryLabel.textContent = collectionChapter ? m.screens.relay : m.screens.primary;
+    }
+    if (this.nStatPrimaryValue) {
+      this.nStatPrimaryValue.textContent = collectionChapter ? m.screens.blackout : m.meta.starName;
+    }
+    if (this.nStatStateLabel) {
+      this.nStatStateLabel.textContent = collectionChapter ? m.screens.field : m.screens.drift;
+    }
+    if (this.nStatStateValue) {
+      this.nStatStateValue.textContent = collectionChapter ? m.screens.live : m.screens.closing;
+    }
+    this.pMarkers = -1;
+    this.pCorridor = -1;
     for (let i = 0; i < this.nBriefLines.length; i++) {
       writeEnglishTokens(
         this.nBriefLines[i]!,
@@ -627,9 +651,11 @@ export class Screens {
           'TWIN SPIRES',
           'ORISON ARCH',
           'ORISON ARRAY',
-          'LAST ASCENT',
-          'SHOCKFRONT',
-          'SAFE CORRIDOR',
+          'BLACKOUT RELAY',
+          'COLLECTOR ARM',
+          'CORE',
+          'RELAY CHARGE',
+          'BOOST',
         ],
       );
     }
@@ -665,7 +691,7 @@ export class Screens {
       writeEnglishTokens(
         nodes.lock,
         state === 'locked' ? m.campaign.routes[id].lockReason : '',
-        ['CAIRN DRIFT', 'LAST ASCENT'],
+        ['CAIRN DRIFT', 'BLACKOUT RELAY'],
       );
       nodes.lock.hidden = state !== 'locked';
       nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
@@ -719,11 +745,7 @@ export class Screens {
   ): void {
     const m = this.translator.messages;
     const copy = m.campaign.routes[route.id].objectives;
-    const masteryLabel = (id: MasteryId): string => id === 'all-nodes'
-      ? copy.allNodes ?? copy.precision
-      : id === 'accuracy'
-        ? copy.accuracy ?? copy.precision
-        : copy.precision;
+    const masteryLabel = (_id: MasteryId): string => copy.precision;
     const rows = [
       { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
       {
@@ -758,7 +780,7 @@ export class Screens {
       const name = writeEnglishTokens(
         el('span', 'lv-objective-name'),
         label,
-        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
+        ['CAIRN DRIFT', 'BLACKOUT RELAY', 'WRECKLINE', 'RINGFALL'],
       );
       name.lang = 'en';
       if (id === focusId) {
@@ -1125,16 +1147,6 @@ export class Screens {
     return node;
   }
 
-  private syncControlCapabilities(): void {
-    const mission = this.campaignMission();
-    const nodes = this.el.querySelectorAll<HTMLElement>('[data-control-capability]');
-    for (let index = 0; index < nodes.length; index++) {
-      const node = nodes[index]!;
-      const capability = node.dataset['controlCapability'] as MissionCapability | undefined;
-      node.hidden = capability === undefined || !mission.capabilities.includes(capability);
-    }
-  }
-
   private buildStageRail(): HTMLElement {
     const m = this.translator.messages;
     const section = el('section', 'lv-stage-select');
@@ -1200,7 +1212,7 @@ export class Screens {
       const lock = writeEnglishTokens(
         el('span', 'lv-a11y'),
         isFirst ? '' : copy.lockReason,
-        ['CAIRN DRIFT', 'LAST ASCENT'],
+        ['CAIRN DRIFT', 'BLACKOUT RELAY'],
       );
       lock.id = `lv-stage-lock-${id}`;
       lock.hidden = isFirst;
@@ -1368,13 +1380,17 @@ export class Screens {
     const cols = el('div', 'lv-brief-cols');
 
     const stats = el('dl', 'lv-stats');
-    const addStat = (k: string, v: string, valueLang?: 'en'): HTMLElement => {
+    const addStat = (k: string, v: string, valueLang?: 'en'): {
+      label: HTMLElement;
+      value: HTMLElement;
+    } => {
       const row = el('div', 'lv-stat');
+      const label = englishText('dt', '', k);
       const value = el('dd', '', v);
       if (valueLang) value.lang = valueLang;
-      row.append(englishText('dt', '', k), value);
+      row.append(label, value);
       stats.appendChild(row);
-      return value;
+      return { label, value };
     };
     /*
      * These two are measurements, not fiction, so they are read rather than typed. CORRIDOR
@@ -1384,11 +1400,19 @@ export class Screens {
      * another one, which is the arrangement that goes stale silently. `--` until the first
      * telemetry frame, because a placeholder is honest and a stale literal is not.
      */
-    this.nStatMarkers = addStat(m.screens.markers, '--');
-    this.nStatCorridor = addStat(m.screens.corridor, '--', 'en');
-    addStat(m.screens.primary, m.meta.starName, 'en');
+    const markers = addStat(m.screens.markers, '--');
+    this.nStatMarkersLabel = markers.label;
+    this.nStatMarkers = markers.value;
+    const corridor = addStat(m.screens.corridor, '--', 'en');
+    this.nStatCorridorLabel = corridor.label;
+    this.nStatCorridor = corridor.value;
+    const primary = addStat(m.screens.primary, m.meta.starName, 'en');
+    this.nStatPrimaryLabel = primary.label;
+    this.nStatPrimaryValue = primary.value;
     addStat(m.screens.hull, m.meta.shipName, 'en');
-    addStat(m.screens.drift, m.screens.closing, 'en');
+    const state = addStat(m.screens.drift, m.screens.closing, 'en');
+    this.nStatStateLabel = state.label;
+    this.nStatStateValue = state.value;
 
     const objectives = el('section', 'lv-objectives');
     objectives.appendChild(englishText('div', 'lv-kicker', m.campaign.stageObjectives));
@@ -1416,6 +1440,13 @@ export class Screens {
           'TWIN SPIRES',
           'ORISON ARCH',
           'ORISON ARRAY',
+          'BLACKOUT RELAY',
+          'COLLECTOR ARM',
+          'CORE',
+          'RELAY CHARGE',
+          'BOOST',
+          'DRIVE',
+          'NETWORK',
         ],
       );
       p.style.setProperty('--n', String(i));
@@ -1431,7 +1462,6 @@ export class Screens {
       if (!row.primer) continue;
       const li = el('li');
       li.dataset['control'] = row.id;
-      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.append(
         keyChips(row, m.controls.or),
         el('span', '', m.controls[row.short ?? row.action]),
@@ -1458,11 +1488,23 @@ export class Screens {
    * fail on every frame after the first.
    */
   setCourseFacts(courseLength: number | undefined, gateTotal: number): void {
-    if (this.nStatMarkers && gateTotal !== this.pMarkers) {
-      this.pMarkers = gateTotal;
-      this.nStatMarkers.textContent = gateTotal > 0 ? (gateTotal < 10 ? '0' : '') + gateTotal : '--';
+    const definition = getMissionDefinition(this.campaign.activeMissionId);
+    const collection = definition.objective.kind === 'collection' ? definition.objective : null;
+    const markerCount = collection?.activeSources ?? gateTotal;
+    if (this.nStatMarkers && markerCount !== this.pMarkers) {
+      this.pMarkers = markerCount;
+      this.nStatMarkers.textContent = markerCount > 0
+        ? (markerCount < 10 ? '0' : '') + markerCount
+        : '--';
     }
     if (this.nStatCorridor) {
+      if (collection) {
+        if (collection.requiredSources !== this.pCorridor) {
+          this.pCorridor = collection.requiredSources;
+          this.nStatCorridor.textContent = `0${collection.requiredSources}`;
+        }
+        return;
+      }
       const m = courseLength !== undefined && courseLength > 0 ? Math.round(courseLength) : -1;
       if (m !== this.pCorridor) {
         this.pCorridor = m;
@@ -1741,7 +1783,6 @@ export class Screens {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
       li.dataset['control'] = row.id;
-      if (row.capability) li.dataset['controlCapability'] = row.capability;
       li.style.setProperty('--n', String(i));
       li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
@@ -2090,7 +2131,7 @@ export class Screens {
     }
   }
 
-  /** Shared result shell for objective runtimes whose authored detail panels live downstream. */
+  /** Compact result shell for the collection chapter. */
   private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
     const m = this.translator.messages;
     const campaignMission = this.campaignMission(r.missionId);
@@ -2107,7 +2148,7 @@ export class Screens {
       el(
         'div',
         'lv-kicker',
-        r.kind === 'escape' ? m.results.extractionConfirmed : m.results.runComplete,
+        m.results.relayStabilised,
       ),
       englishText('h2', 'lv-res-title', r.destinationName),
     );
@@ -2143,7 +2184,7 @@ export class Screens {
       const unlockText = writeEnglishTokens(
         el('span'),
         m.campaign.routes[revealedStage.id].unlockNotice,
-        ['CAIRN DRIFT', 'LAST ASCENT', 'DEAD SIGNAL', 'WRECKLINE', 'RINGFALL'],
+        ['CAIRN DRIFT', 'BLACKOUT RELAY', 'WRECKLINE', 'RINGFALL'],
       );
       unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
         ? this.translator.locale
@@ -2171,36 +2212,25 @@ export class Screens {
       time.appendChild(delta);
     }
     const stats = el('dl', 'lv-res-stats');
-    const objectiveStats: readonly (readonly [string, string])[] = r.kind === 'escape'
-      ? [
-          [m.results.safeCorridors, `${r.checkpointsCleared} / ${r.checkpointsTotal}`],
-          [m.results.shockfrontMargin, `+${r.secondsAhead.toFixed(1)} ${m.results.secondsUnit}`],
-          [m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`],
-          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
-        ]
-      : [
-          [m.results.shieldNodes, `${r.targetsDestroyed} / ${r.targetsTotal ?? r.targetsRequired}`],
-          [m.results.core, r.coreDestroyed ? 'DESTROYED' : 'ACTIVE'],
-          [m.results.accuracy, r.shotsFired > 0
-            ? `${Math.round(r.shotsHit / r.shotsFired * 100)}%`
-            : '0%'],
-          [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
-        ];
+    const objectiveStats: readonly (readonly [string, string])[] = [
+      [m.results.coresRecovered, `${r.collected} / ${r.activeTotal}`],
+      [m.results.relayCharge, `${r.charge} / ${r.chargeRequired}`],
+      [m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`],
+      [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+    ];
     for (const [label, value] of objectiveStats) {
       const cell = el('div', 'lv-res-stat');
       cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
       stats.appendChild(cell);
     }
     left.append(time, stats);
-    if (r.kind === 'strike') {
-      const objectives = el('section', 'lv-objectives lv-objectives--result');
-      objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
-      const objectiveList = el('ul', 'lv-objective-list');
-      objectiveList.dataset['objectiveList'] = 'results';
-      objectives.appendChild(objectiveList);
-      this.writeObjectiveList(objectiveList, campaignMission, r);
-      left.appendChild(objectives);
-    }
+    const objectives = el('section', 'lv-objectives lv-objectives--result');
+    objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+    const objectiveList = el('ul', 'lv-objective-list');
+    objectiveList.dataset['objectiveList'] = 'results';
+    objectives.appendChild(objectiveList);
+    this.writeObjectiveList(objectiveList, campaignMission, r);
+    left.appendChild(objectives);
     main.appendChild(left);
 
     const actions = el('div', 'lv-actions lv-actions--res');
@@ -2227,6 +2257,12 @@ export class Screens {
       firstClearAdvance ? '' : 'is-primary',
       'run-again',
       () => this.host.restart(),
+    ));
+    actions.append(this.button(
+      m.results.newLayout,
+      'is-ghost',
+      'new-layout',
+      () => this.host.newLayout(),
     ));
     if (CHAPTER_STAGE_IDS.length > 1) {
       actions.appendChild(this.button(
@@ -2259,19 +2295,9 @@ export class Screens {
     }
   }
 
-  /**
-   * Reuses the results shell for terminal failure without presenting a failed run as a result.
-   * An objective reason selects generic mission-failure copy; no reason preserves hull breach.
-   */
+  /** Reuses the result shell for the only terminal failure: hull breach. */
   showFailure(elapsed: number, reason?: string): void {
     const m = this.translator.messages;
-    const reasonKey = reason === 'core-boundary-without-shields'
-      ? 'insufficientNodes'
-      : reason === 'core-window-missed'
-        ? 'coreWindowMissed'
-        : reason === 'blast-timeout'
-          ? 'blastTimeout'
-          : 'missionFailed';
     const body = this.nResultBody;
     body.textContent = '';
     body.dataset['state'] = 'failure';
@@ -2279,20 +2305,15 @@ export class Screens {
     else body.dataset['failureReason'] = reason;
     this.views.get('results')?.setAttribute(
       'aria-label',
-      reason === undefined ? m.a11y.hullBreach : m.a11y[reasonKey],
+      reason === undefined ? m.a11y.hullBreach : m.a11y.missionFailed,
     );
 
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
-    if (reason === 'shockfront-catch') {
-      head.append(
-        englishText('div', 'lv-kicker', m.results.missionFailed),
-        englishText('h2', 'lv-res-title', m.results.shockfrontOverrun),
-      );
-    } else if (reason !== undefined) {
+    if (reason !== undefined) {
       head.append(
         englishText('div', 'lv-kicker', m.results.runComplete),
-        englishText('h2', 'lv-res-title', m.results[reasonKey]),
+        englishText('h2', 'lv-res-title', m.results.missionFailed),
       );
     } else {
       head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
@@ -2304,16 +2325,6 @@ export class Screens {
       el('div', 'lv-res-k', m.results.time),
       el('div', 'lv-res-time', formatTime(elapsed)),
     );
-    if (reason === 'shockfront-catch') {
-      const detail = writeEnglishTokens(
-        el('p', 'lv-res-failure-detail'),
-        m.results.shockfrontOverrunDetail,
-        ['SHOCKFRONT', 'VECTOR'],
-      );
-      detail.lang = this.translator.locale;
-      timeBlock.appendChild(detail);
-    }
-
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
     actions.append(this.button(
