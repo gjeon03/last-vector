@@ -34,6 +34,20 @@ export interface CourseLeg {
   readonly gateRadiusScale?: number;
 }
 
+/** Geometry shared by every authored objective that follows a forward flight line. */
+export interface FlightPathDefinition {
+  readonly legs: readonly CourseLeg[];
+  readonly gateSpacing: number;
+  readonly gateRadius: number;
+  readonly finalGateRadiusScale: number;
+  readonly leadInControlMetres: number;
+  readonly startOffsetMetres: number;
+  readonly runOutSteps: number;
+  readonly runOutStepMetres: number;
+  readonly terminusStandoff: number;
+  readonly sampleCount: number;
+}
+
 export interface VantageDefinition {
   readonly name: string;
   readonly t: number;
@@ -88,18 +102,7 @@ export interface CourseDefinition {
     readonly canonicalFinalGate: string;
     readonly finalGateMessage: FinalGateMessage;
   };
-  readonly geometry: {
-    readonly legs: readonly CourseLeg[];
-    readonly gateSpacing: number;
-    readonly gateRadius: number;
-    readonly finalGateRadiusScale: number;
-    readonly leadInControlMetres: number;
-    readonly startOffsetMetres: number;
-    readonly runOutSteps: number;
-    readonly runOutStepMetres: number;
-    readonly terminusStandoff: number;
-    readonly sampleCount: number;
-  };
+  readonly geometry: FlightPathDefinition;
   readonly field: {
     readonly corridor: number;
     readonly spreadFraction: number;
@@ -557,8 +560,6 @@ export const KNOWN_COURSE_ORDER = [
 ] as const satisfies readonly CourseId[];
 export const CHAPTER_ONE_STAGE_ORDER = [
   'cairn-drift',
-  'wreckline',
-  'ringfall',
 ] as const satisfies readonly CourseId[];
 export const DEFAULT_COURSE_ID: CourseId = 'cairn-drift';
 

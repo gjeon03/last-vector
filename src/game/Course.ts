@@ -2,11 +2,9 @@ import * as THREE from 'three';
 import { Gate } from '../render/Gate.ts';
 import { ShearGateField, type ShearDebugState } from '../render/ShearGate.ts';
 import type { LightingUniforms } from '../render/lighting.ts';
-import { Rng } from '../core/rng.ts';
 import { clamp01 } from '../core/mathx.ts';
 import { courseRecordId, type CourseDefinition } from '../core/Courses.ts';
-
-const WORLD_UP = new THREE.Vector3(0, 1, 0);
+import { FlightPath } from './FlightPath.ts';
 
 /**
  * The course through THE CAIRN DRIFT.
@@ -42,18 +40,19 @@ export interface CourseCrossingEvent {
 export class Course {
   readonly object = new THREE.Group();
   readonly gates: Gate[] = [];
-  readonly spine: THREE.Vector3[] = [];
+  readonly path: FlightPath;
+  readonly spine: THREE.Vector3[];
   readonly curve: THREE.CatmullRomCurve3;
-  readonly startPosition = new THREE.Vector3();
-  readonly startQuaternion = new THREE.Quaternion();
-  readonly terminusPosition = new THREE.Vector3();
-  readonly terminusNormal = new THREE.Vector3();
+  readonly startPosition: THREE.Vector3;
+  readonly startQuaternion: THREE.Quaternion;
+  readonly terminusPosition: THREE.Vector3;
+  readonly terminusNormal: THREE.Vector3;
   readonly totalLength: number;
   /**
    * Half-width of the debris-free channel for each racing-line segment, in order:
    * start->gate0, gate0->gate1, ... , lastGate->terminus.
    */
-  readonly legClearance: number[] = [];
+  readonly legClearance: number[];
   /**
    * The volume that must stay free of debris: the union of the curved spine the ship actually
    * flies and the gate-to-gate chords a fast pilot cuts to.
@@ -62,7 +61,7 @@ export class Course {
    * bulges outside a straight chord, and at 100 m of clearance that bulge is larger than the
    * channel. The autopilot took a hull strike at gate 5 flying the line exactly as authored.
    */
-  readonly clearChannel: { a: THREE.Vector3; b: THREE.Vector3; radius: number }[] = [];
+  readonly clearChannel: { a: THREE.Vector3; b: THREE.Vector3; radius: number }[];
   readonly id: string;
   readonly definition: CourseDefinition;
   readonly shear: ShearGateField | null;
@@ -77,9 +76,7 @@ export class Course {
   private readonly previousPosition = new THREE.Vector3();
   private hasPrevious = false;
   private readonly scratchA = new THREE.Vector3();
-  private readonly scratchB = new THREE.Vector3();
   private readonly crossing = new THREE.Vector3();
-  private readonly poseMatrix = new THREE.Matrix4();
   private readonly crossingPlane = new THREE.Vector2();
 
   onPass: ((event: CoursePassEvent) => void) | null = null;
@@ -91,119 +88,28 @@ export class Course {
     this.id = courseRecordId(definition, seed);
     const geometry = definition.geometry;
     const legs = geometry.legs;
-    const rng = new Rng(seed);
+    this.path = new FlightPath(geometry, seed);
+    this.spine = this.path.spine;
+    this.curve = this.path.curve;
+    this.startPosition = this.path.startPosition;
+    this.startQuaternion = this.path.startQuaternion;
+    this.terminusPosition = this.path.terminusPosition;
+    this.terminusNormal = this.path.terminusNormal;
+    this.totalLength = this.path.totalLength;
+    this.legClearance = this.path.legClearance;
+    this.clearChannel = this.path.clearChannel;
 
-    const controlPoints: THREE.Vector3[] = [];
-    const gateAnchors: { position: THREE.Vector3; tangent: THREE.Vector3; bank: number }[] = [];
-
-    const heading = new THREE.Quaternion();
-    const cursor = new THREE.Vector3(0, 0, 0);
-    const forward = new THREE.Vector3(0, 0, -1);
-
-    // A short lead-in so the player is already moving when the first gate appears.
-    controlPoints.push(cursor.clone().addScaledVector(forward, -geometry.leadInControlMetres));
-    controlPoints.push(cursor.clone());
-    this.startPosition.copy(cursor).addScaledVector(forward, geometry.startOffsetMetres);
-    this.startQuaternion.copy(heading);
-
-    for (let i = 0; i < legs.length; i++) {
-      const leg = legs[i]!;
-      const distance = geometry.gateSpacing * leg.length * rng.range(0.94, 1.06);
-      const turn = leg.turn * rng.range(0.9, 1.1);
-      const climb = leg.climb * rng.range(0.88, 1.12);
-
-      // Walk the leg in steps so the spine curves smoothly instead of kinking at each gate.
-      const steps = 6;
-      for (let s = 0; s < steps; s++) {
-        const q = new THREE.Quaternion().setFromEuler(
-          new THREE.Euler(climb / steps, turn / steps, 0, 'YXZ'),
-        );
-        heading.multiply(q).normalize();
-        forward.set(0, 0, -1).applyQuaternion(heading);
-        cursor.addScaledVector(forward, distance / steps);
-        controlPoints.push(cursor.clone());
-      }
-
-      gateAnchors.push({
-        position: cursor.clone(),
-        tangent: forward.clone().normalize(),
-        bank: leg.bank,
-      });
-      // One entry per segment ENTERING this gate, so the channel narrows on the approach to
-      // the gate that terminates the leg rather than after it.
-      this.legClearance.push(leg.clearance);
-    }
-
-    // The run-out to the terminus inherits the last leg's channel.
-    this.legClearance.push(legs[legs.length - 1]!.clearance);
-
-    // Run-out past the final gate, where the terminus sits.
-    for (let s = 0; s < geometry.runOutSteps; s++) {
-      cursor.addScaledVector(forward, geometry.runOutStepMetres);
-      controlPoints.push(cursor.clone());
-    }
-    this.terminusPosition.copy(cursor).addScaledVector(forward, geometry.terminusStandoff);
-    this.terminusNormal.copy(forward).normalize();
-
-    this.curve = new THREE.CatmullRomCurve3(controlPoints, false, 'centripetal', 0.5);
-    this.totalLength = this.curve.getLength();
-
-    const sampleCount = geometry.sampleCount;
-    for (let i = 0; i <= sampleCount; i++) {
-      this.spine.push(this.curve.getPointAt(i / sampleCount));
-    }
-
-    // Chords first: start -> each gate -> terminus, at that leg's clearance.
-    const chordNodes = [this.startPosition.clone(), ...gateAnchors.map((a) => a.position.clone())];
-    chordNodes.push(this.terminusPosition.clone());
-    for (let i = 0; i < chordNodes.length - 1; i++) {
-      this.clearChannel.push({
-        a: chordNodes[i],
-        b: chordNodes[i + 1],
-        radius: this.legClearance[i] ?? 320,
-      });
-    }
-    // Then the curve itself, at the clearance of whichever leg each sample ACTUALLY falls in.
-    //
-    // This used to interpolate the leg index proportionally — `floor(i / samples * legs)` — which
-    // assumes every leg occupies an equal share of the sampled curve. They do not: leg lengths
-    // vary from 0.52 to 1.4 of the nominal spacing, so the proportional index drifts, and spine
-    // segments were being protected at a neighbouring leg's clearance. Advancing a cursor as the
-    // sample passes each gate anchor puts every segment in its own leg.
-    const anchorIndex = gateAnchors.map((a) => {
-      let best = 0;
-      let bestSq = Infinity;
-      for (let i = 0; i < this.spine.length; i++) {
-        const d = a.position.distanceToSquared(this.spine[i]);
-        if (d < bestSq) {
-          bestSq = d;
-          best = i;
-        }
-      }
-      return best;
-    });
-    let legCursor = 0;
-    for (let i = 0; i < this.spine.length - 1; i++) {
-      while (legCursor < anchorIndex.length && i > anchorIndex[legCursor]) legCursor++;
-      const legIndex = Math.min(this.legClearance.length - 1, legCursor);
-      this.clearChannel.push({
-        a: this.spine[i],
-        b: this.spine[i + 1],
-        radius: this.legClearance[legIndex],
-      });
-    }
-
-    for (let i = 0; i < gateAnchors.length; i++) {
-      const anchor = gateAnchors[i];
+    for (let i = 0; i < this.path.gateAnchors.length; i++) {
+      const anchor = this.path.gateAnchors[i]!;
       // Final gate is wider: the approach is fast and the run should not end on a technicality.
-      const final = i === gateAnchors.length - 1;
+      const final = i === this.path.gateAnchors.length - 1;
       const authoredRadius = geometry.gateRadius * (legs[i]?.gateRadiusScale ?? 1);
       const radius = final
         ? authoredRadius * geometry.finalGateRadiusScale
         : authoredRadius;
       const gate = new Gate({
         index: i,
-        total: gateAnchors.length,
+        total: this.path.gateAnchors.length,
         position: anchor.position,
         normal: anchor.tangent,
         radius,
@@ -415,16 +321,7 @@ export class Course {
 
   /** Pose along the course at normalised `t`, for seeking and cinematic vantages. */
   poseAt(t: number, position: THREE.Vector3, quaternion: THREE.Quaternion): void {
-    const clamped = clamp01(t);
-    this.curve.getPointAt(clamped, position);
-    this.curve.getTangentAt(clamped, this.scratchB).normalize();
-    // three's Matrix4.lookAt puts +Z along (eye - target), and an object's forward is -Z, so
-    // forward ends up as normalize(target - eye). The target is therefore the tangent itself:
-    // negating it here pointed the ship back down the course, which is why a seek or a
-    // cinematic vantage started with the nose facing the way it had come.
-    this.scratchA.set(0, 0, 0);
-    this.poseMatrix.lookAt(this.scratchA, this.scratchB, WORLD_UP);
-    quaternion.setFromRotationMatrix(this.poseMatrix);
+    this.path.poseAt(t, position, quaternion);
   }
 
   update3d(

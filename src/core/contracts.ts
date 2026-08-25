@@ -13,6 +13,7 @@
  */
 
 import type { CourseId } from './Courses.ts';
+import type { MissionId } from './Missions.ts';
 
 export type Phase =
   | 'boot'
@@ -86,6 +87,46 @@ export interface GateTelemetry {
   alignment: number;
 }
 
+export interface GuidanceTelemetry {
+  label: string;
+  labelMessage?: GateNameMessage;
+  anchor: ScreenAnchor;
+  distance: number;
+  /** Normalized mission progress. */
+  progress: number;
+  current: number;
+  total: number;
+}
+
+export interface GateRaceObjectiveTelemetry {
+  kind: 'gate-race';
+  gatesCleared: number;
+  gatesTotal: number;
+  misses: number;
+  complete: boolean;
+}
+
+export interface EscapeObjectiveTelemetry {
+  kind: 'escape';
+  pathProgress: number;
+  shockwaveProgress: number;
+  checkpoint: number;
+  checkpointTotal: number;
+}
+
+export interface StrikeObjectiveTelemetry {
+  kind: 'strike';
+  targetsDestroyed: number;
+  targetsRequired: number;
+  coreDestroyed: boolean;
+  extracting: boolean;
+}
+
+export type ObjectiveTelemetry =
+  | GateRaceObjectiveTelemetry
+  | EscapeObjectiveTelemetry
+  | StrikeObjectiveTelemetry;
+
 export interface Telemetry {
   phase: Phase;
   /** Metres / second. */
@@ -118,6 +159,10 @@ export interface Telemetry {
    */
   velocityAnchor: ScreenAnchor;
   gate: GateTelemetry;
+  /** Objective-neutral director contract. */
+  guidance: GuidanceTelemetry;
+  /** Exhaustive objective-specific state. */
+  objective: ObjectiveTelemetry;
   /** Metres remaining along the whole course. */
   courseRemaining: number;
   courseTotal: number;
@@ -185,10 +230,20 @@ export interface LogLine {
   age: number;
 }
 
-export interface RunResult {
-  /** Stable campaign identity; omitted only by older fixtures and external consumers. */
-  courseId?: CourseId;
+export interface MissionResultBase {
+  missionId: MissionId;
+  rulesetVersion: number;
   totalTime: number;
+  hullRemaining: number;
+  objectiveSummary: string;
+  topSpeed: number;
+  cleanRun: boolean;
+  rank: string;
+  destinationName: string;
+}
+
+export interface GateRaceMissionResult extends MissionResultBase {
+  kind: 'gate-race';
   splits: number[];
   bestTime: number | null;
   /**
@@ -201,15 +256,36 @@ export interface RunResult {
   isNewBest: boolean;
   gatesCleared: number;
   gatesTotal: number;
-  topSpeed: number;
-  cleanRun: boolean;
-  rank: string;
-  destinationName: string;
   /** Largest gate offset in this run, normalized by each gate's authored radius. */
-  maxGateOffset?: number;
-  /** First route made available by this finish, if any. */
-  newlyUnlockedCourseId?: CourseId | null;
+  maxGateOffset: number;
+  /** First mission made available by this finish, if any. */
+  newlyUnlockedMissionId: MissionId | null;
 }
+
+export interface EscapeMissionResult extends MissionResultBase {
+  kind: 'escape';
+  checkpointsCleared: number;
+  checkpointsTotal: number;
+  secondsAhead: number;
+}
+
+export interface StrikeMissionResult extends MissionResultBase {
+  kind: 'strike';
+  targetsDestroyed: number;
+  targetsRequired: number;
+  shotsFired: number;
+  shotsHit: number;
+  coreDestroyed: boolean;
+}
+
+export type MissionResult = GateRaceMissionResult | EscapeMissionResult | StrikeMissionResult;
+/** Current shipped objective result; retained as a narrow compatibility name. */
+export type RunResult = GateRaceMissionResult;
+
+export type MissionRewardEvent =
+  | { kind: 'gate-pass'; amount: number; gate: number }
+  | { kind: 'checkpoint'; amount: number; checkpoint: number }
+  | { kind: 'target-destroyed'; amount: number; targetId: string };
 
 /** Everything the HUD layer is allowed to ask the game to do. */
 /**
@@ -246,10 +322,10 @@ export interface HudHost {
   pause(): void;
   resume(): void;
   quitToTitle(): void;
-  /** Persists an authorized route choice and reloads through the boot-owned world builder. */
-  selectRoute(courseId: CourseId): void;
-  /** Returns to the title route strip without changing the active boot-built route. */
-  showRouteSelect(): void;
+  /** Persists an authorized mission choice and reloads through the boot-owned world builder. */
+  selectMission(missionId: MissionId): void;
+  /** Returns to the title mission view without changing the active boot-built world. */
+  showMissionSelect(): void;
   /** Requests a persisted locale change; the game accepts it only while the title is active. */
   requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;

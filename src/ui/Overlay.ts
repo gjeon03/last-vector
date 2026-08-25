@@ -130,10 +130,10 @@ export class Overlay {
         this.paused = false;
         host.quitToTitle();
       },
-      selectRoute: (courseId) => host.selectRoute(courseId),
-      showRouteSelect: () => {
+      selectMission: (missionId) => host.selectMission(missionId),
+      showMissionSelect: () => {
         this.paused = false;
-        host.showRouteSelect();
+        host.showMissionSelect();
       },
       pause: () => host.pause(),
       requestLocale: (locale) => host.requestLocale(locale),

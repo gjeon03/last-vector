@@ -49,16 +49,16 @@ import {
 import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS, SCALE } from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import {
-  CAIRN_DRIFT,
-  CHAPTER_ONE_STAGE_ORDER,
   calculateCourseRank,
-  getNextCourse,
-  isCourseAvailable,
   type CourseDefinition,
 } from '../core/Courses.ts';
 import { hasRadioSafeWindow, radioDurationSeconds } from '../core/RadioSchedule.ts';
-import { buildCourseUrl, type CourseResolution } from '../core/CourseSelection.ts';
+import { CAIRN_MISSION, type MissionDefinition } from '../core/Missions.ts';
+import { buildMissionUrl, type MissionResolution } from '../core/MissionSelection.ts';
 import { ProgressStore } from '../core/Progress.ts';
+import { GateRaceObjective } from './GateRaceObjective.ts';
+import { MissionRuntime } from './MissionRuntime.ts';
+import { World } from './World.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -218,8 +218,8 @@ interface Vantage {
 
 export interface GameOptions {
   root: HTMLElement;
-  courseDefinition?: CourseDefinition;
-  courseResolution?: CourseResolution;
+  missionDefinition?: MissionDefinition;
+  missionResolution?: MissionResolution;
   progressStore?: ProgressStore;
   localeStore?: LocaleStore;
   fonts?: {
@@ -256,10 +256,11 @@ export class Game {
   // front of the player is what buys backlit rock silhouettes, visible shafts and a rim on
   // every gate; with the star behind the camera the whole sector renders flat and frontal.
   private readonly lighting: ReturnType<typeof createLightingUniforms>;
+  private readonly missionDefinition: MissionDefinition;
   private readonly courseDefinition: CourseDefinition;
-  private readonly courseResolution: CourseResolution;
+  private readonly missionResolution: MissionResolution;
   private readonly progressStore: ProgressStore;
-  private newlyUnlockedCourseId: CourseDefinition['id'] | null = null;
+  private newlyUnlockedMissionId: MissionDefinition['id'] | null = null;
   private campaignNavigationError: CampaignViewModel['navigationError'] = null;
   private readonly starfield: Starfield;
   private readonly star: Star;
@@ -271,6 +272,9 @@ export class Game {
   private readonly dust: DustField;
   private readonly terminus: Terminus;
   private readonly course: Course;
+  private readonly objective: GateRaceObjective;
+  private readonly world: World;
+  private readonly mission: MissionRuntime;
   private readonly ship = new Ship();
   private readonly shipModel: ShipModel;
   private readonly cockpitModel: CockpitModel;
@@ -407,9 +411,13 @@ export class Game {
 
   constructor(options: GameOptions) {
     this.root = options.root;
-    this.courseDefinition = options.courseDefinition ?? CAIRN_DRIFT;
-    this.courseResolution = options.courseResolution ?? {
-      courseId: this.courseDefinition.id,
+    this.missionDefinition = options.missionDefinition ?? CAIRN_MISSION;
+    if (this.missionDefinition.objective.kind !== 'gate-race') {
+      throw new Error(`Unsupported objective runtime: ${this.missionDefinition.objective.kind}`);
+    }
+    this.courseDefinition = this.missionDefinition.objective.gates;
+    this.missionResolution = options.missionResolution ?? {
+      missionId: this.missionDefinition.id,
       source: 'default',
       diagnostic: null,
     };
@@ -568,6 +576,29 @@ export class Game {
 
     this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
     this.mainScene.add(this.dust.object);
+
+    this.objective = new GateRaceObjective(
+      this.course,
+      this.terminus.apertureRadius * 2.4,
+    );
+    this.world = new World({
+      starfield: this.starfield,
+      star: this.star,
+      planet: this.planet,
+      nebulaTarget: this.nebulaTarget,
+      asteroids: this.asteroids,
+      derelicts: this.derelicts,
+      landmarks: this.stageLandmarks,
+      dust: this.dust,
+      terminus: this.terminus,
+      course: this.course,
+    });
+    this.mission = new MissionRuntime({
+      definition: this.missionDefinition,
+      path: this.course.path,
+      world: this.world,
+      objective: this.objective,
+    });
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
     this.shipMeshHolder.add(this.shipModel.object);
@@ -728,8 +759,8 @@ export class Game {
       pause: () => this.pause(),
       resume: () => this.resume(),
       quitToTitle: () => this.toTitle(),
-      selectRoute: (courseId) => this.selectRoute(courseId),
-      showRouteSelect: () => this.showRouteSelect(),
+      selectMission: (missionId) => this.selectMission(missionId),
+      showMissionSelect: () => this.showMissionSelect(),
       requestLocale: (locale) => this.applyLocale(locale),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
       getSettings: () => this.settings.value,
@@ -754,17 +785,13 @@ export class Game {
     this.overlay.restoreFocusToken(focus);
   }
 
-  private selectRoute(courseId: CourseDefinition['id']): void {
-    // The authored campaign remains in-tree, but release-disabled routes must not be reachable
-    // through a stale DOM callback or an externally forged host call.
-    if (!isCourseAvailable(courseId)) return;
-
-    if (courseId === this.courseDefinition.id) {
-      this.showRouteSelect();
+  private selectMission(missionId: MissionDefinition['id']): void {
+    if (missionId === this.missionDefinition.id) {
+      this.showMissionSelect();
       return;
     }
 
-    const selected = this.progressStore.selectCourse(courseId);
+    const selected = this.progressStore.selectMission(missionId);
     if (!selected.accepted) return;
     if (!selected.persistence.reloadSafe) {
       this.campaignNavigationError = 'storage-unavailable';
@@ -774,7 +801,7 @@ export class Game {
 
     const locale = this.activeRunLocale ?? this.selectedLocale;
     writeLocaleHandoff(locale);
-    const target = new URL(buildCourseUrl(window.location.href, courseId));
+    const target = new URL(buildMissionUrl(window.location.href, missionId));
     if (this.phase === 'finished') target.searchParams.set('briefing', '1');
     else target.searchParams.delete('briefing');
     try {
@@ -785,7 +812,7 @@ export class Game {
     }
   }
 
-  private showRouteSelect(): void {
+  private showMissionSelect(): void {
     // NEXT STAGE reloads with `briefing=1`. Returning to the stage rail must consume that
     // one-shot boot instruction or a later refresh jumps straight back into briefing.
     const url = new URL(window.location.href);
@@ -804,29 +831,22 @@ export class Game {
 
   private campaignViewModel(): CampaignViewModel {
     const progress = this.progressStore.snapshot();
-    const next = getNextCourse(this.courseDefinition.id);
+    const mission = progress.missions[this.missionDefinition.id];
     return {
-      activeCourseId: this.courseDefinition.id,
-      nextStageId: next !== null && this.progressStore.isUnlocked(next) ? next : null,
-      newlyUnlockedCourseId: this.newlyUnlockedCourseId,
+      activeMissionId: this.missionDefinition.id,
+      nextMissionId: null,
+      newlyUnlockedMissionId: this.newlyUnlockedMissionId,
       navigationError: this.campaignNavigationError,
-      routes: CHAPTER_ONE_STAGE_ORDER.map((id) => {
-        const course = progress.courses[id];
-        return {
-          id,
-          state: !this.progressStore.isUnlocked(id)
-            ? 'locked' as const
-            : course?.cleared
-              ? 'cleared' as const
-              : 'available' as const,
-          highestRank: course?.highestRank ?? null,
-          objectives: {
-            firstClear: course?.cleared === true,
-            cleanClear: course?.cleanClear === true,
-            precision: course?.precisionClear === true,
-          },
-        };
-      }),
+      missions: [{
+        id: this.missionDefinition.id,
+        state: mission?.cleared ? 'cleared' : 'available',
+        highestRank: mission?.highestRank ?? null,
+        objectives: {
+          firstClear: mission?.cleared === true,
+          cleanClear: mission?.cleanClear === true,
+          precision: mission?.mastery.precision === true,
+        },
+      }],
     };
   }
 
@@ -943,6 +963,15 @@ export class Game {
         anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
         alignment: 0,
       },
+      guidance: {
+        label: this.course.gates[0]?.name ?? this.courseDefinition.text.canonicalDestination,
+        anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
+        distance: 0,
+        progress: 0,
+        current: 0,
+        total: this.course.gates.length,
+      },
+      objective: this.objective.telemetry(),
       courseRemaining: 0,
       courseTotal: this.course.totalLength,
       elapsed: 0,
@@ -1005,7 +1034,10 @@ export class Game {
     return anchors;
   }
 
-  private resetShipToStart(): void {
+  private resetShipToStart(resetWorld = true): void {
+    // Title/briefing loops historically rewind moving debris with the ship. Mission resets have
+    // already reset their world, so their call sites pass false and avoid doing the same work twice.
+    if (resetWorld) this.world.reset();
     this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
     // A restart is a new visual run as well as a new physics run. Leaving the smoothed boost
     // value alive made the first countdown frame look like a shutdown transient after restarting
@@ -1015,7 +1047,6 @@ export class Game {
     this.wasBoostLocked = false;
     this.gateTickTimer = 0;
     this.shipModel.resetPlumeState(this.shipVisualClock);
-    this.asteroids.resetMotion();
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     for (const trail of this.trails) trail.reset();
@@ -1046,10 +1077,10 @@ export class Game {
     this.cancelCountdownClear();
     this.paused = false;
     void this.audio.unlock();
-    this.course.reset();
+    this.mission.reset();
     this.gateHistory.length = 0;
     this.logLines.length = 0;
-    this.resetShipToStart();
+    this.resetShipToStart(false);
     this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
@@ -1155,8 +1186,8 @@ export class Game {
     this.cancelCountdownClear();
     this.countdown = null;
     this.overlay.setCountdown(null);
-    this.course.reset();
-    this.resetShipToStart();
+    this.mission.reset();
+    this.resetShipToStart(false);
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
     this.autopilot = true;
@@ -1391,7 +1422,7 @@ export class Game {
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
     // Motion belongs to simulation, not visual update. The collision pass below and the render
     // later in this same frame therefore read the same positions.
-    this.asteroids.updateMotion(dt, this.ship.position);
+    this.world.updateSimulation(dt, this.ship.position);
     this.resolveCollisions(dt);
 
     if (this.phase === 'flying') {
@@ -1400,8 +1431,13 @@ export class Game {
          deterministically produce a breach rather than a saved result. */
       this.checkFailure();
       if (this.phase === 'flying') {
-        this.course.update(this.ship.position, this.ship.speed, this.elapsed);
-        this.checkArrival();
+        const terminal = this.mission.update({
+          position: this.ship.position,
+          speed: this.ship.speed,
+          elapsed: this.elapsed,
+        });
+        if (terminal.status === 'failed') this.failObjective();
+        else if (terminal.status === 'succeeded') this.finish();
       }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
@@ -1593,15 +1629,15 @@ export class Game {
     }
   }
 
-  private checkArrival(): void {
-    if (!this.course.complete) return;
-    const signed = this.terminus.signedDistance(this.ship.position);
-    if (signed < 0) return;
-    this.tmpA.copy(this.ship.position).sub(this.terminus.position);
-    const along = this.tmpA.dot(this.terminus.normal);
-    this.tmpA.addScaledVector(this.terminus.normal, -along);
-    if (this.tmpA.length() > this.terminus.apertureRadius * 2.4) return;
-    this.finish();
+  private failObjective(): void {
+    if (this.phase !== 'flying') return;
+    this.autopilot = false;
+    this.result = null;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    this.setPhase('failed');
+    this.overlay.showFailure(this.elapsed);
+    this.input.releaseLock();
   }
 
   private checkFailure(): void {
@@ -1635,33 +1671,26 @@ export class Game {
       FLIGHT.cruiseSpeed,
       clean,
     );
-    const maxGateOffset = this.course.passes.reduce(
-      (maximum, pass) => Math.max(maximum, pass.offset),
-      0,
-    );
-
-    this.result = {
-      courseId: this.courseDefinition.id,
+    this.result = this.objective.buildResult({
+      missionId: this.missionDefinition.id,
+      rulesetVersion: this.missionDefinition.rulesetVersion,
       totalTime: this.elapsed,
-      splits,
+      hullRemaining: this.ship.hull,
       bestTime: best,
       bestSplits,
       isNewBest,
-      gatesCleared: this.course.passes.length,
-      gatesTotal: this.course.gates.length,
       topSpeed: this.topSpeed,
       cleanRun: clean,
       rank,
       destinationName: this.courseDefinition.text.canonicalDestination,
-      maxGateOffset,
-    };
+    });
 
     const progress = this.progressStore.recordSuccessfulFinish(
-      this.courseDefinition.id,
+      this.missionDefinition.id,
       this.result,
     );
-    this.newlyUnlockedCourseId = progress.newlyUnlocked;
-    this.result.newlyUnlockedCourseId = progress.newlyUnlocked;
+    this.newlyUnlockedMissionId = progress.newlyUnlocked;
+    this.result.newlyUnlockedMissionId = progress.newlyUnlocked;
     this.campaignNavigationError = progress.newlyUnlocked !== null && !progress.persistence.reloadSafe
       ? 'storage-unavailable'
       : null;
@@ -1745,27 +1774,20 @@ export class Game {
     // Moving the pixel floors past the multiply (last round) fixed the multiply ORDER and left
     // the multiplicand wrong.
     const pixelScale = Math.max(0.6, this.post.renderHeight / 1080);
-    this.starfield.setViewportHeight(this.post.renderHeight);
-    this.starfield.update(this.clock);
-    this.star.update(this.clock, this.farCamera);
-    this.planet.update(this.clock);
-
     const camPos = this.chase.camera.position;
-    this.asteroids.update(dt, camPos);
-    this.derelicts.update(this.clock, camPos);
-    this.stageLandmarks.update(this.clock, camPos);
-    this.stageLandmarks.setPixelScale(pixelScale);
-    this.terminus.update(this.clock, camPos, pixelScale);
-    this.course.update3d(dt, this.clock, this.elapsed, camPos, pixelScale);
-
-    // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
-    // short at cruise and only tearing open under boost — that contrast is the point.
-    const stretch = 0.008 + speed01 * 0.026 + boostBlend * 0.055;
-    // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
-    // wall of streaks under boost, which is where the cue is actually wanted.
-    // Cubic in speed: nearly invisible at a crawl, a wall of streaks under boost.
-    const dustOpacity = 0.02 + speed01 * speed01 * speed01 * 0.34 + boostBlend * 0.34;
-    this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
+    this.world.updatePresentation({
+      dt,
+      clock: this.clock,
+      runTime: this.elapsed,
+      camera: this.chase.camera,
+      farCamera: this.farCamera,
+      pixelScale,
+      viewportHeight: this.post.renderHeight,
+      shipPosition: this.ship.position,
+      shipVelocity: this.ship.velocity,
+      speed01,
+      boostBlend,
+    });
 
     this.shipModel.update(
       this.shipVisualClock,
@@ -2022,6 +2044,25 @@ export class Game {
 
     this.ship.getForward(this.tmpC);
     t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
+
+    const guidance = this.objective.guidance(this.ship.position);
+    t.guidance.label = guidance.label;
+    t.guidance.labelMessage = guidance.labelMessage;
+    t.guidance.distance = num(guidance.distance);
+    t.guidance.progress = num(guidance.progress);
+    t.guidance.current = guidance.current;
+    t.guidance.total = guidance.total;
+    this.tmpA.copy(guidance.anchor).project(this.chase.camera);
+    t.guidance.anchor.x = num(this.tmpA.x);
+    t.guidance.anchor.y = num(this.tmpA.y);
+    t.guidance.anchor.onScreen = this.tmpA.z > -1
+      && this.tmpA.z < 1
+      && Math.abs(this.tmpA.x) <= 1
+      && Math.abs(this.tmpA.y) <= 1;
+    this.tmpB.copy(guidance.anchor).applyMatrix4(this.chase.camera.matrixWorldInverse);
+    t.guidance.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+    t.guidance.anchor.distance = num(guidance.distance);
+    t.objective = this.objective.telemetry();
 
     if (t.callout) {
       t.callout.ttl -= dt;
@@ -2302,9 +2343,7 @@ export class Game {
   private applyQualityPopulations(): void {
     const profile = this.settings.profile;
     const max = qualityProfile('ultra');
-    this.starfield.setVisibleCount(profile.starCount);
-    this.dust.setVisibleCount(profile.dustCount);
-    this.asteroids.setVisibleFraction(profile.asteroidCount / max.asteroidCount);
+    this.world.applyQuality(profile, max);
   }
 
   /**
@@ -2999,7 +3038,7 @@ export class Game {
     seed: number;
     gateCount: number;
     length: number;
-    resolution: CourseResolution;
+    resolution: MissionResolution;
   } {
     return {
       courseId: this.courseDefinition.id,
@@ -3007,7 +3046,7 @@ export class Game {
       seed: this.seed,
       gateCount: this.course.gates.length,
       length: this.course.totalLength,
-      resolution: { ...this.courseResolution },
+      resolution: { ...this.missionResolution },
     };
   }
 
@@ -3064,8 +3103,8 @@ export class Game {
     return this.stageLandmarks.getDebugState();
   }
 
-  getRouteUrl(courseId: CourseDefinition['id']): string {
-    return buildCourseUrl(window.location.href, courseId);
+  getRouteUrl(missionId: MissionDefinition['id']): string {
+    return buildMissionUrl(window.location.href, missionId);
   }
 
   getAudioState(): ReturnType<AudioBus['debugMixState']> {
@@ -3125,16 +3164,7 @@ export class Game {
     this.overlay.dispose();
     this.audio.dispose();
     this.post.dispose();
-    this.starfield.dispose();
-    this.star.dispose();
-    this.planet.dispose();
-    this.nebulaTarget.dispose();
-    this.asteroids.dispose();
-    this.derelicts.dispose();
-    this.stageLandmarks.dispose();
-    this.dust.dispose();
-    this.terminus.dispose();
-    this.course.dispose();
+    this.mission.dispose();
     this.shipModel.dispose();
     this.cockpitModel.dispose();
     for (const trail of this.trails) trail.dispose();
