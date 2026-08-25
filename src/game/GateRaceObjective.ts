@@ -7,6 +7,7 @@ import { calculateCourseRank } from '../core/Courses.ts';
 import type { MissionDefinition } from '../core/Missions.ts';
 import type { Course } from './Course.ts';
 import type {
+  MissionRewardEvent,
   MissionResultInput,
   MissionObjectiveRuntime,
   ObjectiveGuidance,
@@ -76,6 +77,11 @@ export class GateRaceObjective implements MissionObjectiveRuntime {
 
   bestRunSplits(): readonly number[] {
     return this.course.passes.map((pass) => pass.time);
+  }
+
+  /** CAIRN retains its accepted-gate legacy reward path; the shared queue is intentionally empty. */
+  drainRewardEvents(_out: MissionRewardEvent[]): number {
+    return 0;
   }
 
   buildResult(input: MissionResultInput): GateRaceMissionResult {
