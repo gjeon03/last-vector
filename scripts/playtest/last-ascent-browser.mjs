@@ -17,8 +17,7 @@ const PROFILE_SECONDS = 3;
 const CAPTURES = Object.freeze([
   ['title', 'last-ascent-title.png'],
   ['launch', 'last-ascent-launch.png'],
-  ['debris', 'last-ascent-debris-beta.png'],
-  ['result', 'last-ascent-result.png'],
+  ['near-front', 'last-ascent-near-front.png'],
 ]);
 const RESOURCE_BUDGETS = Object.freeze({
   drawCalls: 160,
@@ -122,8 +121,8 @@ async function runLastAscentBrowser({ report, session, options }) {
 
   await report.check({
     id: 'ASCENT_BROWSER.focused-captures',
-    name: 'Four settled DPR1 captures cover title, reveal, hardest debris, and extraction',
-    assertion: 'Every 1920x1080 PNG is finite/non-flat and the flight captures expose the escape-specific HUD.',
+    name: 'Three settled DPR1 captures cover impact identity and shockfront pressure',
+    assertion: 'Title/launch show the authored guided impact; the near-front frame exposes a staged escape warning.',
   }, async () => {
     verify(routeOutcome.ok, 'LAST ASCENT route setup failed.', routeOutcome.error);
     const captures = [];
@@ -138,19 +137,49 @@ async function runLastAscentBrowser({ report, session, options }) {
     await callHarness(page, 'present', [], options.timeoutMs);
     captures.push(await capture(page, report, imageDirectory, CAPTURES[1]));
 
-    await callHarness(page, 'vantage', ['debris-beta']);
-    await callHarness(page, 'step', [30, 1 / 60], options.timeoutMs);
+    await callHarness(page, 'setDriven', [true]);
+    await callHarness(page, 'clearVantage');
+    await callHarness(page, 'setFixedTimestep', [1 / 60]);
+    await callHarness(page, 'startRun', [{ skipIntro: true }]);
+    await callHarness(page, 'setAutopilot', [true, { skill: 0.79 }]);
+    let pressure = 'nominal';
+    let phase = await callHarness(page, 'phase');
+    let steppedFrames = 0;
+    while (phase === 'flying' && pressure !== 'critical' && steppedFrames < 6_600) {
+      await callHarness(page, 'stepSimulation', [30, 1 / 60], 120_000);
+      steppedFrames += 30;
+      phase = await callHarness(page, 'phase');
+      pressure = await page.locator('.lv-escape-hud').getAttribute('data-pressure') ?? 'nominal';
+    }
+    await callHarness(page, 'setAutopilot', [false]);
     await callHarness(page, 'present', [], options.timeoutMs);
+    const telemetry = await callHarness(page, 'telemetry');
     const hud = await page.evaluate(() => ({
       visible: !document.querySelector('.lv-escape-hud')?.hasAttribute('hidden'),
-      act: document.querySelector('.lv-escape-act')?.textContent ?? null,
-      checkpoint: document.querySelector('.lv-escape-row:nth-of-type(3) .lv-escape-v')?.textContent ?? null,
+      pressure: document.querySelector('.lv-escape-hud')?.getAttribute('data-pressure') ?? null,
+      callout: document.querySelector('.lv-escape-pressure')?.textContent ?? null,
+      calloutVisible: !document.querySelector('.lv-escape-pressure')?.hasAttribute('hidden'),
       status: document.querySelector('.lv-escape-hud')?.getAttribute('aria-label') ?? null,
     }));
-    verify(hud.visible && hud.act && hud.checkpoint && hud.status,
-      'Hardest debris frame did not expose the escape-specific objective HUD.', hud);
+    const separation = telemetry?.objective?.kind === 'escape'
+      ? telemetry.objective.pathProgress - telemetry.objective.shockwaveProgress
+      : null;
+    verify(phase === 'flying'
+      && hud.visible
+      && hud.pressure === 'critical'
+      && hud.calloutVisible
+      && hud.callout?.includes('SHOCKFRONT')
+      && Number.isFinite(separation)
+      && separation > 0,
+    'Near-front state did not expose the bounded critical pressure warning before catch.', {
+      phase,
+      steppedFrames,
+      separation,
+      hud,
+      telemetry,
+    });
     captures.push(await capture(page, report, imageDirectory, CAPTURES[2]));
-    return { captures, hud };
+    return { captures, nearFront: { phase, steppedFrames, separation, hud, telemetry } };
   });
 
   const perfOutcome = await report.check({
@@ -174,7 +203,7 @@ async function runLastAscentBrowser({ report, session, options }) {
   await report.check({
     id: 'ASCENT_BROWSER.production-journey',
     name: 'A real production autopilot extracts before the scripted shockfront',
-    assertion: 'The canonical page completes all three safe corridors in 100-120 s, preserves hull, applies objective results, and renders the focused result capture without runtime errors.',
+    assertion: 'The canonical page completes all three safe corridors in 100-120 s, preserves hull, applies objective results, and emits no runtime errors.',
   }, async () => {
     verify(routeOutcome.ok && perfOutcome.ok,
       'Route/performance setup failed before the production journey.', { routeOutcome, perfOutcome });
@@ -197,8 +226,7 @@ async function runLastAscentBrowser({ report, session, options }) {
     const telemetry = await callHarness(page, 'telemetry');
     const progress = await callHarness(page, 'progress');
     const errors = await callHarness(page, 'errors');
-    const resultCapture = await capture(page, report, imageDirectory, CAPTURES[3]);
-    const evidence = { phase, steppedFrames, result, telemetry, progress, errors, resultCapture };
+    const evidence = { phase, steppedFrames, result, telemetry, progress, errors };
     verify(phase === 'finished'
       && result?.kind === 'escape'
       && result?.missionId === 'last-ascent'

@@ -314,6 +314,8 @@ export const ko = {
     ascentAct: 'LAST ASCENT',
     debrisAct: 'DEBRIS CORRIDOR',
     escapeAct: 'ESCAPE BURN',
+    shockfrontClosing: 'SHOCKFRONT CLOSING',
+    shockfrontCritical: 'SHOCKFRONT CRITICAL',
     escapeStatus: (separationMetres: number, checkpoint: number, total: number) =>
       `충격파와 ${Math.round(separationMetres)}미터 거리. 안전 항로 ${total}개 중 ${checkpoint}개 통과.`,
   },

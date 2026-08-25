@@ -33,9 +33,9 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 export const LAST_ASCENT_CHECKPOINT_REWARD_SOURCE = 'escape-checkpoint';
 
 const CHECKPOINT_OFFSETS = [
-  [280, 0],
-  [-30, 300],
-  [-300, -90],
+  [520, 0],
+  [-40, 520],
+  [-520, -160],
 ] as const;
 
 export interface LastAscentCheckpointFrame {
@@ -67,6 +67,8 @@ export function createLastAscentCheckpointFrames(
       forward,
       right,
       up,
+      // A pilot who stays on the route centreline meets debris, while this offset pocket remains
+      // comfortably wider than the ship and the deterministic drift envelope.
       radius: 360,
     };
   });

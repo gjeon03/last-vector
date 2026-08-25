@@ -1,4 +1,8 @@
 import type { Telemetry } from '../core/contracts.ts';
+import {
+  lastAscentPressureStage,
+  type EscapePressureStage,
+} from '../game/missions/LastAscentPressure.ts';
 import type { Messages } from '../i18n/messages.ts';
 
 function node(tag: string, className: string, text = ''): HTMLElement {
@@ -16,11 +20,13 @@ export class LastAscentHud {
   private readonly act: HTMLElement;
   private readonly separation: HTMLElement;
   private readonly corridors: HTMLElement;
+  private readonly pressure: HTMLElement;
   private readonly shipFill: HTMLElement;
   private readonly frontFill: HTMLElement;
   private previousAct = '';
   private previousSeparation = -1;
   private previousCheckpoint = -1;
+  private previousPressure: EscapePressureStage = 'nominal';
 
   constructor(messages: Messages) {
     this.messages = messages;
@@ -48,7 +54,10 @@ export class LastAscentHud {
     this.shipFill = node('i', 'lv-escape-ship-fill');
     ship.appendChild(this.shipFill);
     race.append(front, ship);
-    this.element.append(this.act, separationRow, corridorRow, race);
+    this.pressure = node('div', 'lv-escape-pressure');
+    this.pressure.hidden = true;
+    this.element.dataset.pressure = 'nominal';
+    this.element.append(this.act, separationRow, corridorRow, race, this.pressure);
   }
 
   update(telemetry: Telemetry): void {
@@ -79,6 +88,17 @@ export class LastAscentHud {
     if (objective.checkpoint !== this.previousCheckpoint) {
       this.previousCheckpoint = objective.checkpoint;
       this.corridors.textContent = `${objective.checkpoint} / ${objective.checkpointTotal}`;
+    }
+    const pressure = lastAscentPressureStage(objective, this.previousPressure);
+    if (pressure !== this.previousPressure) {
+      this.previousPressure = pressure;
+      this.element.dataset.pressure = pressure;
+      this.pressure.hidden = pressure === 'nominal';
+      this.pressure.textContent = pressure === 'critical'
+        ? this.messages.hud.shockfrontCritical
+        : pressure === 'warning'
+          ? this.messages.hud.shockfrontClosing
+          : '';
     }
     const ship = Math.min(1, Math.max(0, objective.pathProgress));
     const front = Math.min(1, Math.max(0, objective.shockwaveProgress));

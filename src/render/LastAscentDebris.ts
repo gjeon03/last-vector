@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Rng } from '../core/rng.ts';
 import type { FlightPath } from '../game/FlightPath.ts';
 import type { WorldContact } from '../game/MissionRuntime.ts';
@@ -20,7 +21,8 @@ interface DebrisSeed {
 const DEBRIS_SEEDS: readonly DebrisSeed[] = [
   { checkpoint: 0, right: -740, up: -260, forward: 0, radius: 138, phase: 0.1 },
   { checkpoint: 0, right: -506, up: 232, forward: -30, radius: 116, phase: 1.0 },
-  { checkpoint: 0, right: -278, up: -497, forward: 26, radius: 128, phase: 2.1 },
+  // Each wall owns one route-centre blocker. Their offset SAFE CORRIDOR remains clear.
+  { checkpoint: 0, right: -520, up: 0, forward: 0, radius: 108, phase: 2.1 },
   { checkpoint: 0, right: 33, up: 551, forward: -18, radius: 112, phase: 3.0 },
   { checkpoint: 0, right: 610, up: -310, forward: 22, radius: 148, phase: 4.2 },
   { checkpoint: 0, right: 760, up: 260, forward: -34, radius: 124, phase: 5.1 },
@@ -29,14 +31,14 @@ const DEBRIS_SEEDS: readonly DebrisSeed[] = [
   { checkpoint: 1, right: -528, up: -147, forward: -26, radius: 108, phase: 1.4 },
   { checkpoint: 1, right: -550, up: 162, forward: 28, radius: 132, phase: 2.5 },
   { checkpoint: 1, right: 235, up: -510, forward: -16, radius: 122, phase: 3.4 },
-  { checkpoint: 1, right: 558, up: 14, forward: 32, radius: 118, phase: 4.3 },
+  { checkpoint: 1, right: 40, up: -520, forward: 0, radius: 118, phase: 4.3 },
   { checkpoint: 1, right: 680, up: -350, forward: -24, radius: 150, phase: 5.2 },
   { checkpoint: 1, right: 760, up: 220, forward: 12, radius: 104, phase: 5.8 },
 
   { checkpoint: 2, right: -760, up: 300, forward: -28, radius: 126, phase: 0.2 },
   { checkpoint: 2, right: -620, up: -440, forward: 18, radius: 116, phase: 1.2 },
   { checkpoint: 2, right: -64, up: -580, forward: -12, radius: 144, phase: 2.2 },
-  { checkpoint: 2, right: 536, up: 119, forward: 30, radius: 108, phase: 3.2 },
+  { checkpoint: 2, right: 520, up: 160, forward: 0, radius: 122, phase: 3.2 },
   { checkpoint: 2, right: 429, up: 387, forward: -20, radius: 138, phase: 4.1 },
   { checkpoint: 2, right: 690, up: -170, forward: 24, radius: 114, phase: 5.0 },
   { checkpoint: 2, right: 780, up: 330, forward: -32, radius: 146, phase: 5.7 },
@@ -147,7 +149,16 @@ export class LastAscentDebris {
     }
     this.decorativeMesh.instanceMatrix.needsUpdate = true;
 
-    const corridorGeometry = new THREE.TorusGeometry(360, 8, 8, 48);
+    // Three separated arcs read as a marked opening cut through a broken field, rather than a
+    // reusable gate/torus. The pieces are merged once so all three decisions stay one batch.
+    const corridorPieces = [
+      new THREE.TorusGeometry(360, 9, 6, 14, 1.18),
+      new THREE.TorusGeometry(360, 9, 6, 14, 1.24).rotateZ(2.02),
+      new THREE.TorusGeometry(360, 9, 6, 14, 1.28).rotateZ(4.08),
+    ];
+    const corridorGeometry = mergeGeometries(corridorPieces, false);
+    for (const piece of corridorPieces) piece.dispose();
+    if (!corridorGeometry) throw new Error('LAST ASCENT broken corridor geometry failed to merge');
     const corridorMaterial = new THREE.MeshBasicMaterial({
       color: 0x76ecff,
       transparent: true,

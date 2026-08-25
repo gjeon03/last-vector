@@ -81,6 +81,16 @@
   display: none;
 }
 
+.lv-escape-hud[data-pressure='warning'],
+.lv-escape-hud[data-pressure='critical'] {
+  border-left-color: #ff633d;
+  box-shadow: -0.75rem 0 1.6rem rgba(255, 61, 31, 0.3), inset 0.22rem 0 rgba(255, 72, 38, 0.18);
+}
+
+.lv-escape-hud[data-pressure='critical'] {
+  box-shadow: -1rem 0 2.2rem rgba(255, 45, 20, 0.52), inset 0.3rem 0 rgba(255, 67, 30, 0.32);
+}
+
 .lv-escape-act {
   margin-bottom: 0.65rem;
   color: #ff8a58;
@@ -135,6 +145,22 @@
   display: block;
   transform: scaleX(0);
   transform-origin: left center;
+}
+
+.lv-escape-pressure {
+  margin-top: 0.58rem;
+  padding: 0.34rem 0.45rem;
+  color: #fff0e8;
+  background: repeating-linear-gradient(-45deg, rgba(255, 55, 26, 0.3) 0 0.35rem, rgba(74, 10, 6, 0.58) 0.35rem 0.7rem);
+  border: 1px solid rgba(255, 105, 62, 0.82);
+  font-family: var(--f-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.lv-escape-pressure[hidden] {
+  display: none;
 }
 
 .lv-escape-front-fill {

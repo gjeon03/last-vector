@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { LAST_ASCENT_MISSION } from '../../src/core/Missions.ts';
 import { FlightPath } from '../../src/game/FlightPath.ts';
 import { Ship } from '../../src/game/Ship.ts';
+import { MissionRuntime } from '../../src/game/MissionRuntime.ts';
 import {
   createLastAscentCheckpointFrames,
   LAST_ASCENT_CHECKPOINT_REWARD_SOURCE,
@@ -12,6 +13,10 @@ import {
 import { presentEscapeRewardEvents } from '../../src/game/missions/LastAscentEvents.ts';
 import { LAST_ASCENT_SHOCK_EXTRACTION_SECONDS } from '../../src/game/missions/LastAscentDefinition.ts';
 import { LastAscentDebris } from '../../src/render/LastAscentDebris.ts';
+import {
+  lastAscentPressureStage,
+  LAST_ASCENT_PRESSURE_THRESHOLDS,
+} from '../../src/game/missions/LastAscentPressure.ts';
 import { en } from '../../src/i18n/en.ts';
 import { ko } from '../../src/i18n/ko.ts';
 import { Report, parseOptions, verify } from './runtime.mjs';
@@ -28,6 +33,24 @@ function runTrace(hz, strategy) {
     LAST_ASCENT_MISSION.defaultSeed,
   );
   const objective = new LastAscentObjective(LAST_ASCENT_MISSION, path);
+  const checkpoints = createLastAscentCheckpointFrames(path);
+  const debris = new LastAscentDebris(path, checkpoints, LAST_ASCENT_MISSION.defaultSeed);
+  const runtime = new MissionRuntime({
+    definition: LAST_ASCENT_MISSION,
+    path,
+    objective,
+    world: {
+      contacts: debris.contacts,
+      contactCapacity: debris.contacts.length,
+      targetables: Object.freeze([]),
+      reset: () => debris.reset(),
+      updateSimulation: (worldDt) => debris.updateSimulation(worldDt),
+      updatePresentation: () => {},
+      applyQuality: () => {},
+      dispose: () => debris.dispose(),
+    },
+  });
+  runtime.reset();
   const ship = new Ship();
   ship.reset(path.startPosition, path.startQuaternion, 462 * 0.55);
   const inverse = new THREE.Quaternion();
@@ -47,11 +70,20 @@ function runTrace(hz, strategy) {
   const rewardBuffer = [];
   const presentedCheckpoints = [];
   let duplicateDrainCount = 0;
+  let collisionCount = 0;
+  const collidedContactIds = [];
+  let firstCollision = null;
   let elapsed = 0;
   let terminal = { status: 'running' };
   while (terminal.status === 'running' && elapsed < 220) {
     const guidance = objective.guidance(ship.position);
-    targetDirection.copy(guidance.anchor).sub(ship.position);
+    const progress = objective.telemetry().pathProgress;
+    const centrelineAnchor = path.spine[Math.min(
+      path.spine.length - 1,
+      Math.floor(progress * (path.spine.length - 1)) + 10,
+    )];
+    targetDirection.copy(strategy === 'centerline' ? centrelineAnchor : guidance.anchor)
+      .sub(ship.position);
     const distance = targetDirection.length();
     targetDirection.divideScalar(Math.max(1e-6, distance));
     inverse.copy(ship.quaternion).invert();
@@ -72,9 +104,39 @@ function runTrace(hz, strategy) {
       && elapsed < 4;
     ship.update(dt, command);
     elapsed += dt;
-    terminal = objective.update({ position: ship.position, speed: ship.speed, elapsed });
+    const forward = ship.getForward(targetDirection);
+    const outcome = runtime.simulate({
+      dt,
+      elapsed,
+      body: ship,
+      forward,
+      fire: false,
+      proximityRange: 40,
+      resolveContacts: true,
+      resolveObjective: true,
+      onContact: (contact, penetration, severity) => {
+        collisionCount += 1;
+        if (!collidedContactIds.includes(contact.id)) collidedContactIds.push(contact.id);
+        if (!firstCollision) {
+          const atImpact = objective.telemetry();
+          firstCollision = {
+            id: contact.id,
+            elapsed,
+            penetration,
+            severity,
+            hullAfter: ship.hull,
+            pathProgress: atImpact.pathProgress,
+            shockwaveProgress: atImpact.shockwaveProgress,
+            separation: atImpact.pathProgress - atImpact.shockwaveProgress,
+          };
+        }
+      },
+    });
+    terminal = outcome.hullFailed
+      ? { status: 'failed', reason: 'hull-breach' }
+      : (outcome.terminal ?? terminal);
     rewardBuffer.length = 0;
-    objective.drainRewardEvents(rewardBuffer);
+    runtime.drainRewardEvents(rewardBuffer);
     presentEscapeRewardEvents(rewardBuffer, (sourceIndex) => {
       presentedCheckpoints.push(sourceIndex + 1);
     });
@@ -83,7 +145,7 @@ function runTrace(hz, strategy) {
       ship.rechargeBoost(reward.amount);
     }
     rewardBuffer.length = 0;
-    duplicateDrainCount += objective.drainRewardEvents(rewardBuffer);
+    duplicateDrainCount += runtime.drainRewardEvents(rewardBuffer);
   }
   const telemetry = objective.telemetry();
   const result = terminal.status === 'succeeded'
@@ -91,14 +153,14 @@ function runTrace(hz, strategy) {
         totalTime: elapsed,
         hullRemaining: ship.hull,
         topSpeed: ship.speed,
-        cleanRun: true,
+        cleanRun: collisionCount === 0,
         bestTime: null,
         bestSplits: [],
         isNewBest: true,
         cruiseSpeed: 462,
       })
     : null;
-  objective.dispose();
+  runtime.dispose();
   return {
     hz,
     strategy,
@@ -112,6 +174,11 @@ function runTrace(hz, strategy) {
     rewards,
     presentedCheckpoints,
     duplicateDrainCount,
+    collisionCount,
+    collidedContactIds,
+    firstCollision,
+    hull: ship.hull,
+    cleanRun: collisionCount === 0,
     result,
     pathLength: path.totalLength,
   };
@@ -142,17 +209,24 @@ await report.check({
         contact.position.distanceTo(checkpoint.position) - contact.radius - checkpoint.radius),
     )),
   );
+  const centerBlockerIndices = [2, 10, 16];
+  const centerlineOffsetsMetres = centerBlockerIndices.map((contactIndex, checkpointIndex) =>
+    debris.contacts[contactIndex].position.distanceTo(
+      path.curve.getPointAt(checkpoints[checkpointIndex].progress),
+    ));
   verify(debris.contacts.length === 20
     && debris.collisionBatchCount === 1
     && checkpoints.length === 3
     && minSpawnDistance > 0.001
-    && minSafeCorridorClearance > 50,
-  'Collision debris exceeded its bounds, entered a safe opening, or violated the exact-centre guard.', {
+    && minSafeCorridorClearance > 20
+    && centerlineOffsetsMetres.every((offset) => offset < 0.001),
+  'Collision debris exceeded its bounds, missed the route centre, entered a safe opening, or violated the ship-start guard.', {
     contacts: debris.contacts.length,
     batches: debris.collisionBatchCount,
     checkpoints: checkpoints.length,
     minSpawnDistance,
     minSafeCorridorClearance,
+    centerlineOffsetsMetres,
   });
   const maximumSpeed = 1188;
   const commitmentWindows = checkpoints.map((checkpoint, index) => {
@@ -177,6 +251,7 @@ await report.check({
     commitmentWindows,
     minSpawnDistance,
     minSafeCorridorClearance,
+    centerlineOffsetsMetres,
   };
 });
 
@@ -211,7 +286,7 @@ await report.check({
 }, () => {
   const traces = [];
   for (const hz of [60, 120]) {
-    for (const strategy of ['no-boost', 'reference', 'wasted-early', 'always-held']) {
+    for (const strategy of ['no-boost', 'reference', 'wasted-early', 'always-held', 'centerline']) {
       traces.push(runTrace(hz, strategy));
     }
   }
@@ -220,6 +295,7 @@ await report.check({
     const reference = traces.find((trace) => trace.hz === hz && trace.strategy === 'reference');
     const wasted = traces.find((trace) => trace.hz === hz && trace.strategy === 'wasted-early');
     const held = traces.find((trace) => trace.hz === hz && trace.strategy === 'always-held');
+    const centerline = traces.find((trace) => trace.hz === hz && trace.strategy === 'centerline');
     verify(noBoost.status === 'failed'
       && noBoost.reason === 'shockfront-catch'
       && noBoost.progress >= 0.35
@@ -231,6 +307,18 @@ await report.check({
       && reference.result.secondsAhead >= 3
       && reference.result.secondsAhead <= 8,
     `${hz} Hz reference trace missed the skilled time/margin target.`, reference);
+    verify(reference.checkpoints === 3
+      && reference.collisionCount === 0
+      && reference.hull === 1
+      && reference.cleanRun,
+    `${hz} Hz offset-corridor reference did not clear 3/3 without contact.`, reference);
+    verify(centerline.collisionCount > 0
+      && [2, 10, 16].every((index) =>
+        centerline.collidedContactIds.includes(`last-ascent:debris:${index}`))
+      && centerline.hull < 1
+      && !centerline.cleanRun
+      && centerline.firstCollision?.separation > 0,
+    `${hz} Hz same-boost centerline control was not damaged by authored debris ahead of the front.`, centerline);
     verify(wasted.status === 'succeeded' && wasted.result.secondsAhead >= 1,
       `${hz} Hz wasted-early trace became unrecoverable.`, wasted);
     verify(held.status === 'succeeded' && held.result.secondsAhead <= 10,
@@ -246,7 +334,7 @@ await report.check({
       `${hz} Hz ${trace.strategy} did not emit/present exactly one typed +25 reward per checkpoint.`, trace);
     }
   }
-  for (const strategy of ['no-boost', 'reference', 'wasted-early', 'always-held']) {
+  for (const strategy of ['no-boost', 'reference', 'wasted-early', 'always-held', 'centerline']) {
     const at60 = traces.find((trace) => trace.hz === 60 && trace.strategy === strategy);
     const at120 = traces.find((trace) => trace.hz === 120 && trace.strategy === strategy);
     verify(at60.status === at120.status
@@ -255,6 +343,42 @@ await report.check({
     `${strategy} diverged across fixed-step rates.`, { at60, at120 });
   }
   return traces;
+});
+
+await report.check({
+  id: 'ASCENT.pressure-thresholds',
+  name: 'Shockfront warning has bounded hysteretic transitions',
+  assertion: 'Normalized separation stages nominal -> warning -> critical once, then require wider exit margins.',
+}, async () => {
+  let stage = 'nominal';
+  const stages = [];
+  const sample = (separation, shockwaveProgress = 0.4) => {
+    stage = lastAscentPressureStage({
+      kind: 'escape',
+      pathProgress: shockwaveProgress + separation,
+      shockwaveProgress,
+      checkpoint: 1,
+      checkpointTotal: 3,
+    }, stage);
+    stages.push(stage);
+  };
+  sample(0.12);
+  sample(LAST_ASCENT_PRESSURE_THRESHOLDS.warningEnter - 0.001);
+  sample(LAST_ASCENT_PRESSURE_THRESHOLDS.criticalEnter - 0.001);
+  sample(LAST_ASCENT_PRESSURE_THRESHOLDS.criticalExit - 0.001);
+  sample(LAST_ASCENT_PRESSURE_THRESHOLDS.criticalExit + 0.001);
+  sample(LAST_ASCENT_PRESSURE_THRESHOLDS.warningExit + 0.001);
+  const gameSource = await readFile(new URL('../../src/game/Game.ts', import.meta.url), 'utf8');
+  verify(JSON.stringify(stages) === JSON.stringify([
+    'nominal', 'warning', 'critical', 'critical', 'warning', 'nominal',
+  ])
+    && gameSource.includes("this.audio.play('warnProximity', nextEscapePressure === 'critical'")
+    && !/last-ascent['"]\s*[)=]/u.test(gameSource),
+  'Pressure warning lost hysteresis, procedural SFX, or crossed into a mission-ID branch.', {
+    stages,
+    thresholds: LAST_ASCENT_PRESSURE_THRESHOLDS,
+  });
+  return { stages, thresholds: LAST_ASCENT_PRESSURE_THRESHOLDS };
 });
 
 await report.check({

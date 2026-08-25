@@ -213,6 +213,8 @@ export interface HudMessages {
   ascentAct: string;
   debrisAct: string;
   escapeAct: string;
+  shockfrontClosing: string;
+  shockfrontCritical: string;
   escapeStatus: (separationMetres: number, checkpoint: number, total: number) => string;
 }
 

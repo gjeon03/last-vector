@@ -56,6 +56,11 @@ import {
 } from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
 import { presentEscapeRewardEvents } from './missions/LastAscentEvents.ts';
+import {
+  escapePressureRank,
+  lastAscentPressureStage,
+  type EscapePressureStage,
+} from './missions/LastAscentPressure.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -290,6 +295,7 @@ export class Game {
   private fadeTarget = 1;
   private damageFlash = 0;
   private proximity = 0;
+  private escapePressure: EscapePressureStage = 'nominal';
   private cinematicTime = 0;
   private boostBlend = 0;
   private wasBoosting = false;
@@ -927,6 +933,7 @@ export class Game {
     this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
+    this.escapePressure = 'nominal';
     this.topSpeed = 0;
     this.impacts = 0;
     this.radioTriggeredAt.fill(-1);
@@ -1033,6 +1040,7 @@ export class Game {
     this.resetShipToStart(false);
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
+    this.escapePressure = 'nominal';
     this.autopilot = true;
     this.cinematic = true;
     // Authored vantages are still poses. Keeping one active here made ABORT RUN pin both ship and
@@ -1817,6 +1825,17 @@ export class Game {
     t.guidance.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
     t.guidance.anchor.distance = num(guidance.distance);
     t.objective = this.mission.objective.telemetry();
+    const nextEscapePressure = t.objective.kind === 'escape'
+      ? lastAscentPressureStage(t.objective, this.escapePressure)
+      : 'nominal';
+    if (nextEscapePressure !== this.escapePressure) {
+      const escalated = escapePressureRank(nextEscapePressure)
+        > escapePressureRank(this.escapePressure);
+      this.escapePressure = nextEscapePressure;
+      if (this.phase === 'flying' && escalated) {
+        this.audio.play('warnProximity', nextEscapePressure === 'critical' ? 1 : 0.66);
+      }
+    }
 
     if (t.callout) {
       t.callout.ttl -= dt;

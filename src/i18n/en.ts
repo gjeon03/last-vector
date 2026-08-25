@@ -314,6 +314,8 @@ export const en = {
     ascentAct: 'LAST ASCENT',
     debrisAct: 'DEBRIS CORRIDOR',
     escapeAct: 'ESCAPE BURN',
+    shockfrontClosing: 'SHOCKFRONT CLOSING',
+    shockfrontCritical: 'SHOCKFRONT CRITICAL',
     escapeStatus: (separationMetres: number, checkpoint: number, total: number) =>
       `Shockfront separation ${Math.round(separationMetres)} metres. ${checkpoint} of ${total} safe corridors.`,
   },
