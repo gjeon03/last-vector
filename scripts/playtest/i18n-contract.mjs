@@ -578,6 +578,7 @@ await report.check(
       'results.newRecord': 'NEW BEST',
       'results.runAgain': 'RUN AGAIN',
       'results.returnToTitle': 'RETURN',
+      'results.missionFailed': 'MISSION FAILED',
       'results.hullBreach': 'HULL BREACH',
       'results.retry': 'RETRY',
       'cockpit.attitude': 'ATTITUDE',

@@ -41,6 +41,7 @@ export interface HarnessInput {
   strafeX?: number;
   /** -1..1 vertical strafe, positive = up. */
   strafeY?: number;
+  fire?: boolean;
   boost?: boolean;
   brake?: boolean;
 }

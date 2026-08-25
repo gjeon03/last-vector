@@ -282,10 +282,13 @@ export type MissionResult = GateRaceMissionResult | EscapeMissionResult | Strike
 /** Current shipped objective result; retained as a narrow compatibility name. */
 export type RunResult = GateRaceMissionResult;
 
-export type MissionRewardEvent =
-  | { kind: 'gate-pass'; amount: number; gate: number }
-  | { kind: 'checkpoint'; amount: number; checkpoint: number }
-  | { kind: 'target-destroyed'; amount: number; targetId: string };
+/** Shared gameplay reward; source metadata remains opaque to the common Game layer. */
+export interface MissionRewardEvent {
+  readonly kind: 'boost-recharge';
+  readonly amount: number;
+  readonly sourceId?: string;
+  readonly sourceIndex?: number;
+}
 
 /** Everything the HUD layer is allowed to ask the game to do. */
 /**

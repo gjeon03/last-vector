@@ -334,6 +334,7 @@ export const en = {
     versusBest: 'Δ BEST',
     runAgain: 'RUN AGAIN',
     returnToTitle: 'RETURN',
+    missionFailed: 'MISSION FAILED',
     hullBreach: 'HULL BREACH',
     time: 'TIME',
     retry: 'RETRY',
@@ -369,6 +370,7 @@ export const en = {
     settings: 'Settings',
     controls: 'Controls',
     runComplete: 'Run complete',
+    missionFailed: 'Mission failed',
     hullBreach: 'Hull breach',
   },
 } satisfies Messages;

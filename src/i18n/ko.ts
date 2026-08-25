@@ -334,6 +334,7 @@ export const ko = {
     versusBest: 'Δ BEST',
     runAgain: 'RUN AGAIN',
     returnToTitle: 'RETURN',
+    missionFailed: 'MISSION FAILED',
     hullBreach: 'HULL BREACH',
     time: 'TIME',
     retry: 'RETRY',
@@ -369,6 +370,7 @@ export const ko = {
     settings: '설정',
     controls: '조작법',
     runComplete: '비행 종료',
+    missionFailed: '임무 실패',
     hullBreach: '선체 파손',
   },
 } satisfies Messages;

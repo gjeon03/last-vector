@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import {
   CAIRN_DRIFT,
@@ -25,6 +26,11 @@ import {
 import { Course } from '../../src/game/Course.ts';
 import { FlightPath } from '../../src/game/FlightPath.ts';
 import { GateRaceObjective } from '../../src/game/GateRaceObjective.ts';
+import {
+  buildCampaignViewModel,
+  consumeMissionFrameEvents,
+  resolveAutopilotButton,
+} from '../../src/game/GameContracts.ts';
 import {
   createGameMissionRuntime,
   MissionRuntime,
@@ -300,6 +306,104 @@ await report.check({
 });
 
 await report.check({
+  id: 'MISSION.campaign-view-single',
+  name: 'Catalog-driven campaign projection preserves the one-mission view',
+  assertion: 'Empty and cleared CAIRN progress project exactly without a one-node rail or next mission.',
+}, () => {
+  const empty = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'cairn-drift',
+    missions: {},
+    dormantCourses: {},
+  }, 'cairn-drift');
+  const expected = {
+    activeMissionId: 'cairn-drift',
+    nextMissionId: null,
+    newlyUnlockedMissionId: null,
+    navigationError: null,
+    missions: [{
+      id: 'cairn-drift',
+      chapter: 1,
+      capabilities: [],
+      mastery: [{ id: 'precision', complete: false }],
+      state: 'available',
+      highestRank: null,
+      objectives: { firstClear: false, cleanClear: false, precision: false },
+    }],
+  };
+  verify(JSON.stringify(empty) === JSON.stringify(expected),
+    'The catalog projection changed the established one-mission campaign snapshot.', { empty, expected });
+
+  const cleared = buildCampaignViewModel({
+    version: 2,
+    selectedMission: 'cairn-drift',
+    missions: {
+      'cairn-drift': missionFacts({
+        cleared: true,
+        highestRank: 'A',
+        cleanClear: true,
+        mastery: { precision: true },
+      }),
+    },
+    dormantCourses: {},
+  }, 'cairn-drift');
+  verify(cleared.nextMissionId === null
+    && cleared.missions.length === 1
+    && cleared.missions[0]?.state === 'cleared'
+    && cleared.missions[0]?.highestRank === 'A'
+    && cleared.missions[0]?.chapter === 1
+    && cleared.missions[0]?.capabilities.length === 0
+    && cleared.missions[0]?.mastery[0]?.id === 'precision'
+    && cleared.missions[0]?.mastery[0]?.complete === true
+    && cleared.missions[0]?.objectives.firstClear
+    && cleared.missions[0]?.objectives.cleanClear
+    && cleared.missions[0]?.objectives.precision,
+  'Cleared CAIRN progress did not remain a terminal one-mission view.', cleared);
+  return { empty, cleared };
+});
+
+await report.check({
+  id: 'MISSION.objective-failure-reason',
+  name: 'Objective failure reasons remain distinct from hull breach presentation',
+  assertion: 'Reason codes cross Game and Overlay into stable generic failure UI; hull failure stays reasonless.',
+}, async () => {
+  const game = await readFile(new URL('../../src/game/Game.ts', import.meta.url), 'utf8');
+  const overlay = await readFile(new URL('../../src/ui/Overlay.ts', import.meta.url), 'utf8');
+  const screens = await readFile(new URL('../../src/ui/Screens.ts', import.meta.url), 'utf8');
+  const facts = {
+    terminalReason: game.includes('this.failObjective(terminal.reason);'),
+    objectiveReason: game.includes('this.overlay.showFailure(this.elapsed, reason);'),
+    hullReasonless: game.includes('this.overlay.showFailure(this.elapsed);'),
+    overlayThread: overlay.includes('this.screens.showFailure(elapsed, reason);'),
+    stableData: screens.includes("body.dataset['failureReason'] = reason;"),
+    genericCopy: screens.includes('m.results.missionFailed'),
+    hullCopy: screens.includes('m.results.hullBreach'),
+  };
+  verify(Object.values(facts).every(Boolean),
+    'The objective reason seam collapsed into hull-breach presentation.', facts);
+  return facts;
+});
+
+await report.check({
+  id: 'MISSION.generic-autopilot-buttons',
+  name: 'Generic autopilot preserves independent flight buttons only during active flight',
+  assertion: 'Nonlegacy boost/brake pass through in flight while attract phases remain neutral.',
+}, () => {
+  const facts = {
+    genericFlight: resolveAutopilotButton(undefined, true, true),
+    genericAttract: resolveAutopilotButton(undefined, true, false),
+    legacyTrue: resolveAutopilotButton(true, false, false),
+    legacyFalse: resolveAutopilotButton(false, true, true),
+  };
+  verify(facts.genericFlight === true
+    && facts.genericAttract === false
+    && facts.legacyTrue === true
+    && facts.legacyFalse === false,
+    'Generic autopilot buttons were dropped or leaked into attract flight.', facts);
+  return facts;
+});
+
+await report.check({
   id: 'MISSION.runtime-boundaries',
   name: 'GateRaceObjective and MissionRuntime own bounded objective/world lifecycles',
   assertion: 'Objective state has no UI/storage dependency and runtime disposes one objective/world.',
@@ -329,16 +433,267 @@ await report.check({
   runtime.reset();
   const guidance = objective.guidance(course.startPosition);
   const telemetry = objective.telemetry();
+  const rewardEvents = [];
   verify(guidance.current === 0
     && guidance.total === 9
     && telemetry.kind === 'gate-race'
     && telemetry.gatesTotal === 9
     && runtime.path === course.path
+    && objective.drainRewardEvents(rewardEvents) === 0
+    && rewardEvents.length === 0
     && calls.reset === 1,
   'Mission runtime did not expose the current objective/path boundary.', { guidance, telemetry, calls });
   runtime.dispose();
   verify(calls.dispose === 1, 'Mission runtime did not dispose its world exactly once.', calls);
   return { guidance: { ...guidance, anchor: [...guidance.anchor] }, telemetry, calls };
+});
+
+await report.check({
+  id: 'MISSION.extension-events',
+  name: 'Reward and optional weapon events preserve bounded terminal ordering',
+  assertion: 'Surviving frames run weapon before objective and drain reusable events; lethal frames do neither.',
+}, () => {
+  const definition = {
+    ...CAIRN_MISSION,
+    capabilities: ['fire'],
+  };
+  const path = new FlightPath(CAIRN_DRIFT.geometry, CAIRN_DRIFT.defaultSeed);
+  const contacts = [];
+  const targetables = [{ id: 'target:stable' }];
+  const order = [];
+  const calls = {
+    worldReset: 0,
+    worldUpdate: 0,
+    worldDispose: 0,
+    weaponReset: 0,
+    weaponUpdate: 0,
+    weaponEventDrain: 0,
+    weaponRewardDrain: 0,
+    weaponDispose: 0,
+    objectiveReset: 0,
+    objectiveUpdate: 0,
+    objectiveRewardDrain: 0,
+    objectiveDispose: 0,
+    impacts: 0,
+  };
+  const weaponReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: 10,
+    sourceId: 'shield-node-a',
+  });
+  const objectiveReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: 999,
+    sourceIndex: 2,
+  });
+  const invalidReward = Object.freeze({
+    kind: 'boost-recharge',
+    amount: Number.NaN,
+    sourceId: 'invalid-proof',
+  });
+  const weaponEvent = Object.freeze({
+    type: 'hit',
+    intensity: 0.75,
+    sourceId: 'shield-node-a',
+  });
+  let weaponRewardQueued = false;
+  let weaponEventQueued = false;
+  let objectiveRewardsQueued = false;
+  let weaponFrame = null;
+
+  const world = {
+    contacts,
+    contactCapacity: 1,
+    targetables,
+    reset: () => { calls.worldReset += 1; },
+    updateSimulation: () => {
+      calls.worldUpdate += 1;
+      order.push('world');
+    },
+    updatePresentation: () => {},
+    applyQuality: () => {},
+    dispose: () => { calls.worldDispose += 1; },
+  };
+  const weapon = {
+    reset: () => {
+      calls.weaponReset += 1;
+      weaponRewardQueued = false;
+      weaponEventQueued = false;
+    },
+    update: (frame) => {
+      calls.weaponUpdate += 1;
+      order.push('weapon');
+      weaponFrame = frame;
+      weaponRewardQueued = frame.fire;
+      weaponEventQueued = frame.fire;
+    },
+    drainEvents: (out) => {
+      calls.weaponEventDrain += 1;
+      if (!weaponEventQueued) return 0;
+      weaponEventQueued = false;
+      out.push(weaponEvent);
+      return 1;
+    },
+    drainRewardEvents: (out) => {
+      calls.weaponRewardDrain += 1;
+      if (!weaponRewardQueued) return 0;
+      weaponRewardQueued = false;
+      out.push(weaponReward);
+      return 1;
+    },
+    dispose: () => { calls.weaponDispose += 1; },
+  };
+  const objective = {
+    kind: 'gate-race',
+    reset: () => {
+      calls.objectiveReset += 1;
+      objectiveRewardsQueued = false;
+    },
+    update: () => {
+      calls.objectiveUpdate += 1;
+      order.push('objective');
+      objectiveRewardsQueued = true;
+      return { status: 'failed', reason: 'mock-window-expired' };
+    },
+    drainRewardEvents: (out) => {
+      calls.objectiveRewardDrain += 1;
+      if (!objectiveRewardsQueued) return 0;
+      objectiveRewardsQueued = false;
+      out.push(objectiveReward, invalidReward);
+      return 2;
+    },
+    guidance: () => ({
+      label: 'MOCK',
+      anchor: path.terminusPosition,
+      distance: 0,
+      progress: 0,
+      current: 0,
+      total: 1,
+    }),
+    telemetry: () => ({
+      kind: 'gate-race',
+      gatesCleared: 0,
+      gatesTotal: 1,
+      misses: 0,
+      complete: false,
+    }),
+    bestRunSplits: () => [],
+    buildResult: () => result(),
+    dispose: () => { calls.objectiveDispose += 1; },
+  };
+  const runtime = new MissionRuntime({ definition, path, world, objective, weapon });
+  runtime.reset();
+
+  const body = {
+    position: new THREE.Vector3(),
+    radius: 1,
+    speed: 900,
+    hull: 1,
+    applyImpact: () => {
+      calls.impacts += 1;
+      body.hull = 0;
+      return 1;
+    },
+  };
+  const forward = new THREE.Vector3(0, 0, -1);
+  const live = runtime.simulate({
+    dt: 1 / 60,
+    elapsed: 4,
+    body,
+    forward,
+    fire: true,
+    proximityRange: 40,
+    resolveContacts: true,
+    resolveObjective: true,
+  });
+  const rewardEvents = [];
+  const weaponEvents = [];
+  const recharges = [];
+  consumeMissionFrameEvents(runtime, live, {
+    rechargeBoost: (amount) => {
+      recharges.push(amount);
+      return { before: 0, after: amount / 100 };
+    },
+  }, rewardEvents, weaponEvents);
+
+  verify(JSON.stringify(order) === JSON.stringify(['world', 'weapon', 'objective'])
+    && live.hullFailed === false
+    && live.terminal?.status === 'failed'
+    && live.terminal.reason === 'mock-window-expired'
+    && weaponFrame?.position !== body.position
+    && weaponFrame?.position.equals(body.position)
+    && weaponFrame?.forward !== forward
+    && weaponFrame?.forward.equals(forward)
+    && weaponFrame?.targetables === targetables
+    && weaponFrame?.fire === true
+    && rewardEvents[0] === weaponReward
+    && rewardEvents[1] === objectiveReward
+    && rewardEvents[2] === invalidReward
+    && weaponEvents[0] === weaponEvent
+    && JSON.stringify(recharges) === JSON.stringify([10, 100]),
+  'The surviving-frame extension order, identities, or reward validation changed.', {
+    order,
+    live,
+    weaponFrame,
+    rewardEvents,
+    weaponEvents,
+    recharges,
+  });
+
+  contacts.push({
+    id: 'lethal-contact',
+    kind: 'hazard',
+    position: new THREE.Vector3(1.5, 0, 0),
+    radius: 1,
+  });
+  body.hull = 0.1;
+  order.length = 0;
+  rewardEvents.length = 0;
+  weaponEvents.length = 0;
+  const lethal = runtime.simulate({
+    dt: 1 / 60,
+    elapsed: 5,
+    body,
+    forward,
+    fire: true,
+    proximityRange: 40,
+    resolveContacts: true,
+    resolveObjective: true,
+  });
+  consumeMissionFrameEvents(runtime, lethal, {
+    rechargeBoost: (amount) => {
+      recharges.push(amount);
+      return { before: 0, after: amount / 100 };
+    },
+  }, rewardEvents, weaponEvents);
+  verify(lethal.hullFailed
+    && lethal.terminal === null
+    && JSON.stringify(order) === JSON.stringify(['world'])
+    && calls.impacts === 1
+    && calls.weaponUpdate === 1
+    && calls.objectiveUpdate === 1
+    && calls.weaponEventDrain === 1
+    && calls.weaponRewardDrain === 1
+    && calls.objectiveRewardDrain === 1
+    && recharges.length === 2
+    && rewardEvents.length === 0
+    && weaponEvents.length === 0,
+  'A lethal frame updated/drained the weapon or objective or applied a queued reward.', {
+    lethal,
+    order,
+    calls,
+    recharges,
+  });
+
+  runtime.dispose();
+  verify(calls.worldReset === 1
+    && calls.weaponReset === 1
+    && calls.objectiveReset === 1
+    && calls.weaponDispose === 1
+    && calls.objectiveDispose === 1
+    && calls.worldDispose === 1,
+  'MissionRuntime did not reset/dispose its optional weapon exactly once.', calls);
+  return { live, lethal, order: ['world', 'weapon', 'objective'], calls, recharges };
 });
 
 await report.check({
@@ -409,6 +764,7 @@ await report.check({
           extracting: false,
         },
       bestRunSplits: () => [],
+      drainRewardEvents: () => 0,
       buildResult: (input) => ({
         kind,
         missionId: definition.id,
@@ -485,6 +841,8 @@ await report.check({
       dt: 1 / 60,
       elapsed: 12,
       body,
+      forward: new THREE.Vector3(0, 0, -1),
+      fire: false,
       proximityRange: 40,
       resolveContacts: true,
       resolveObjective: true,
