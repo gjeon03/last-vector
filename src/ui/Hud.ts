@@ -11,7 +11,9 @@
  */
 
 import type { LogLine, Telemetry } from '../core/contracts.ts';
-import { UI } from '../core/art.ts';
+import { FLIGHT, FLIGHT_THRESHOLDS, UI } from '../core/art.ts';
+import { radioDurationSeconds } from '../core/RadioSchedule.ts';
+import type { Messages, Translator } from '../i18n/index.ts';
 
 /* ------------------------------------------------------------------ utilities */
 
@@ -48,6 +50,11 @@ export class Eased {
 }
 
 const PAD2 = (n: number): string => (n < 10 ? '0' + n : '' + n);
+
+const BOOST_USABLE_SECONDS =
+  (FLIGHT.boostCapacity * (1 - FLIGHT.boostEngageFraction)) / FLIGHT.boostDrain;
+const BOOST_USABLE_LABEL = `${BOOST_USABLE_SECONDS.toFixed(1)}S`;
+const BOOST_REARM_PERCENT = Math.round(FLIGHT.boostRearmFraction * 100);
 
 /** `m:ss.cc` — the canonical run clock. */
 export function formatTime(seconds: number | null | undefined): string {
@@ -102,6 +109,61 @@ export function retrigger(node: HTMLElement, cls: string): void {
   node.classList.remove(cls);
   void node.offsetWidth;
   node.classList.add(cls);
+}
+
+const HUD_EN_TOKENS = [
+  'VESPER TERMINUS',
+  'BLACKOUT RELAY',
+  'RELAY CHARGE',
+  'COLLECTOR ARM',
+  'W A S D',
+  'TERMINUS',
+  'Kestrel',
+  'VECTOR',
+  'BOOST',
+  'DRIVE',
+  'NETWORK',
+  'CORE',
+  'CAIRN',
+] as const;
+
+/**
+ * Write mixed Korean HUD copy as inert DOM, marking only preserved English tokens. This is used
+ * exclusively behind event/content guards: splitting a string creates nodes, so it must never
+ * enter the 60 Hz steady-state path.
+ */
+function writeEnglishTokens(node: HTMLElement, text: string): void {
+  node.removeAttribute('lang');
+  let cursor = 0;
+  let matched = false;
+  const fragment = document.createDocumentFragment();
+
+  while (cursor < text.length) {
+    let nextIndex = text.length;
+    let nextToken = '';
+    for (const token of HUD_EN_TOKENS) {
+      const index = text.indexOf(token, cursor);
+      if (index >= 0 && index < nextIndex) {
+        nextIndex = index;
+        nextToken = token;
+      }
+    }
+    if (!nextToken) break;
+    matched = true;
+    if (nextIndex > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, nextIndex)));
+    const tokenNode = document.createElement('span');
+    tokenNode.lang = 'en';
+    tokenNode.textContent = nextToken;
+    fragment.appendChild(tokenNode);
+    cursor = nextIndex + nextToken.length;
+  }
+
+  if (!matched) {
+    node.textContent = text;
+    return;
+  }
+  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  node.replaceChildren(fragment);
 }
 
 /* ------------------------------------------------------------ canvas palette */
@@ -228,12 +290,16 @@ interface VecState {
   time: number;
   alpha: number;
   reduced: boolean;
+  coreHot: boolean;
 }
 
 /* ------------------------------------------------------------------- the HUD */
 
 export class Hud {
   readonly el: HTMLElement;
+
+  private readonly translator: Translator;
+  private readonly messages: Messages;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -256,17 +322,22 @@ export class Hud {
   private readonly nSpeed: HTMLElement;
   private shownSpeed = -1;
   private readonly nGload: HTMLElement;
+  private readonly nThrottleRow: HTMLElement;
   private readonly nThrottleFill: HTMLElement;
   private readonly nThrottleGhost: HTMLElement;
   private readonly nThrottlePct: HTMLElement;
   private readonly nBoostFill: HTMLElement;
   private readonly nBoostGhost: HTMLElement;
   private readonly nBoostRow: HTMLElement;
+  private readonly nBoostCap: HTMLElement;
   private readonly nHullFill: HTMLElement;
   private readonly nHullRow: HTMLElement;
   private readonly nGateCur: RollingNumber;
   private readonly nGateTot: HTMLElement;
   private readonly nGateName: HTMLElement;
+  private readonly nObjectiveKind: HTMLElement;
+  private readonly nCollectionStatus: HTMLElement;
+  private readonly nCollectionSummary: HTMLElement;
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -287,6 +358,7 @@ export class Hud {
   private readonly nRadio: HTMLElement;
   private readonly nRadioWho: HTMLElement;
   private readonly nRadioText: HTMLElement;
+  private readonly flightReadableRegions: HTMLElement[] = [];
 
   /* eased values */
   private readonly eThrottle = new Eased(0, 14);
@@ -312,11 +384,13 @@ export class Hud {
   /* change guards — avoid touching the DOM when nothing moved */
   private pThrottle = -1;
   private pThrottleGhost = -1;
-  private pThrottlePct = -1;
+  private pThrottlePct = 0;
   private pBoost = -1;
   private pBoostGhost = -1;
-  private pBoostEmpty = false;
+  private pBoostPct = 100;
+  private pBoostUnavailable = false;
   private pHull = -1;
+  private pHullPct = 100;
   private pHullState = '';
   private pGload = -1;
   private pSector = '';
@@ -324,6 +398,9 @@ export class Hud {
   private pFps = -1;
   private pGateTot = -1;
   private pGateName = '';
+  private pGateNameType = '';
+  private pObjectiveKind = '';
+  private pCollectionStatus = '';
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -331,6 +408,9 @@ export class Hud {
   private pCalloutTone = '';
   private pCalloutFade = -1;
   private pSplitCount = -1;
+  private pBestSplitCount = -1;
+  private pSplitTotal = -1;
+  private splitComparable = false;
   private pCleared = -1;
   private pRail = -1;
   private pLabelOn = false;
@@ -345,6 +425,8 @@ export class Hud {
   private pGateCur = -1;
   private pDestination = '';
   private pAlpha = -1;
+  private pCalloutAriaHidden: boolean | undefined = undefined;
+  private pRadioAriaHidden: boolean | undefined = undefined;
   private cleared = false;
 
   /* rolling feeds */
@@ -358,6 +440,9 @@ export class Hud {
   private radioTtl = 0;
   private clock = 0;
   private active = false;
+  private countdownActive = false;
+  private calloutOn = false;
+  private radioOn = false;
   private showFps = false;
   private readonly reduced: boolean;
   private readonly mixBuf = [0, 0, 0];
@@ -379,9 +464,12 @@ export class Hud {
     time: 0,
     alpha: 0,
     reduced: false,
+    coreHot: false,
   };
 
-  constructor() {
+  constructor(translator: Translator) {
+    this.translator = translator;
+    this.messages = translator.messages;
     this.reduced =
       typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.vs.reduced = this.reduced;
@@ -407,6 +495,8 @@ export class Hud {
     this.nGateLabel = el('div', 'lv-gatetag');
     this.nGateLabelDist = el('span', 'lv-gatetag-n', '0');
     this.nGateLabelUnit = el('span', 'lv-gatetag-u', 'M');
+    this.nGateLabelDist.lang = 'en';
+    this.nGateLabelUnit.lang = 'en';
     this.nGateLabel.append(this.nGateLabelDist, this.nGateLabelUnit);
     this.el.appendChild(this.nGateLabel);
 
@@ -417,17 +507,22 @@ export class Hud {
     /* top strip */
     const top = el('div', 'lv-top');
     this.nSector = el('div', 'lv-sector');
+    this.nSector.lang = 'en';
     const fpsWrap = el('div', 'lv-fpswrap');
     this.nFpsFrame = fpsWrap;
-    fpsWrap.append(el('span', 'lv-fps-k', 'FPS'));
+    const fpsLabel = el('span', 'lv-fps-k', this.messages.hud.fps);
+    fpsLabel.lang = 'en';
+    fpsWrap.append(fpsLabel);
     this.nFps = el('span', 'lv-fps-v', '--');
+    this.nFps.lang = 'en';
     fpsWrap.appendChild(this.nFps);
     /**
      * Shown only when the browser refused mouse capture. The game already raises a callout for
      * it, but a callout is transient and this condition lasts the whole run: the player needs
      * to know why the mouse is dead for as long as it is dead, not for two seconds at the start.
      */
-    this.nInputMode = el('div', 'lv-inputmode', 'KEYBOARD FLIGHT');
+    this.nInputMode = el('div', 'lv-inputmode', this.messages.hud.keyboardFlight);
+    this.nInputMode.lang = 'en';
     this.nInputMode.dataset['on'] = '0';
     top.append(this.nSector, this.nInputMode, fpsWrap);
     frame.appendChild(top);
@@ -435,7 +530,7 @@ export class Hud {
     /* ---- LEFT cluster: throttle / speed / bars ---- */
     const left = el('div', 'lv-left');
 
-    const thr = el('div', 'lv-thr');
+    this.nThrottleRow = el('div', 'lv-thr');
     const thrTrack = el('div', 'lv-thr-track');
     this.nThrottleGhost = el('div', 'lv-thr-ghost');
     this.nThrottleFill = el('div', 'lv-thr-fill');
@@ -447,41 +542,70 @@ export class Hud {
     }
     thrTrack.append(this.nThrottleGhost, this.nThrottleFill, thrTicks);
     this.nThrottlePct = el('div', 'lv-thr-pct', '000');
-    thr.append(el('div', 'lv-thr-k', 'THR'), thrTrack, this.nThrottlePct);
+    this.nThrottlePct.lang = 'en';
+    const throttleLabel = el('div', 'lv-thr-k', this.messages.hud.throttle);
+    throttleLabel.lang = 'en';
+    this.nThrottleRow.append(throttleLabel, thrTrack, this.nThrottlePct);
 
     const speed = el('div', 'lv-speed');
     this.nSpeed = el('div', 'lv-readout lv-readout--speed', '0');
+    this.nSpeed.lang = 'en';
     const speedRow = el('div', 'lv-speed-row');
-    speedRow.append(this.nSpeed, el('span', 'lv-speed-u', 'M/S'));
+    const speedUnit = el('span', 'lv-speed-u', this.messages.hud.speedUnit);
+    speedUnit.lang = 'en';
+    speedRow.append(this.nSpeed, speedUnit);
     this.nGload = el('div', 'lv-gload', '0.0 G');
+    this.nGload.lang = 'en';
     speed.append(speedRow, this.nGload);
 
     const bars = el('div', 'lv-bars');
-    this.nBoostRow = this.buildBar('BOOST', 'boost');
+    this.nBoostRow = this.buildBoostBar();
     this.nBoostFill = this.nBoostRow.querySelector('.lv-bar-fill') as HTMLElement;
     this.nBoostGhost = this.nBoostRow.querySelector('.lv-bar-ghost') as HTMLElement;
-    this.nHullRow = this.buildBar('HULL', 'hull');
+    this.nBoostCap = this.nBoostRow.querySelector('.lv-bar-cap') as HTMLElement;
+    this.nHullRow = this.buildBar(this.messages.hud.hull, 'hull');
     this.nHullFill = this.nHullRow.querySelector('.lv-bar-fill') as HTMLElement;
+    this.configureMeter(this.nThrottleRow, this.messages.hud.throttle, 0);
+    this.configureMeter(this.nBoostRow, null, 100);
+    this.configureMeter(this.nHullRow, this.messages.hud.hull, 100);
     bars.append(this.nBoostRow, this.nHullRow);
 
-    left.append(thr, speed, bars);
+    left.append(this.nThrottleRow, speed, bars);
     frame.appendChild(left);
 
     /* ---- RIGHT cluster: gate counter / timers ---- */
     const right = el('div', 'lv-right');
     const gateCount = el('div', 'lv-gatecount');
     this.nGateCur = new RollingNumber(2, 'lv-roll lv-roll--gate');
+    this.nGateCur.el.lang = 'en';
     this.nGateTot = el('span', 'lv-gatecount-t', '00');
-    gateCount.append(this.nGateCur.el, el('span', 'lv-gatecount-s', '/'), this.nGateTot);
+    this.nGateTot.lang = 'en';
+    const gateSeparator = el('span', 'lv-gatecount-s', '/');
+    gateSeparator.lang = 'en';
+    gateCount.append(this.nGateCur.el, gateSeparator, this.nGateTot);
     this.nGateName = el('div', 'lv-gatename', '');
 
     const times = el('dl', 'lv-times');
-    this.nSplit = this.buildTime(times, 'SPLIT', 'is-split');
-    this.nTotal = this.buildTime(times, 'ELAPSED', 'is-total');
-    this.nBest = this.buildTime(times, 'BEST', 'is-best');
+    this.nSplit = this.buildTime(times, this.messages.hud.segment, 'is-split');
+    this.nTotal = this.buildTime(times, this.messages.hud.elapsed, 'is-total');
+    this.nBest = this.buildTime(times, this.messages.hud.best, 'is-best');
 
     this.nSplitFeed = el('ul', 'lv-splitfeed');
-    right.append(el('div', 'lv-right-k', 'NEXT MARKER'), gateCount, this.nGateName, times, this.nSplitFeed);
+    this.nObjectiveKind = el('div', 'lv-right-k', this.messages.hud.nextMarker);
+    this.nObjectiveKind.lang = 'en';
+    this.nCollectionStatus = el('div', 'lv-collection-status');
+    this.nCollectionStatus.lang = 'en';
+    this.nCollectionStatus.hidden = true;
+    this.nCollectionSummary = el('div', 'lv-collection-summary');
+    this.nCollectionStatus.append(this.nCollectionSummary);
+    right.append(
+      this.nObjectiveKind,
+      gateCount,
+      this.nGateName,
+      this.nCollectionStatus,
+      times,
+      this.nSplitFeed,
+    );
     frame.appendChild(right);
 
     /* ---- centre-upper callout ---- */
@@ -497,10 +621,13 @@ export class Hud {
     const feed = el('div', 'lv-feed');
     this.nRadio = el('div', 'lv-radio');
     this.nRadioWho = el('span', 'lv-radio-who', '');
+    this.nRadioWho.lang = 'en';
     this.nRadioText = el('span', 'lv-radio-text', '');
     const bars3 = el('span', 'lv-radio-eq');
     bars3.append(el('i'), el('i'), el('i'), el('i'));
     this.nRadio.append(bars3, this.nRadioWho, this.nRadioText);
+    this.nRadio.setAttribute('role', 'status');
+    this.nRadio.setAttribute('aria-live', 'polite');
     this.nLog = el('ul', 'lv-log');
     this.nLog.setAttribute('aria-live', 'polite');
     feed.append(this.nRadio, this.nLog);
@@ -513,25 +640,100 @@ export class Hud {
     this.nRailTicks = el('div', 'lv-rail-ticks');
     railTrack.append(this.nRailFill, this.nRailTicks);
     const railKeys = el('div', 'lv-rail-keys');
-    railKeys.append(el('span', '', 'DEPARTURE'), el('span', 'lv-rail-dest', 'TERMINUS'));
+    const railDestination = el('span', 'lv-rail-dest', this.messages.hud.terminus);
+    railDestination.lang = 'en';
+    const railDeparture = el('span', '', this.messages.hud.departure);
+    railDeparture.lang = 'en';
+    railKeys.append(railDeparture, railDestination);
     this.nRail.append(railKeys, railTrack);
     frame.appendChild(this.nRail);
 
+    this.flightReadableRegions.push(this.nGateLabel, top, left, right, this.nLog, this.nRail);
+    for (const region of this.flightReadableRegions) region.setAttribute('aria-hidden', 'true');
+    this.syncCalloutAccessibility();
+    this.syncRadioAccessibility();
+
     this.setShowFps(false);
+  }
+
+  private configureMeter(node: HTMLElement, label: string | null, percent: number): void {
+    node.setAttribute('role', 'meter');
+    node.setAttribute('aria-valuemin', '0');
+    node.setAttribute('aria-valuemax', '100');
+    if (label !== null) node.setAttribute('aria-label', label);
+    node.setAttribute('aria-valuenow', String(percent));
+    node.setAttribute('aria-valuetext', this.messages.hud.meterPercent(percent));
+  }
+
+  private writeDynamicText(node: HTMLElement, text: string): void {
+    if (this.translator.locale === 'ko') writeEnglishTokens(node, text);
+    else {
+      node.removeAttribute('lang');
+      node.textContent = text;
+    }
+  }
+
+  private writeLegacyEnglish(node: HTMLElement, text: string): void {
+    node.textContent = text;
+    node.lang = 'en';
+  }
+
+  private syncCalloutAccessibility(): void {
+    const hidden = !this.active || this.countdownActive || !this.calloutOn;
+    if (hidden === this.pCalloutAriaHidden) return;
+    this.pCalloutAriaHidden = hidden;
+    if (hidden) this.nCallout.setAttribute('aria-hidden', 'true');
+    else this.nCallout.removeAttribute('aria-hidden');
+  }
+
+  private syncRadioAccessibility(): void {
+    const hidden = !this.radioOn;
+    if (hidden === this.pRadioAriaHidden) return;
+    this.pRadioAriaHidden = hidden;
+    if (hidden) this.nRadio.setAttribute('aria-hidden', 'true');
+    else this.nRadio.removeAttribute('aria-hidden');
   }
 
   private buildBar(label: string, kind: string): HTMLElement {
     const row = el('div', `lv-bar lv-bar--${kind}`);
     const track = el('div', 'lv-bar-track');
     track.append(el('div', 'lv-bar-ghost'), el('div', 'lv-bar-fill'));
-    row.append(el('span', 'lv-bar-k', label), track);
+    const key = el('span', 'lv-bar-k', label);
+    key.lang = 'en';
+    row.append(key, track);
+    return row;
+  }
+
+  private buildBoostBar(): HTMLElement {
+    const row = this.buildBar(this.messages.hud.boost, 'boost');
+    row.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
+    row.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
+    row.dataset['availability'] = 'available';
+    const track = row.querySelector('.lv-bar-track') as HTMLElement;
+    const ticks = el('div', 'lv-bar-ticks');
+    ticks.setAttribute('aria-hidden', 'true');
+    const engageFloor = FLIGHT.boostCapacity * FLIGHT.boostEngageFraction;
+    for (let second = 1; second <= Math.floor(BOOST_USABLE_SECONDS); second++) {
+      const energy = engageFloor + FLIGHT.boostDrain * second;
+      const tick = el('i', 'lv-bar-tick');
+      tick.style.setProperty('--i', clamp(energy / FLIGHT.boostCapacity, 0, 1).toFixed(4));
+      ticks.appendChild(tick);
+    }
+    track.appendChild(ticks);
+    const capacity = el('span', 'lv-bar-cap', BOOST_USABLE_LABEL);
+    capacity.lang = 'en';
+    capacity.title = this.messages.hud.boostCapacityTitle;
+    row.appendChild(capacity);
+    row.setAttribute('aria-label', this.messages.hud.boostUsable(BOOST_USABLE_SECONDS));
     return row;
   }
 
   private buildTime(parent: HTMLElement, label: string, cls: string): HTMLElement {
     const row = el('div', `lv-time ${cls}`);
     const dt = el('dt', 'lv-time-k', label);
+    dt.lang = 'en';
     const dd = el('dd', 'lv-time-v', '--:--.--');
+    dd.lang = 'en';
     row.append(dt, dd);
     parent.appendChild(row);
     return dd;
@@ -545,6 +747,7 @@ export class Hud {
   }
 
   setActive(active: boolean, dim = false): void {
+    const activityChanged = active !== this.active;
     this.active = active;
     this.el.dataset['active'] = active ? '1' : '0';
     this.el.dataset['dim'] = dim ? '1' : '0';
@@ -560,6 +763,13 @@ export class Hud {
      * ambient: it is either shown at full strength or not shown.
      */
     this.el.style.setProperty('--ca', active ? '1' : '0');
+    if (activityChanged) {
+      for (const region of this.flightReadableRegions) {
+        if (active) region.removeAttribute('aria-hidden');
+        else region.setAttribute('aria-hidden', 'true');
+      }
+    }
+    this.syncCalloutAccessibility();
   }
 
   setShowFps(show: boolean): void {
@@ -574,7 +784,13 @@ export class Hud {
    * The callout is held, not dropped: it reappears the moment the countdown clears.
    */
   setCountdownActive(active: boolean): void {
+    if (active === this.countdownActive) {
+      this.el.dataset['countdown'] = active ? '1' : '0';
+      return;
+    }
+    this.countdownActive = active;
     this.el.dataset['countdown'] = active ? '1' : '0';
+    this.syncCalloutAccessibility();
   }
 
   setDestination(name: string): void {
@@ -582,12 +798,14 @@ export class Hud {
     if (dest) dest.textContent = name;
   }
 
-  radio(speaker: string, text: string): void {
+  radio(speaker: string, text: string, durationBasisLength = text.length): void {
     this.nRadioWho.textContent = speaker;
-    this.nRadioText.textContent = text;
-    this.radioTtl = 3.2 + Math.min(text.length, 120) * 0.035;
+    this.writeDynamicText(this.nRadioText, text);
+    this.radioTtl = radioDurationSeconds(durationBasisLength);
     retrigger(this.nRadio, 'is-in');
     this.nRadio.dataset['on'] = '1';
+    this.radioOn = true;
+    this.syncRadioAccessibility();
   }
 
   resize(): void {
@@ -706,10 +924,27 @@ export class Hud {
       this.nGload.dataset['hot'] = gq >= 350 ? '1' : '0';
     }
 
-    /* gate counter — splits.length is the unambiguous "cleared" count */
-    const total = Math.max(1, t.gate.total);
-    const cleared = clamp(t.splits.length, 0, total);
-    const current = Math.min(cleared + 1, total);
+    const collection = t.objective.kind === 'collection' ? t.objective : null;
+    this.vs.coreHot = false;
+    const objectiveKind = collection
+      ? `${t.objective.kind}:${collection.phase}`
+      : t.objective.kind;
+    if (objectiveKind !== this.pObjectiveKind) {
+      this.pObjectiveKind = objectiveKind;
+      this.nObjectiveKind.textContent = collection
+        ? collection.phase === 'returning'
+          ? this.messages.hud.returnToRelay
+          : 'ENERGY CELL'
+        : this.messages.hud.nextMarker;
+      this.nCollectionStatus.hidden = collection === null;
+    }
+    const total = Math.max(1, collection?.required ?? t.gate.total);
+    const cleared = clamp(
+      collection?.collected ?? t.splits.length,
+      0,
+      total,
+    );
+    const current = collection ? cleared : Math.min(cleared + 1, total);
     if (current !== this.pGateCur) {
       this.pGateCur = current;
       this.nGateCur.set(current);
@@ -718,10 +953,30 @@ export class Hud {
       this.pGateTot = total;
       this.nGateTot.textContent = PAD2(total);
     }
-    if (t.gate.name !== this.pGateName) {
-      this.pGateName = t.gate.name;
-      this.nGateName.textContent = t.gate.name;
+    const targetName = collection
+      ? collection.primarySourceId ?? t.guidance.label
+      : t.gate.name;
+    const gateNameType = collection ? '' : t.gate.nameMessage?.type ?? '';
+    if (targetName !== this.pGateName || gateNameType !== this.pGateNameType) {
+      this.pGateName = targetName;
+      this.pGateNameType = gateNameType;
+      if (!collection && t.gate.nameMessage) {
+        this.writeDynamicText(this.nGateName, this.translator.domain(t.gate.nameMessage));
+        this.nGateName.lang = 'en';
+      } else {
+        this.nGateName.textContent = targetName;
+        this.nGateName.lang = 'en';
+      }
       retrigger(this.nGateName, 'is-in');
+    }
+    if (collection) {
+      const status = collection.phase === 'returning'
+        ? `${this.messages.hud.coreProgress(collection.collected, collection.required)} · ${this.messages.hud.returnWindow(collection.relayRemaining ?? 0)}`
+        : this.messages.hud.coreProgress(collection.collected, collection.required);
+      if (status !== this.pCollectionStatus) {
+        this.pCollectionStatus = status;
+        this.nCollectionSummary.textContent = status;
+      }
     }
 
     /* timers */
@@ -762,8 +1017,11 @@ export class Hud {
         node.classList.toggle('is-next', i === cleared);
       }
     }
-    const prog =
-      t.courseTotal > 0 ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1) : cleared / total;
+    const prog = collection
+      ? cleared / total
+      : t.courseTotal > 0
+        ? clamp(1 - t.courseRemaining / t.courseTotal, 0, 1)
+        : cleared / total;
     this.eRail.target = prog;
     const railV = this.eRail.step(dt);
     const railQ = Math.round(railV * 400);
@@ -792,6 +1050,8 @@ export class Hud {
     if (pct !== this.pThrottlePct) {
       this.pThrottlePct = pct;
       this.nThrottlePct.textContent = PAD3(pct);
+      this.nThrottleRow.setAttribute('aria-valuenow', String(pct));
+      this.nThrottleRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(pct));
     }
 
     this.eBoost.target = clamp(t.energy, 0, 1);
@@ -808,10 +1068,27 @@ export class Hud {
       this.pBoostGhost = bgq;
       this.nBoostGhost.style.transform = `scaleX(${(bgq / 400).toFixed(4)})`;
     }
-    const empty = t.energy <= 0.035;
-    if (empty !== this.pBoostEmpty) {
-      this.pBoostEmpty = empty;
-      this.nBoostRow.classList.toggle('is-empty', empty);
+    const boostPct = Math.round(bo * 100);
+    if (boostPct !== this.pBoostPct) {
+      this.pBoostPct = boostPct;
+      this.nBoostRow.setAttribute('aria-valuenow', String(boostPct));
+      this.nBoostRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(boostPct));
+    }
+    const unavailable = t.boostLocked === true || t.energy <= 0.035;
+    if (unavailable !== this.pBoostUnavailable) {
+      this.pBoostUnavailable = unavailable;
+      this.nBoostRow.classList.toggle('is-empty', unavailable);
+      this.nBoostRow.dataset['usableSeconds'] = String(BOOST_USABLE_SECONDS);
+      this.nBoostRow.dataset['rearmPercent'] = String(BOOST_REARM_PERCENT);
+      this.nBoostRow.dataset['availability'] = unavailable ? 'unavailable' : 'available';
+      this.nBoostCap.textContent = unavailable ? this.messages.hud.locked : BOOST_USABLE_LABEL;
+      this.nBoostCap.lang = 'en';
+      this.nBoostRow.setAttribute(
+        'aria-label',
+        unavailable
+          ? this.messages.hud.boostRecharging(BOOST_REARM_PERCENT)
+          : this.messages.hud.boostUsable(BOOST_USABLE_SECONDS),
+      );
     }
     if (t.boosting !== this.pBoosting) {
       this.pBoosting = t.boosting;
@@ -826,6 +1103,12 @@ export class Hud {
       this.pHull = hq;
       this.nHullFill.style.transform = `scaleX(${(hq / 400).toFixed(4)})`;
     }
+    const hullPct = Math.round(hull * 100);
+    if (hullPct !== this.pHullPct) {
+      this.pHullPct = hullPct;
+      this.nHullRow.setAttribute('aria-valuenow', String(hullPct));
+      this.nHullRow.setAttribute('aria-valuetext', this.messages.hud.meterPercent(hullPct));
+    }
     const state = hull < 0.3 ? 'crit' : hull < 0.65 ? 'warn' : 'ok';
     if (state !== this.pHullState) {
       this.pHullState = state;
@@ -839,19 +1122,32 @@ export class Hud {
       if (this.pCalloutId !== -1) {
         this.pCalloutId = -1;
         this.nCallout.dataset['on'] = '0';
+        this.calloutOn = false;
+        this.syncCalloutAccessibility();
       }
       return;
     }
     if (c.id !== this.pCalloutId) {
       this.pCalloutId = c.id;
-      this.nCalloutTitle.textContent = c.title;
-      this.nCalloutSub.textContent = c.sub ?? '';
-      this.nCalloutSub.dataset['on'] = c.sub ? '1' : '0';
+      if (c.titleMessage) {
+        this.writeDynamicText(this.nCalloutTitle, this.translator.domain(c.titleMessage));
+        this.nCalloutTitle.lang = 'en';
+      } else {
+        this.writeLegacyEnglish(this.nCalloutTitle, c.title);
+      }
+      const sub = c.subMessage ? this.translator.domain(c.subMessage) : c.sub;
+      if (c.subMessage) {
+        this.writeDynamicText(this.nCalloutSub, sub ?? '');
+        if (c.subMessage.type === 'callout-sub.gate-progress') this.nCalloutSub.lang = 'en';
+      } else this.writeLegacyEnglish(this.nCalloutSub, sub ?? '');
+      this.nCalloutSub.dataset['on'] = sub ? '1' : '0';
       if (c.tone !== this.pCalloutTone) {
         this.pCalloutTone = c.tone;
         this.nCallout.dataset['tone'] = c.tone;
       }
       this.nCallout.dataset['on'] = '1';
+      this.calloutOn = true;
+      this.syncCalloutAccessibility();
       retrigger(this.nCallout, 'is-in');
       this.pCalloutFade = -1;
     }
@@ -899,7 +1195,15 @@ export class Hud {
         if (!node) {
           node = this.logPool.pop() ?? el('li', 'lv-log-line');
           node.className = 'lv-log-line';
-          node.textContent = line.text;
+          if (!line.message) {
+            this.writeLegacyEnglish(node, line.text);
+          } else if (line.message.type === 'log.pointer-lock-refused') {
+            node.removeAttribute('lang');
+            node.textContent = this.translator.domain(line.message);
+          } else {
+            this.writeDynamicText(node, this.translator.domain(line.message));
+            node.lang = 'en';
+          }
           node.dataset['tone'] = line.tone;
           this.logNodes.set(line.id, node);
           this.nLog.appendChild(node);
@@ -929,20 +1233,50 @@ export class Hud {
   }
 
   private updateSplits(t: Telemetry, dt: number): void {
+    const splitTotal = t.objective.kind === 'collection'
+      ? t.objective.required
+      : t.gate.total;
+    if (t.bestSplits.length !== this.pBestSplitCount || splitTotal !== this.pSplitTotal) {
+      this.pBestSplitCount = t.bestSplits.length;
+      this.pSplitTotal = splitTotal;
+      this.splitComparable =
+        splitTotal > 0 &&
+        t.bestSplits.length === splitTotal &&
+        t.bestSplits.every((split) => Number.isFinite(split) && split >= 0);
+      this.nSplitFeed.dataset['delta'] = this.splitComparable ? '1' : '0';
+    }
     if (this.pSplitCount === -1) this.pSplitCount = t.splits.length;
     if (t.splits.length > this.pSplitCount) {
       for (let i = this.pSplitCount; i < t.splits.length; i++) {
         const prev = i > 0 ? t.splits[i - 1]! : 0;
         const seg = t.splits[i]! - prev;
         const node = el('li', 'lv-splitfeed-row');
-        node.append(
-          el('span', 'lv-splitfeed-i', PAD2(i + 1)),
-          el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!)),
-          /* Unsigned. This is a leg duration, which cannot be negative, so a leading "+"
-             reads as a delta and tells a player they are down time they may in fact be up.
-             The results table prints the identical quantity unsigned; these must agree. */
-          el('span', 'lv-splitfeed-d', seg.toFixed(2)),
-        );
+        const splitIndex = el('span', 'lv-splitfeed-i', PAD2(i + 1));
+        const splitTime = el('span', 'lv-splitfeed-t', formatTime(t.splits[i]!));
+        /* Unsigned. This is a leg duration, which cannot be negative, so a leading "+"
+           reads as a delta and tells a player they are down time they may in fact be up.
+           The results table prints the identical quantity unsigned; these must agree. */
+        const splitDuration = el('span', 'lv-splitfeed-d', seg.toFixed(2));
+        splitIndex.lang = 'en';
+        splitTime.lang = 'en';
+        splitDuration.lang = 'en';
+        node.append(splitIndex, splitTime, splitDuration);
+        if (this.splitComparable) {
+          const bestPrev = i > 0 ? t.bestSplits[i - 1]! : 0;
+          const bestSeg = t.bestSplits[i]! - bestPrev;
+          if (Number.isFinite(bestSeg) && bestSeg >= 0) {
+            const delta = seg - bestSeg;
+            const splitDelta = el('span', 'lv-splitfeed-dlt');
+            this.writeDynamicText(
+              splitDelta,
+              this.messages.results.splitDelta(formatDelta(delta)),
+            );
+            splitDelta.lang = 'en';
+            splitDelta.dataset['tone'] =
+              Math.round(delta * 100) === 0 ? 'flat' : delta < 0 ? 'good' : 'bad';
+            node.appendChild(splitDelta);
+          }
+        }
         this.nSplitFeed.appendChild(node);
         retrigger(node, 'is-in');
         this.splitNodes.push(node);
@@ -970,7 +1304,11 @@ export class Hud {
   private updateRadio(dt: number): void {
     if (this.radioTtl <= 0) return;
     this.radioTtl -= dt;
-    if (this.radioTtl <= 0) this.nRadio.dataset['on'] = '0';
+    if (this.radioTtl <= 0) {
+      this.nRadio.dataset['on'] = '0';
+      this.radioOn = false;
+      this.syncRadioAccessibility();
+    }
   }
 
   private updateFx(t: Telemetry, dt: number): void {
@@ -984,7 +1322,7 @@ export class Hud {
     }
     /* Explicit impact signal. The old heuristic watched `hull` fall frame to frame, which
        missed a glancing contact that cost no hull and misfired whenever the value was
-       re-clamped. `impactFlash` spikes on the strike and decays on its own, so the pulse is
+       re-clamped. `impactFlash` spikes on contact and decays on its own, so the pulse is
        retriggered on the leading edge only. */
     if (t.impactFlash > 0.05 && this.pImpactFlash <= 0.05) {
       retrigger(this.nImpact, 'is-hit');
@@ -1048,28 +1386,30 @@ export class Hud {
     vs.slipX = this.eSlipX.step(dt);
     vs.slipY = this.eSlipY.step(dt);
 
-    /* --- gate director --- */
-    const gate = t.gate;
-    this.eGateOn.target = gate.anchor.onScreen ? 1 : 0;
+    /* --- objective director --- */
+    const collection = t.objective.kind === 'collection';
+    const anchor = collection ? t.guidance.anchor : t.gate.anchor;
+    const distance = collection ? t.guidance.distance : t.gate.distance;
+    this.eGateOn.target = anchor.onScreen ? 1 : 0;
     vs.gateOn = this.eGateOn.step(dt);
-    vs.gateAngle = gate.anchor.angle;
-    vs.gateDist = gate.distance;
-    this.eAlign.target = clamp(gate.alignment, 0, 1);
+    vs.gateAngle = anchor.angle;
+    vs.gateDist = distance;
+    this.eAlign.target = collection ? 1 : clamp(t.gate.alignment, 0, 1);
     vs.gateAlign = this.eAlign.step(dt);
 
     /* Upper clamp is 0.26h, not 0.34h: past that the brackets stop reading as a reticle and
        start reading as four unrelated corner marks parked near the screen edges. */
-    const targetR = clamp((140 / Math.max(gate.distance, 60)) * h * 0.62, h * 0.022, h * 0.26);
+    const targetR = clamp((140 / Math.max(distance, 60)) * h * 0.62, h * 0.022, h * 0.26);
     this.eGateR.target = targetR;
     vs.gateR = this.eGateR.step(dt);
-    vs.gateX = w * 0.5 + gate.anchor.x * w * 0.5;
-    vs.gateY = h * 0.5 - gate.anchor.y * h * 0.5;
+    vs.gateX = w * 0.5 + anchor.x * w * 0.5;
+    vs.gateY = h * 0.5 - anchor.y * h * 0.5;
     vs.proximity = this.eProx.value;
 
     const dx = vs.gateX - w * 0.5;
     const dy = vs.gateY - h * 0.5;
     const boreR = Math.sqrt(dx * dx + dy * dy);
-    vs.bore = gate.anchor.onScreen ? clamp(1 - boreR / (h * 0.055), 0, 1) : 0;
+    vs.bore = anchor.onScreen ? clamp(1 - boreR / (h * 0.055), 0, 1) : 0;
 
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
@@ -1083,7 +1423,7 @@ export class Hud {
     this.drawPipper(ctx, w, h, vs);
 
     ctx.globalAlpha = 1;
-    this.placeGateTag(w, h, vs, gate.anchor.onScreen);
+    this.placeGateTag(w, h, vs, anchor.onScreen);
   }
 
   /** Compact roll scale sat above the pipper. Reads as part of the sight, not a horizon line. */
@@ -1165,7 +1505,7 @@ export class Hud {
    */
   private drawGateReticle(ctx: CanvasRenderingContext2D, vs: VecState, vmin: number): void {
     const r = vs.gateR;
-    const near = clamp(1 - vs.gateDist / 2600, 0, 1);
+    const near = clamp(1 - vs.gateDist / FLIGHT_THRESHOLDS.gateReticleRange, 0, 1);
     /**
      * White, not amber. An armed cairn renders as a hot gold ring and its aperture blows out
      * to cyan at close range, so amber-on-gold and amber-on-cyan both vanish exactly when the
@@ -1179,6 +1519,24 @@ export class Hud {
     ctx.save();
     ctx.translate(vs.gateX, vs.gateY);
     ctx.globalAlpha = a;
+
+    if (vs.coreHot) {
+      const pulse = vs.reduced ? 0.5 : 0.5 + 0.5 * Math.sin(vs.time * 8);
+      const coreRadius = vmin * (0.021 + pulse * 0.004);
+      ctx.globalAlpha = a * (0.58 + pulse * 0.24);
+      ctx.fillStyle = 'rgba(255,55,28,0.58)';
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = a;
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 1.35, 0, Math.PI * 2);
+      casedStroke(ctx, 'rgba(255,174,62,0.98)', Math.max(2.4, vmin * 0.003));
+      ctx.beginPath();
+      ctx.arc(0, 0, coreRadius * 0.34, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,235,174,0.98)';
+      ctx.fill();
+    }
 
     if (r < small) {
       /* far: a fixed-size acquisition diamond keeps the target findable at a glance */

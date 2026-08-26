@@ -12,7 +12,59 @@
  * a reason to say so when you do.
  */
 
-export type Phase = 'boot' | 'title' | 'briefing' | 'countdown' | 'flying' | 'finished';
+import type { CourseId } from './Courses.ts';
+import type { MissionId } from './Missions.ts';
+
+export type Phase =
+  | 'boot'
+  | 'title'
+  | 'briefing'
+  | 'countdown'
+  | 'flying'
+  | 'failed'
+  | 'finished';
+
+export type Locale = 'ko' | 'en';
+export type LocaleFontStatus = 'not-required' | 'ready' | 'fallback' | 'failed';
+export type GateAccuracy = 'dead-centre' | 'clean' | 'cleared';
+export type GateMissCause = 'aperture' | 'shear';
+
+export type GateNameMessage =
+  | { type: 'gate-name.terminus-approach' }
+  | { type: 'gate-name.nadir-approach' }
+  | { type: 'gate-name.orison-approach' };
+
+export type CalloutTitleMessage =
+  | { type: 'callout-title.pointer-lock-unavailable' }
+  | { type: 'callout-title.camera-view'; mode: CameraMode }
+  | { type: 'callout-title.engage' }
+  | { type: 'callout-title.hull-impact' }
+  | { type: 'callout-title.boost-depleted' }
+  | { type: 'callout-title.core-acquired'; core: number }
+  | { type: 'callout-title.gate-cleared'; accuracy: GateAccuracy }
+  | { type: 'callout-title.gate-missed'; blockedBy?: GateMissCause };
+
+export type CalloutSubMessage =
+  | { type: 'callout-sub.keyboard-flight-available' }
+  | { type: 'callout-sub.camera-active'; mode: CameraMode }
+  | { type: 'callout-sub.boost-recharging' }
+  | { type: 'callout-sub.relay-charge'; charge: number; required: number }
+  | { type: 'callout-sub.gate-progress'; remaining: number; courseId?: CourseId }
+  | { type: 'callout-sub.gate-realign' }
+  | { type: 'callout-sub.gate-shear-window' };
+
+export type LogMessage =
+  | { type: 'log.pointer-lock-refused'; reason: string }
+  | { type: 'log.hull-contact'; percent: number }
+  | { type: 'log.boost-depleted' }
+  | { type: 'log.core-acquired'; core: number; seconds: number }
+  | { type: 'log.gate-cleared'; gate: number; seconds: number; courseId?: CourseId }
+  | {
+      type: 'log.gate-missed';
+      gate: number;
+      courseId?: CourseId;
+      blockedBy?: GateMissCause;
+    };
 
 export interface ScreenAnchor {
   /** Normalised device coords, -1..1, x right / y up. Valid only when `onScreen`. */
@@ -30,12 +82,67 @@ export interface GateTelemetry {
   index: number;
   total: number;
   name: string;
+  nameMessage?: GateNameMessage;
   /** Metres from ship to the next gate centre. */
   distance: number;
   anchor: ScreenAnchor;
   /** 0..1 alignment of ship heading with the gate normal; drives the approach vignette. */
   alignment: number;
 }
+
+export interface GuidanceTelemetry {
+  label: string;
+  labelMessage?: GateNameMessage;
+  anchor: ScreenAnchor;
+  distance: number;
+  /** Normalized mission progress. */
+  progress: number;
+  current: number;
+  total: number;
+}
+
+export interface GateRaceObjectiveTelemetry {
+  kind: 'gate-race';
+  gatesCleared: number;
+  gatesTotal: number;
+  misses: number;
+  complete: boolean;
+}
+
+export interface CollectionSourceTelemetry {
+  readonly id: string;
+  readonly position: readonly [number, number, number];
+  readonly anchor: ScreenAnchor;
+  /** Increments when this fixed-capacity source is relocated to another authored socket. */
+  readonly generation: number;
+  /** Seconds until relocation while live, or null once the source has been banked. */
+  expiresIn: number | null;
+  distance: number;
+  collected: boolean;
+  primary: boolean;
+}
+
+export interface CollectionObjectiveTelemetry {
+  kind: 'collection';
+  phase: 'collecting' | 'returning';
+  collected: number;
+  required: number;
+  activeTotal: number;
+  charge: number;
+  chargeRequired: number;
+  /** Countdown for the currently selected live source. */
+  primaryExpiresIn: number | null;
+  /** Return-to-relay countdown; null until the collection quota is banked. */
+  relayRemaining: number | null;
+  relayWindow: number | null;
+  primarySourceId: string | null;
+  primaryDistance: number | null;
+  sources: readonly CollectionSourceTelemetry[];
+}
+
+export type ObjectiveTelemetry =
+  | GateRaceObjectiveTelemetry
+  | CollectionObjectiveTelemetry;
 
 export interface Telemetry {
   phase: Phase;
@@ -45,6 +152,11 @@ export interface Telemetry {
   /** Commanded throttle, 0..1. */
   throttle: number;
   boosting: boolean;
+  /**
+   * True while a depleted reserve is below the re-arm threshold. Optional so extending telemetry
+   * does not break an out-of-repo consumer that constructs the prior interface shape.
+   */
+  boostLocked?: boolean;
   /** Remaining boost energy, 0..1. */
   energy: number;
   /** Structural integrity, 0..1. */
@@ -64,6 +176,10 @@ export interface Telemetry {
    */
   velocityAnchor: ScreenAnchor;
   gate: GateTelemetry;
+  /** Objective-neutral director contract. */
+  guidance: GuidanceTelemetry;
+  /** Exhaustive objective-specific state. */
+  objective: ObjectiveTelemetry;
   /** Metres remaining along the whole course. */
   courseRemaining: number;
   courseTotal: number;
@@ -113,7 +229,9 @@ export interface Telemetry {
 export interface Callout {
   id: number;
   title: string;
+  titleMessage?: CalloutTitleMessage;
   sub?: string;
+  subMessage?: CalloutSubMessage;
   tone: 'neutral' | 'good' | 'warn' | 'bad';
   /** Seconds remaining. */
   ttl: number;
@@ -123,13 +241,28 @@ export interface Callout {
 export interface LogLine {
   id: number;
   text: string;
+  message?: LogMessage;
   tone: 'neutral' | 'good' | 'warn' | 'bad';
   /** Seconds since spawn. */
   age: number;
 }
 
-export interface RunResult {
+export interface MissionResultBase {
+  missionId: MissionId;
+  rulesetVersion: number;
   totalTime: number;
+  hullRemaining: number;
+  objectiveSummary: string;
+  topSpeed: number;
+  cleanRun: boolean;
+  rank: string;
+  destinationName: string;
+  /** First mission made available by this finish, if any. */
+  newlyUnlockedMissionId: MissionId | null;
+}
+
+export interface GateRaceMissionResult extends MissionResultBase {
+  kind: 'gate-race';
   splits: number[];
   bestTime: number | null;
   /**
@@ -142,10 +275,31 @@ export interface RunResult {
   isNewBest: boolean;
   gatesCleared: number;
   gatesTotal: number;
-  topSpeed: number;
-  cleanRun: boolean;
-  rank: string;
-  destinationName: string;
+  /** Largest gate offset in this run, normalized by each gate's authored radius. */
+  maxGateOffset: number;
+}
+
+export interface CollectionMissionResult extends MissionResultBase {
+  kind: 'collection';
+  bestTime: number | null;
+  isNewBest: boolean;
+  collected: number;
+  required: number;
+  activeTotal: number;
+  charge: number;
+  chargeRequired: number;
+}
+
+export type MissionResult = GateRaceMissionResult | CollectionMissionResult;
+/** Current shipped objective result; retained as a narrow compatibility name. */
+export type RunResult = GateRaceMissionResult;
+
+/** Shared gameplay reward; source metadata remains opaque to the common Game layer. */
+export interface MissionRewardEvent {
+  readonly kind: 'boost-recharge';
+  readonly amount: number;
+  readonly sourceId?: string;
+  readonly sourceIndex?: number;
 }
 
 /** Everything the HUD layer is allowed to ask the game to do. */
@@ -183,11 +337,18 @@ export interface HudHost {
   pause(): void;
   resume(): void;
   quitToTitle(): void;
+  /** Persists an authorized mission choice and reloads through the boot-owned world builder. */
+  selectMission(missionId: MissionId): void;
+  /** Returns to the title mission view without changing the active boot-built world. */
+  showMissionSelect(): void;
+  /** Requests a persisted locale change; the game accepts it only while the title is active. */
+  requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
   getSettings(): Settings;
 }
 
 export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
+export type CameraMode = 'chase' | 'cockpit' | 'far-chase';
 
 export interface Settings {
   quality: QualityLevel;
@@ -215,6 +376,7 @@ export interface Settings {
   cameraShake: number;
   showFps: boolean;
   assistLevel: 'arcade' | 'standard' | 'raw';
+  cameraMode: CameraMode;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -232,10 +394,12 @@ export const DEFAULT_SETTINGS: Settings = {
   cameraShake: 1,
   showFps: false,
   assistLevel: 'standard',
+  cameraMode: 'chase',
 };
 
 export type SfxEvent =
   | 'gatePass'
+  | 'checkpoint'
   | 'gateNear'
   | 'gateMiss'
   | 'boostStart'

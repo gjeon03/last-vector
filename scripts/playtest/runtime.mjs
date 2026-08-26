@@ -448,6 +448,7 @@ async function openSession(report, options, requiredMethods) {
   const session = {
     browser: null,
     context: null,
+    options,
     page: null,
     target: null,
     observations: report.data.observations,
@@ -640,9 +641,11 @@ async function fetchLocalDocument(url, timeoutMs, child = null) {
   throw new Error(`Local target did not respond within ${timeoutMs} ms.${detail}`);
 }
 
-async function installNetworkBoundary(context, observations) {
+export async function installNetworkBoundary(context, observations, scenarioRequests = null) {
   context.on('request', (request) => {
-    observations.requests.push({ method: request.method(), resourceType: request.resourceType(), url: request.url() });
+    const record = { method: request.method(), resourceType: request.resourceType(), url: request.url() };
+    observations.requests.push(record);
+    scenarioRequests?.push(record);
   });
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -656,7 +659,7 @@ async function installNetworkBoundary(context, observations) {
   });
 }
 
-function installPageObservers(page, observations) {
+export function installPageObservers(page, observations) {
   page.on('console', (message) => {
     if (message.type() !== 'error') return;
     observations.consoleErrors.push({
@@ -667,6 +670,88 @@ function installPageObservers(page, observations) {
   page.on('pageerror', (error) => {
     observations.pageErrors.push({ name: error.name, message: error.message });
   });
+}
+
+/**
+ * Opens a genuinely independent first boot while reusing the managed suite's browser and server.
+ * Locale boot assertions must not share storage, request cache, or document init scripts.
+ */
+export async function openBootScenario(session, {
+  localStorageSeed = {},
+  seed = session.options.seed,
+  initScripts = [],
+} = {}) {
+  verify(session.browser, 'Browser is unavailable, so an isolated boot cannot be opened.');
+  verify(session.target, 'Local target is unavailable, so an isolated boot cannot be opened.');
+
+  const origin = new URL(session.target.url).origin;
+  const requests = [];
+  const responses = [];
+  const consoleErrors = [];
+  const pageErrors = [];
+  const context = await session.browser.newContext({
+    viewport: session.options.viewport,
+    deviceScaleFactor: session.options.deviceScaleFactor,
+    serviceWorkers: 'block',
+    storageState: {
+      cookies: [],
+      origins: [{
+        origin,
+        localStorage: Object.entries(localStorageSeed).map(([name, value]) => ({
+          name,
+          value: String(value),
+        })),
+      }],
+    },
+  });
+
+  try {
+    await installNetworkBoundary(context, session.observations, requests);
+    for (const script of initScripts) await context.addInitScript(script);
+    const page = await context.newPage();
+    installPageObservers(page, session.observations);
+    page.on('console', (message) => {
+      if (message.type() !== 'error') return;
+      consoleErrors.push({ text: message.text(), location: message.location() });
+    });
+    page.on('pageerror', (error) => {
+      pageErrors.push({ name: error.name, message: error.message });
+    });
+    page.on('response', (response) => {
+      responses.push({
+        url: response.url(),
+        status: response.status(),
+        resourceType: response.request().resourceType(),
+      });
+    });
+    const gameUrl = new URL(session.target.url);
+    gameUrl.searchParams.set('seed', String(seed));
+    const response = await page.goto(gameUrl.href, {
+      waitUntil: 'load',
+      timeout: session.options.timeoutMs,
+    });
+    verify(response && response.ok(), 'Isolated boot returned a non-success document response.', {
+      status: response?.status() ?? null,
+      url: gameUrl.href,
+    });
+
+    let closed = false;
+    return {
+      page,
+      requests,
+      responses,
+      consoleErrors,
+      pageErrors,
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        await context.close();
+      },
+    };
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
+  }
 }
 
 async function addRuntimeChecks(report, session) {

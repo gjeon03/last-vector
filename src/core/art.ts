@@ -20,7 +20,7 @@ export const FICTION = {
 } as const;
 
 /** Linear-space colours as hex ints, for three.js. */
-export const PALETTE = {
+const BASE_PALETTE = {
   voidNear: 0x05070f,
   voidFar: 0x0a1226,
 
@@ -54,6 +54,19 @@ export const PALETTE = {
   rockMineral: 0x3fd6c0,
 } as const;
 
+export type PaletteKey = keyof typeof BASE_PALETTE;
+
+/**
+ * A mission is selected before the one world for this page is constructed. Reusing this object
+ * identity lets constructors keep their shared palette import while a different mission can
+ * build a genuinely different sky and rock field on the next page load.
+ */
+export const PALETTE: Record<PaletteKey, number> = { ...BASE_PALETTE };
+
+export function applyWorldPalette(overrides: Partial<Record<PaletteKey, number>> = {}): void {
+  Object.assign(PALETTE, BASE_PALETTE, overrides);
+}
+
 /** CSS colours for the HUD/screens layer. Same direction, sRGB. */
 export const UI = {
   primary: '#7fe8ff',
@@ -71,8 +84,9 @@ export const UI = {
   scanline: 'rgba(127, 232, 255, 0.05)',
 } as const;
 
-/** No web fonts: the build must stay fully offline and asset-free. */
+/** Self-hosted Hangul faces keep localized UI offline; Latin and numerals retain these stacks. */
 export const FONT = {
+  hangul: "'NanumSquare Neo Hangul'",
   mono: "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Roboto Mono', monospace",
   display:
     "'Helvetica Neue', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
@@ -107,22 +121,59 @@ export const FLIGHT: Record<
   | 'maxSpeed'
   | 'spoolTime'
   | 'boostCapacity'
+  | 'boostEngageFraction'
+  | 'boostRearmFraction'
   | 'boostDrain'
   | 'boostRegen'
   | 'boostRegenDelay',
   number
 > = {
   /** Metres per second. */
-  cruiseSpeed: 420,
-  boostSpeed: 980,
-  maxSpeed: 1080,
+  // A uniform 10% lift keeps the authority and autopilot ratios intact while making both the
+  // ordinary line and an overdrive burst visibly cover more ground. Measured 12-15% passes
+  // crossed the existing controller's safe cornering envelope; 10% retains a clean reference run.
+  cruiseSpeed: 462,
+  boostSpeed: 1078,
+  maxSpeed: 1188,
   /** Seconds to reach cruise from rest at full throttle. */
   spoolTime: 2.4,
   boostCapacity: 100,
-  boostDrain: 34,
-  boostRegen: 17,
-  boostRegenDelay: 0.9,
+  /** Fraction of capacity kept as the boost latch floor. */
+  boostEngageFraction: 0.08,
+  /** Fraction required before a depleted, held boost input may re-arm. */
+  boostRearmFraction: 0.45,
+  // 4.6 s from a full tank to the latch floor. Keep speed, regeneration and VFX tuning separate.
+  boostDrain: 20,
+  boostRegen: 22,
+  boostRegenDelay: 0.65,
 };
+
+/**
+ * Flight thresholds authored against the current 462 m/s cruise.
+ *
+ * The distance values are fixed amounts of cruise time; the velocity values are fixed fractions
+ * of cruise speed. Scaling every threshold from one exact reference keeps today's tuning bit-for-
+ * bit unchanged while making a future cruise-speed edit preserve the same warning time, cue timing,
+ * slip response and impact severity.
+ */
+const REFERENCE_CRUISE_SPEED = 462;
+const scaleWithCruiseSpeed = (valueAtReference: number): number =>
+  valueAtReference * (FLIGHT.cruiseSpeed / REFERENCE_CRUISE_SPEED);
+
+export const FLIGHT_THRESHOLDS = {
+  /** Collider broad-phase reach and the proximity-warning band, in metres. */
+  proximityRange: scaleWithCruiseSpeed(260),
+  /** Distance from a gate at which the approach tick begins, in metres. */
+  gateTickRange: scaleWithCruiseSpeed(900),
+  /** Distance divisor that maps gate approach to the tick repeat interval. */
+  gateTickIntervalDivisor: scaleWithCruiseSpeed(2600),
+  /** Distance over which the gate reticle tightens into its near-response shape. */
+  gateReticleRange: scaleWithCruiseSpeed(2600),
+  /** Lateral speed that reads as full slip, in metres per second. */
+  fullSlipSpeed: scaleWithCruiseSpeed(220),
+  /** Closing speed that produces a maximum-severity impact, in metres per second. */
+  maxImpactClosingSpeed: scaleWithCruiseSpeed(520),
+} as const;
 
 /**
  * Maximum pixels the renderer will allocate for the scene, before the dynamic scaler.

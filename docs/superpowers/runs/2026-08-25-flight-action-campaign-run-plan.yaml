@@ -1,0 +1,214 @@
+run_id: flight-action-campaign-2026-08-25
+outcome: >-
+  Deliver a modular forward-flight campaign with one distinct mission per chapter,
+  longer usable boost, independently rejectable Chapter 02 and Chapter 03 branches,
+  and a final integration branch that does not merge to main.
+
+alignment:
+  status: confirmed
+  source: user_selected_shared_flight_backbone_and_full_autonomy
+  focus: [chapter_gameplay_identity, atmosphere, flight_feel, performance]
+  guardrails: [shared_controls, one_world_per_load, chapter_isolation, no_main_merge]
+  baseline: [localization, accessibility, persistence]
+
+backend: NATIVE_PARALLEL
+compute_profile: deep-focus
+base_commit: 0eb9cb2
+integration_branch: codex/flight-action-campaign
+whole_artifact_audit: required
+
+mandatory_criteria:
+  - Chapter 01 is the single CAIRN gate mission and preserves its route identity.
+  - Chapter 02 is a deterministic forward escape, not random meteor survival.
+  - Chapter 03 is a forward fixed-target attack run, not dogfighting.
+  - Final controls use Shift for boost and LMB for fire without contextual meaning changes.
+  - Boost full usable duration is 4.60 seconds within one physics step.
+  - Each chapter has a different celestial body, silhouette, palette, ambience, and objective HUD.
+  - Each page constructs exactly one mission world and stays within the established resource caps.
+  - Chapter branches can be kept, rejected, or revised independently.
+  - Build, focused contracts, one journey per accepted chapter, and final regression pass.
+  - No merge to main.
+
+quality_map:
+  chapter_gameplay_identity:
+    target: exceptional
+    priority: critical
+    risk: high
+    uncertainty: high
+    maturity: low
+    coupling: medium
+    evidence: [human_play_gate, objective_journey, independent_gameplay_critic]
+  atmosphere_and_readability:
+    target: exceptional
+    priority: high
+    risk: high
+    uncertainty: medium
+    maturity: medium
+    coupling: medium
+    evidence: [settled_captures, visual_critic, hazard_commitment_windows]
+  shared_flight_feel:
+    target: excellent
+    priority: high
+    risk: high
+    uncertainty: low
+    maturity: high
+    coupling: high
+    evidence: [boost_contract_60_120, cairn_reference_run, manual_full_burn]
+  frame_pacing_and_resources:
+    target: excellent
+    priority: critical
+    risk: high
+    uncertainty: medium
+    maturity: medium
+    coupling: medium
+    evidence: [hardest_scene_dpr1_dpr2, resource_snapshot, late_shader_probe]
+  modularity_and_discardability:
+    target: excellent
+    priority: high
+    risk: high
+    uncertainty: low
+    maturity: low
+    coupling: high
+    evidence: [locked_foundation_contracts, separate_branches, integration_diff]
+  progression_locale_accessibility:
+    target: solid
+    priority: medium
+    risk: medium
+    uncertainty: low
+    maturity: high
+    coupling: medium
+    evidence: [fast_contracts, focused_keyboard_flow, migration_contract]
+
+compute_plan:
+  foundation:
+    task_kind: architecture_and_complex_implementation
+    model_tier: frontier
+    reasoning_effort: xhigh
+    breadth: 1
+    critic: specialist
+    correction_ceiling: 1
+  boost_tuning:
+    task_kind: bounded_implementation
+    model_tier: standard
+    reasoning_effort: high
+    breadth: 1
+    critic: self
+    correction_ceiling: 1
+  chapter_02:
+    task_kind: complex_implementation
+    model_tier: frontier
+    reasoning_effort: xhigh
+    breadth: 1
+    critic: gameplay_and_visual
+    correction_ceiling: 2
+  chapter_03:
+    task_kind: complex_implementation
+    model_tier: frontier
+    reasoning_effort: xhigh
+    breadth: 1
+    critic: controls_and_gameplay
+    correction_ceiling: 2
+  deterministic_checks:
+    task_kind: deterministic_check
+    model_tier: efficient
+    reasoning_effort: low
+    breadth: 1
+    critic: none
+    correction_ceiling: 0
+  final_audit:
+    task_kind: final_audit
+    model_tier: frontier
+    reasoning_effort: max
+    breadth: 1
+    critic: whole_artifact
+    correction_ceiling: 2
+
+foundation:
+  objective: >-
+    Update the product goal, extract FlightPath, add mission/world/objective contracts,
+    preserve CAIRN through GateRaceObjective, migrate progress and URLs, collapse the
+    active campaign to Chapter 01, and tune boost in an isolated commit.
+  owner: controller_coherent_track
+  branch: codex/flight-action-campaign
+  locked_contracts_after_pass:
+    - MissionDefinition and MissionRuntime boundaries
+    - Guidance and objective telemetry unions
+    - Mission result union and progress v2
+    - Boost baseline and ruleset versioning
+
+waves:
+  - id: wave-1-foundation
+    tracks:
+      - id: mission-foundation
+        mode: production
+        owned_write_paths: [src/core, src/game, src/main.ts, src/ui, src/i18n, scripts/playtest]
+        dimensions: [shared_flight_feel, modularity_and_discardability, progression_locale_accessibility]
+        quality_target: excellent
+        verification:
+          self_review: mandatory
+          independent_critic: true
+          max_correction_rounds: 1
+  - id: wave-2-chapters
+    depends_on: [wave-1-foundation]
+    tracks:
+      - id: last-ascent
+        mode: production_worktree
+        branch: codex/chapter-02-last-ascent
+        dimensions: [chapter_gameplay_identity, atmosphere_and_readability, frame_pacing_and_resources]
+        quality_target: exceptional
+        verification:
+          self_review: mandatory
+          independent_critic: true
+          max_correction_rounds: 1
+      - id: dead-signal
+        mode: production_worktree
+        branch: codex/chapter-03-dead-signal
+        dimensions: [chapter_gameplay_identity, atmosphere_and_readability, frame_pacing_and_resources]
+        quality_target: exceptional
+        verification:
+          self_review: mandatory
+          independent_critic: true
+          max_correction_rounds: 1
+  - id: wave-3-integration
+    depends_on: [last-ascent, dead-signal]
+    tracks:
+      - id: integration
+        mode: controller
+        branch: codex/flight-action-campaign
+        dimensions: [all]
+
+verification_lanes:
+  - fast_type_and_catalog_contracts
+  - objective_fixed_step_60_120
+  - one_real_journey_per_chapter
+  - hardest_scene_dpr1_dpr2
+  - settled_capture_visual_review
+  - final_keyboard_and_pointer_flow
+
+locks:
+  cairn_route_identity:
+    state: LOCKED
+    reason: Existing authored course and PB identity remain the Chapter 01 compatibility anchor.
+  localization_strategy:
+    state: LOCKED
+    reason: English technical chrome and Korean narrative/a11y already passed focused contracts.
+  unrelated_render_systems:
+    state: LOCKED
+    reason: Reopen only for an evidenced chapter performance or visual integration defect.
+
+integration_gate:
+  checks:
+    - pnpm build
+    - pnpm test:i18n
+    - pnpm test:campaign
+    - focused mission contracts
+    - one three-chapter browser journey
+    - hardest scene performance at DPR1 and DPR2
+    - zero runtime errors and external requests
+
+whole_artifact_audit:
+  question: >-
+    What material bottleneck, if any, keeps the assembled campaign from feeling like
+    one polished flight game with three genuinely different missions?
+  max_findings: 3
+  max_targeted_reopens: 1

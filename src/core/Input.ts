@@ -31,6 +31,8 @@ const KEY_ALIASES: Record<string, string> = {
   ArrowRight: 'right',
 };
 
+const isShiftCode = (code: string): boolean => code === 'ShiftLeft' || code === 'ShiftRight';
+
 export class Input {
   readonly command: FlightCommand = {
     pitch: 0,
@@ -50,7 +52,20 @@ export class Input {
   /** When set, the harness fully overrides the human. */
   private override: HarnessInput | null = null;
 
+  /** Physical keyboard state observed while this window owns focus. */
   private readonly keys = new Set<string>();
+  /**
+   * Non-modifier keys that crossed a run/focus boundary while down. Their OS repeats are not a
+   * new command: they stay quarantined until keyup, or until a fresh non-repeat keydown proves the
+   * old release happened outside the page. This is what keeps menu W/S out of the countdown.
+   */
+  private readonly suppressedUntilKeyUp = new Set<string>();
+  /**
+   * Shift is also reconstructed from another key event's modifier snapshot. After a safe blur
+   * clear the browser cannot enumerate held keys, but the next W keydown still arrives with
+   * shiftKey=true; relying only on ShiftLeft/ShiftRight in `keys` discarded that information.
+   */
+  private shiftHeld = false;
   private stickX = 0;
   /** Mouse-button flight actions. See handleMouseButton for why these are not synthetic keys. */
   private mouseBoost = false;
@@ -154,7 +169,14 @@ export class Input {
     this.mouseDy = 0;
     this.mouseBoost = false;
     this.mouseBrake = false;
+    /* Quarantine non-modifier menu input at the run boundary. W/S also navigate the interface,
+       so an OS repeat from the same physical press must not silently preload the countdown. Shift
+       is reconstructed separately from modifier snapshots on subsequent events. */
+    for (const code of this.keys) {
+      if (!isShiftCode(code)) this.suppressedUntilKeyUp.add(code);
+    }
     this.keys.clear();
+    this.shiftHeld = false;
     this.throttle = 0.85;
   }
 
@@ -208,7 +230,7 @@ export class Input {
     if (this.held('KeyS')) this.throttle -= throttleRate * dt;
     this.throttle = clamp01(this.throttle);
 
-    let boost = this.held('ShiftLeft') || this.held('ShiftRight') || this.mouseBoost;
+    let boost = this.shiftHeld || this.held('ShiftLeft') || this.held('ShiftRight') || this.mouseBoost;
     let brake = this.held('Space') || this.mouseBrake;
 
     // --- gamepad -------------------------------------------------------------------
@@ -262,32 +284,56 @@ export class Input {
   }
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {
+    const code = KEY_ALIASES[e.code] ?? e.code;
+    const suppressed = this.suppressedUntilKeyUp.has(code);
+    /* A repeat from a pre-boundary menu press stays quarantined. Conversely, a non-repeat is
+       proof of a fresh press even if its earlier keyup was lost outside the window, so it safely
+       retires stale suppression and restores the key without requiring an extra press. */
+    if (suppressed && !e.repeat) this.suppressedUntilKeyUp.delete(code);
+    if (!suppressed || !e.repeat) this.keys.add(code);
+    this.shiftHeld = e.shiftKey || this.held('ShiftLeft') || this.held('ShiftRight');
+    if (e.code === 'Space') e.preventDefault();
+    if (e.code === 'Tab' && this.locked) e.preventDefault();
     if (e.repeat) {
-      // Still swallow the browser default for game keys held down.
-      if (e.code === 'Space') e.preventDefault();
       return;
     }
     // Escape is deliberately NOT handled here. The interface layer owns pause; two owners
     // means two flags, and two flags means the timer can run behind a PAUSED screen.
-    if (e.code === 'KeyT') this.onAction?.('match');
-    if (e.code === 'KeyV') this.onAction?.('view');
-    if (e.code === 'KeyN') this.onAction?.('restart');
+    /* Plain game actions must not replace platform shortcuts such as Cmd/Ctrl+C. Shift remains
+       valid so a pilot can switch camera while boosting. */
+    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.code === 'KeyT') this.onAction?.('match');
+      /* C is the public camera binding. V remains a silent compatibility alias because Vimium and
+         similar keyboard-navigation extensions reserve V before page code sees it, which made the
+         advertised control enter the extension's Caret mode and swallow the rest of flight input. */
+      if (e.code === 'KeyC' || e.code === 'KeyV') this.onAction?.('view');
+      if (e.code === 'KeyN') this.onAction?.('restart');
+    }
     // Tab is only ours while the ship is being flown. Swallowing it unconditionally, on a window
     // listener, combined with the interface layer correctly letting its range widgets own their
     // own keys, left Tab and Shift+Tab dead on all five settings sliders — 5 of 13 settings rows
     // trapped keyboard focus. Neither half was wrong alone; this is the second time in this
     // project that two independently correct changes have combined into a defect.
-    if (e.code === 'Space') e.preventDefault();
-    if (e.code === 'Tab' && this.locked) e.preventDefault();
-    this.keys.add(KEY_ALIASES[e.code] ?? e.code);
   };
 
   private readonly handleKeyUp = (e: KeyboardEvent): void => {
-    this.keys.delete(KEY_ALIASES[e.code] ?? e.code);
+    const code = KEY_ALIASES[e.code] ?? e.code;
+    this.keys.delete(code);
+    this.suppressedUntilKeyUp.delete(code);
+    /* Chromium automation can report shiftKey=false when one Shift is released even though the
+       other Shift code remains down. Keep both sources: the modifier snapshot repairs state after
+       blur, while the code Set preserves a separately observed left/right Shift transition. */
+    this.shiftHeld = e.shiftKey || this.held('ShiftLeft') || this.held('ShiftRight');
   };
 
   private readonly handleBlur = (): void => {
+    for (const code of this.keys) {
+      if (!isShiftCode(code)) this.suppressedUntilKeyUp.add(code);
+    }
     this.keys.clear();
+    this.shiftHeld = false;
+    this.mouseBoost = false;
+    this.mouseBrake = false;
     this.mouseDx = 0;
     this.mouseDy = 0;
   };

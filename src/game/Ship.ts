@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { FlightCommand } from '../core/Input.ts';
-import { FLIGHT } from '../core/art.ts';
+import { FLIGHT, FLIGHT_THRESHOLDS } from '../core/art.ts';
 import { clamp, clamp01, damp } from '../core/mathx.ts';
 
 /**
@@ -89,6 +89,8 @@ export class Ship {
   private gLoad = 0;
   private lastVelocity = new THREE.Vector3();
   private shakeImpulse = 0;
+  /** Contacts so far this run, so two identical hits at the same place still differ. */
+  private impacts = 0;
 
   private readonly forward = new THREE.Vector3();
   private readonly right = new THREE.Vector3();
@@ -147,7 +149,10 @@ export class Ship {
     if (this.speed < 1) return 0;
     this.getForward(this.scratch);
     const along = this.velocity.dot(this.scratch);
-    return clamp01(Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) / 220);
+    return clamp01(
+      Math.sqrt(Math.max(0, this.velocity.lengthSq() - along * along)) /
+        FLIGHT_THRESHOLDS.fullSlipSpeed,
+    );
   }
 
   get gForce(): number {
@@ -171,8 +176,8 @@ export class Ship {
     // The overdrive is a single latch with hysteresis. Without the floor it re-lit for one
     // frame every time regeneration crossed a hair above empty, so a held key produced a
     // buzzing stutter instead of either thrust or a clear "you are out".
-    const engageFloor = FLIGHT.boostCapacity * 0.08;
-    const rearmLevel = FLIGHT.boostCapacity * 0.45;
+    const engageFloor = FLIGHT.boostCapacity * FLIGHT.boostEngageFraction;
+    const rearmLevel = FLIGHT.boostCapacity * FLIGHT.boostRearmFraction;
     const wantsBoost = command.boost && command.throttle > 0.05;
     if (wantsBoost && !this.boostLocked && this.energy > engageFloor) {
       this.boosting = true;
@@ -312,13 +317,22 @@ export class Ship {
     this.smoothedThrottle = clamp01(this.smoothedThrottle) || 0;
   }
 
+  /** Applies normalised structural damage and returns the clamped hull value. */
+  applyHullDamage(amount: number): number {
+    if (Number.isFinite(amount) && amount > 0) this.hull = clamp01(this.hull - amount);
+    return this.hull;
+  }
+
+  /** Starts the deterministic contact sequence for a new run without changing reset physics. */
+  resetRunContacts(): void {
+    this.impacts = 0;
+  }
+
   /** Applies a collision response and returns the severity, 0..1. */
-  /** Contacts so far this run, so two identical hits at the same place still differ. */
-  private impacts = 0;
 
   applyImpact(normal: THREE.Vector3, penetration: number): number {
     const closing = Math.max(0, -this.velocity.dot(normal));
-    const severity = clamp01(closing / 520);
+    const severity = clamp01(closing / FLIGHT_THRESHOLDS.maxImpactClosingSpeed);
 
     // Slide along the surface rather than stopping dead: glancing a rock should cost time and
     // control, not end the run.
@@ -336,13 +350,30 @@ export class Ship {
     this.angularVelocity.y += (h.y - 0.5) * severity * 2.4;
     this.angularVelocity.z += (h.z - 0.5) * severity * 3.2;
 
-    this.hull = clamp01(this.hull - severity * 0.22);
+    this.applyHullDamage(severity * 0.22);
     this.shakeImpulse = Math.min(1, this.shakeImpulse + severity * 1.2 + 0.15);
     return severity;
   }
 
   get energy01(): number {
     return clamp01(this.energy / FLIGHT.boostCapacity);
+  }
+
+  /** Adds overdrive reserve immediately and returns the normalised before/after evidence. */
+  rechargeBoost(amount: number): { before: number; after: number } {
+    const before = this.energy01;
+    if (Number.isFinite(amount) && amount > 0) {
+      this.energy = Math.min(FLIGHT.boostCapacity, this.energy + amount);
+      // A gate reward is meant to be usable now. It is already a deliberate one-shot refill, so
+      // it may release the ordinary regeneration latch as soon as there is a usable reserve.
+      if (
+        this.boostLocked &&
+        this.energy > FLIGHT.boostCapacity * FLIGHT.boostEngageFraction
+      ) {
+        this.boostLocked = false;
+      }
+    }
+    return { before, after: this.energy01 };
   }
 
   get throttleSmoothed(): number {

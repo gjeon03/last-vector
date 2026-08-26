@@ -1,17 +1,15 @@
 import * as THREE from 'three';
 import { Ship } from './Ship.ts';
 import { ChaseCamera } from './ChaseCamera.ts';
-import { Course } from './Course.ts';
 import { ShipModel } from '../render/ShipModel.ts';
+import {
+  CockpitModel,
+  type CockpitDebugState,
+  type CockpitMfdEvidence,
+  type CockpitState,
+} from '../render/CockpitModel.ts';
 import { PostFX, type GradeParams } from '../render/PostFX.ts';
-import { Starfield } from '../render/Starfield.ts';
-import { Star } from '../render/Star.ts';
-import { Planet } from '../render/Planet.ts';
-import { bakeNebula } from '../render/Nebula.ts';
-import { AsteroidField, type AsteroidInstance } from '../render/Asteroids.ts';
-import { DustField } from '../render/Dust.ts';
 import { Trail } from '../render/Trail.ts';
-import { DerelictField, ShelfSpan, Terminus } from '../render/Structures.ts';
 import { createLightingUniforms } from '../render/lighting.ts';
 import { Input, type FlightCommand } from '../core/Input.ts';
 import {
@@ -24,20 +22,66 @@ import {
 } from '../core/Settings.ts';
 import { AudioEngine, createUiAudio } from '../audio/index.ts';
 import { Overlay } from '../ui/index.ts';
-import { FICTION, FILL_BUDGET_PIXELS, FLIGHT, SCALE } from '../core/art.ts';
+import type { CampaignViewModel } from '../ui/Screens.ts';
+import {
+  createTranslator,
+  LocaleStore,
+  prepareLocaleFonts,
+  writeLocaleHandoff,
+  type LocaleFontPreparation,
+  type LocaleFontResult,
+  type Translator,
+} from '../i18n/index.ts';
+import {
+  applyWorldPalette,
+  FILL_BUDGET_PIXELS,
+  FLIGHT,
+  FLIGHT_THRESHOLDS,
+} from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
-import { hashSeed } from '../core/rng.ts';
+import { hasRadioSafeWindow, radioDurationSeconds } from '../core/RadioSchedule.ts';
+import { CAIRN_MISSION, type MissionDefinition } from '../core/Missions.ts';
+import { buildMissionUrl, type MissionResolution } from '../core/MissionSelection.ts';
+import { ProgressStore } from '../core/Progress.ts';
+import {
+  createGameMissionRuntime,
+  type GameMissionRuntimeFactory,
+  type MissionRewardEvent,
+  type MissionRuntime,
+  type WorldContact,
+} from './MissionRuntime.ts';
+import {
+  buildCampaignViewModel,
+  consumeMissionFrameEvents,
+  resolveAutopilotButton,
+} from './GameContracts.ts';
+import { createCairnMissionRuntime } from './CairnRuntime.ts';
 import type {
   AudioBus,
+  CameraMode,
   Callout,
+  CalloutSubMessage,
+  CalloutTitleMessage,
+  GateAccuracy,
   LogLine,
+  LogMessage,
+  Locale,
   Phase,
-  RunResult,
+  MissionResult,
   Settings,
   Telemetry,
   UiAudioBus,
 } from '../core/contracts.ts';
-import type { GatePassRecord, HarnessInput, HarnessPose, HazardReport, PerfSample } from '../core/harness.ts';
+import type {
+  GatePassRecord,
+  HarnessInput,
+  HarnessLocaleState,
+  HarnessPose,
+  HarnessStageLandmarkState,
+  HarnessShipVisualDebugState,
+  HazardReport,
+  PerfSample,
+} from '../core/harness.ts';
 
 /**
  * The game. Owns the render graph, the simulation, the phase machine and the automation
@@ -51,13 +95,98 @@ import type { GatePassRecord, HarnessInput, HarnessPose, HazardReport, PerfSampl
  * and a 40 cm hull panel share a frame without z-fighting.
  */
 
-const RADIO_LINES: { at: number; speaker: string; text: string }[] = [
-  { at: 0, speaker: 'DRIFT CONTROL', text: 'Kestrel, you are clear on the cairn line. Good hunting.' },
-  { at: 2, speaker: 'DRIFT CONTROL', text: 'Shelf density climbing. Watch your left.' },
-  { at: 4, speaker: 'VESPER TERMINUS', text: 'We have your transponder. Hold the line.' },
-  { at: 6, speaker: 'VESPER TERMINUS', text: 'Long run ahead, Kestrel. Burn it.' },
-  { at: 8, speaker: 'VESPER TERMINUS', text: 'Approach lit. Bring her in.' },
-];
+/** Public telemetry keeps canonical English regardless of the active run locale. */
+const LEGACY_ENGLISH = createTranslator('en');
+
+const POINTER_LOCK_TITLE_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.pointer-lock-unavailable',
+});
+const KEYBOARD_FLIGHT_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.keyboard-flight-available',
+});
+const CAMERA_TITLE_MESSAGES: Readonly<Record<CameraMode, CalloutTitleMessage>> = Object.freeze({
+  cockpit: Object.freeze({ type: 'callout-title.camera-view', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-title.camera-view', mode: 'far-chase' }),
+  chase: Object.freeze({ type: 'callout-title.camera-view', mode: 'chase' }),
+});
+const CAMERA_SUB_MESSAGES: Readonly<Record<CameraMode, CalloutSubMessage>> = Object.freeze({
+  cockpit: Object.freeze({ type: 'callout-sub.camera-active', mode: 'cockpit' }),
+  'far-chase': Object.freeze({ type: 'callout-sub.camera-active', mode: 'far-chase' }),
+  chase: Object.freeze({ type: 'callout-sub.camera-active', mode: 'chase' }),
+});
+const NEXT_CAMERA_MODE: Readonly<Record<CameraMode, CameraMode>> = Object.freeze({
+  chase: 'cockpit',
+  cockpit: 'far-chase',
+  'far-chase': 'chase',
+});
+const ENGAGE_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.engage' });
+const HULL_IMPACT_MESSAGE: CalloutTitleMessage = Object.freeze({ type: 'callout-title.hull-impact' });
+const BOOST_DEPLETED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.boost-depleted',
+});
+const BOOST_RECHARGING_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.boost-recharging',
+});
+const BOOST_DEPLETED_LOG_MESSAGE: LogMessage = Object.freeze({ type: 'log.boost-depleted' });
+const GATE_ACCURACY_MESSAGES: Readonly<Record<GateAccuracy, CalloutTitleMessage>> = Object.freeze({
+  'dead-centre': Object.freeze({
+    type: 'callout-title.gate-cleared',
+    accuracy: 'dead-centre',
+  }),
+  clean: Object.freeze({ type: 'callout-title.gate-cleared', accuracy: 'clean' }),
+  cleared: Object.freeze({ type: 'callout-title.gate-cleared', accuracy: 'cleared' }),
+});
+const GATE_MISSED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.gate-missed',
+});
+const GATE_SHEAR_BLOCKED_MESSAGE: CalloutTitleMessage = Object.freeze({
+  type: 'callout-title.gate-missed',
+  blockedBy: 'shear',
+});
+const GATE_REALIGN_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.gate-realign',
+});
+const GATE_SHEAR_WINDOW_MESSAGE: CalloutSubMessage = Object.freeze({
+  type: 'callout-sub.gate-shear-window',
+});
+
+interface CalloutSpec {
+  titleMessage: CalloutTitleMessage;
+  sub: string | undefined;
+  subMessage: CalloutSubMessage | undefined;
+  tone: Callout['tone'];
+  ttl: number;
+}
+
+interface LogSpec {
+  message: LogMessage;
+  tone: LogLine['tone'];
+}
+
+/** Shader precompilation is optional polish; a slow or unsupported driver must still boot. */
+const COCKPIT_PREWARM_TIMEOUT_MS = 1500;
+const COCKPIT_PREWARM_POLL_MS = 10;
+
+interface ShaderProgramReadiness {
+  isReady(): boolean;
+}
+
+const hasShaderProgramReadiness = (value: unknown): value is ShaderProgramReadiness =>
+  typeof (value as { isReady?: unknown } | null)?.isReady === 'function';
+
+/** No thrust or control authority after a hull breach; inertia and tumble still integrate. */
+const FAILURE_DRIFT_COMMAND: FlightCommand = {
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
+  throttle: 0,
+  strafeX: 0,
+  strafeY: 0,
+  boost: false,
+  brake: false,
+  stickX: 0,
+  stickY: 0,
+};
 
 interface Vantage {
   name: string;
@@ -94,6 +223,16 @@ interface Vantage {
 
 export interface GameOptions {
   root: HTMLElement;
+  missionDefinition?: MissionDefinition;
+  missionResolution?: MissionResolution;
+  missionRuntimeFactory?: GameMissionRuntimeFactory;
+  progressStore?: ProgressStore;
+  localeStore?: LocaleStore;
+  fonts?: {
+    result: LocaleFontResult;
+    settled: Promise<LocaleFontResult>;
+    cancel(): void;
+  };
   seed?: number;
 }
 
@@ -101,8 +240,16 @@ export class Game {
   readonly renderer: THREE.WebGLRenderer;
   readonly settings: SettingsStore;
   readonly audio: AudioBus;
-  readonly overlay: Overlay;
 
+  private readonly root: HTMLElement;
+  private readonly localeStore: LocaleStore;
+  private overlay: Overlay;
+  private selectedLocale: Locale;
+  private activeRunLocale: Locale | null = null;
+  private activeTranslator: Translator;
+  private fontResult: LocaleFontResult;
+  private fontGeneration = 0;
+  private fontPreparation: Pick<LocaleFontPreparation, 'cancel'> | null = null;
   private readonly canvas: HTMLCanvasElement;
   private readonly farScene = new THREE.Scene();
   private readonly mainScene = new THREE.Scene();
@@ -114,19 +261,17 @@ export class Game {
   // ACHRA sits ahead, high and to port of the opening heading. Putting the key light in
   // front of the player is what buys backlit rock silhouettes, visible shafts and a rim on
   // every gate; with the star behind the camera the whole sector renders flat and frontal.
-  private readonly lighting = createLightingUniforms(new THREE.Vector3(-0.58, 0.3, -0.76));
-  private readonly starfield: Starfield;
-  private readonly star: Star;
-  private readonly planet: Planet;
-  private readonly nebulaTarget: THREE.WebGLCubeRenderTarget;
-  private readonly asteroids: AsteroidField;
-  private readonly derelicts: DerelictField;
-  private readonly shelfSpan: ShelfSpan;
-  private readonly dust: DustField;
-  private readonly terminus: Terminus;
-  private readonly course: Course;
+  private readonly lighting: ReturnType<typeof createLightingUniforms>;
+  private readonly missionDefinition: MissionDefinition;
+  private readonly courseDefinition: MissionDefinition['world']['sourceCourse'];
+  private readonly missionResolution: MissionResolution;
+  private readonly progressStore: ProgressStore;
+  private newlyUnlockedMissionId: MissionDefinition['id'] | null = null;
+  private campaignNavigationError: CampaignViewModel['navigationError'] = null;
+  private readonly mission: MissionRuntime;
   private readonly ship = new Ship();
   private readonly shipModel: ShipModel;
+  private readonly cockpitModel: CockpitModel;
   private readonly shipRoot = new THREE.Group();
   private readonly shipMeshHolder = new THREE.Group();
   private readonly trails: Trail[] = [];
@@ -134,12 +279,19 @@ export class Game {
   private phase: Phase = 'boot';
   private elapsed = 0;
   private clock = 0;
+  /** Ship-local visual time freezes with pause while the background scene keeps breathing. */
+  private shipVisualClock = 0;
   private countdown: number | null = null;
   private countdownTimer = 0;
-  private result: RunResult | null = null;
+  /** Cancels the lingering GO card without letting an old run hide a new countdown. */
+  private countdownClearTimer: number | null = null;
+  private result: MissionResult | null = null;
   private topSpeed = 0;
   private impacts = 0;
-  private lastRadio = -1;
+  /** -1 = not triggered, -2 = emitted/deferred; non-negative = run-time trigger second. */
+  private readonly radioTriggeredAt = [-1, -1, -1, -1, -1];
+  private radioBusyUntil = 0;
+  private radioEndPending = false;
   private fade = 0;
   private fadeTarget = 1;
   private damageFlash = 0;
@@ -149,6 +301,7 @@ export class Game {
   private wasBoosting = false;
   private wasBoostLocked = false;
   private gateTickTimer = 0;
+  private readonly rewardEvents: MissionRewardEvent[] = [];
 
   private autopilot = false;
   private autopilotSkill = 1;
@@ -200,8 +353,8 @@ export class Game {
   private pendingScaleApply = false;
   /** Pending debounced shrink from a window drag. See handleResize. */
   private resizeSettleTimer: number | null = null;
-  /** The exact list the last collision pass iterated. See resolveCollisions. */
-  private lastCollisionList: AsteroidInstance[] | null = null;
+  /** Exact stable world-contact list consumed by the last common collision pass. */
+  private lastCollisionContacts: readonly WorldContact[] | null = null;
   /** Long-frame threshold in ms, refresh-relative; starts lenient until a clean window lands. */
   private adaptLongMs = 25.7;
   private adaptWinMinMs = Infinity;
@@ -219,6 +372,34 @@ export class Game {
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly scratchEuler = new THREE.Euler();
+  private readonly missionForward = new THREE.Vector3();
+  private readonly missionPreviousPosition = new THREE.Vector3();
+  private readonly onWorldContact = (
+    _contact: WorldContact,
+    penetration: number,
+    severity: number,
+  ): void => {
+    this.handleWorldContact(penetration, severity);
+  };
+  /** Dedicated heading scratch so cockpit gate alignment cannot alias another visual calculation. */
+  private readonly cockpitForward = new THREE.Vector3();
+  /** Reused every frame: the cockpit reacts to flight state without adding per-frame garbage. */
+  private readonly cockpitState: CockpitState = {
+    dt: 0,
+    speed: 0,
+    speed01: 0,
+    throttle: 0,
+    energy: 1,
+    hull: 1,
+    proximity: 0,
+    impact: 0,
+    alignment: 1,
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    boost: 0,
+    brake: false,
+  };
   private readonly sunScreen = new THREE.Vector2(0.5, 0.5);
   private readonly blurCentre = new THREE.Vector2(0.5, 0.5);
   private readonly grade: GradeParams;
@@ -227,16 +408,50 @@ export class Game {
   private disposed = false;
   private contextLost = false;
   private frameFailures = 0;
+  /** Cancels the loader-only shader readiness poll before renderer/material disposal. */
+  private cancelCockpitPrewarm: (() => void) | null = null;
   private firstFrameResolve: (() => void) | null = null;
   private readonly firstFrame: Promise<void>;
 
   constructor(options: GameOptions) {
-    const seed = options.seed ?? hashSeed('cairn-drift-01');
+    this.root = options.root;
+    this.missionDefinition = options.missionDefinition ?? CAIRN_MISSION;
+    this.courseDefinition = this.missionDefinition.world.sourceCourse;
+    this.missionResolution = options.missionResolution ?? {
+      missionId: this.missionDefinition.id,
+      source: 'default',
+      diagnostic: null,
+    };
+    this.progressStore = options.progressStore ?? new ProgressStore();
+    applyWorldPalette(this.missionDefinition.world.palette);
+    const sun = this.missionDefinition.world.sunDirection;
+    this.lighting = createLightingUniforms(new THREE.Vector3(sun[0], sun[1], sun[2]));
+    this.lighting.uSunColor.value
+      .setHex(this.missionDefinition.world.sunColor)
+      .multiplyScalar(this.missionDefinition.world.sunIntensity);
+    this.localeStore = options.localeStore ?? new LocaleStore();
+    this.selectedLocale = this.localeStore.get();
+    this.activeTranslator = createTranslator(this.selectedLocale);
+    this.applyDocumentLocale(this.activeTranslator);
+    const bootstrapFonts = options.fonts;
+    if (bootstrapFonts?.result.locale === this.selectedLocale) {
+      this.fontResult = bootstrapFonts.result;
+      this.fontPreparation = bootstrapFonts;
+      this.observeFontResult(bootstrapFonts.settled, this.fontGeneration);
+    } else {
+      bootstrapFonts?.cancel();
+      this.fontResult = this.pendingFontResult(this.selectedLocale);
+      const preparation = prepareLocaleFonts(this.selectedLocale);
+      this.fontPreparation = preparation;
+      this.observeFontPreparation(preparation, this.fontGeneration);
+    }
+
+    const seed = options.seed ?? this.missionDefinition.defaultSeed;
     this.seed = seed;
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'lv-canvas';
-    options.root.appendChild(this.canvas);
+    this.root.appendChild(this.canvas);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -259,116 +474,36 @@ export class Game {
     this.chase.baseFov = this.settings.value.fov;
     this.farCamera = new THREE.PerspectiveCamera(this.settings.value.fov, 1, 1, 260);
 
-    // --- far scene ------------------------------------------------------------------
-    const sunDir = this.lighting.uSunDir.value.clone();
-    const nebula = bakeNebula(this.renderer, {
-      resolution: profile.nebulaSteps >= 20 ? 1024 : profile.nebulaSteps >= 12 ? 768 : 512,
-      octaves: profile.nebulaSteps >= 20 ? 6 : profile.nebulaSteps >= 12 ? 5 : 4,
-      seed: (seed % 97) * 0.37,
-      sunDirection: sunDir,
-    });
-    this.nebulaTarget = nebula.target;
-    this.farScene.background = nebula.texture;
-
-    // Populations are always allocated at the highest quality and trimmed per setting, so a
-    // change in the menu takes effect on the next frame rather than on the next reload.
+    // The selected factory is the sole world constructor. A non-CAIRN mission never allocates or
+    // adds the shipped CAIRN world, which keeps page-load resources inside one mission budget.
     const maxProfile = qualityProfile('ultra');
-    this.starfield = new Starfield(maxProfile.starCount, 90, seed ^ 0x51ed);
-    this.farScene.add(this.starfield.object);
-
-    this.star = new Star(60, Math.atan(SCALE.starRadius / SCALE.starDistance), sunDir);
-    this.farScene.add(this.star.object);
-
-    this.planet = new Planet({
-      distance: 40,
-      angularRadius: Math.atan(SCALE.planetRadius / SCALE.planetDistance),
-      direction: new THREE.Vector3(0.68, -0.2, -0.7).normalize(),
-      sunDirection: sunDir,
-      rings: true,
-    });
-    this.farScene.add(this.planet.object);
-
-    // --- near scene -----------------------------------------------------------------
-    this.course = new Course(seed, this.lighting);
-    this.mainScene.add(this.course.object);
-
-    this.terminus = new Terminus({
-      position: this.course.terminusPosition,
-      normal: this.course.terminusNormal,
+    const missionRuntimeFactory = options.missionRuntimeFactory
+      ?? (this.missionDefinition.id === CAIRN_MISSION.id ? createCairnMissionRuntime : null);
+    if (missionRuntimeFactory === null) {
+      throw new Error(`Missing runtime factory for mission: ${this.missionDefinition.id}`);
+    }
+    this.mission = createGameMissionRuntime({
+      definition: this.missionDefinition,
+      seed,
+      renderer: this.renderer,
+      farScene: this.farScene,
+      mainScene: this.mainScene,
       lighting: this.lighting,
-      seed: seed ^ 0x7f31,
-    });
-    this.mainScene.add(this.terminus.object);
-
-    this.asteroids = new AsteroidField({
-      count: maxProfile.asteroidCount,
-      lighting: this.lighting,
-      spine: this.course.spine,
-      spread: SCALE.asteroidFieldRadius * 0.55,
-      // Absolute metres, deliberately not a multiple of the aperture: shrinking the gate
-      // for difficulty must not silently shrink the flyable channel as well.
-      // The debris shell used to start 300 m from the spine, which put the inner wall of the
-      // field outside the racing line everywhere. The channel is now cut per leg instead.
-      corridor: 84,
-      minRadius: 9,
-      maxRadius: 160,
-      hazardCount: 460,
-      // Narrow: rock packed against the channel wall reads as a corridor. Spread wide it just
-      // raises the field density and the line stays visually open.
-      hazardBand: 120,
-      // The flown volume: the curved spine the ship follows AND the chords a fast pilot cuts
-      // to, each at its own leg's clearance. Built by Course, which is what knows the legs.
-      keepClearSegments: this.course.clearChannel,
-      keepClear: [
-        // The spawn point, generously: the very first thing a player sees must not be a
-        // collision. And every aperture, so threading a cairn is never blocked by a boulder
-        // that happens to have landed in the hole.
-        { center: this.course.startPosition.clone(), radius: 1100 },
-        ...this.course.gates.map((gate) => ({
-          center: gate.position.clone(),
-          radius: gate.radius * 2.4,
-        })),
-      ],
-      seed: seed ^ 0x2f19,
-    });
-    this.mainScene.add(this.asteroids.object);
-
-    this.derelicts = new DerelictField({
-      lighting: this.lighting,
-      spine: this.course.spine,
-      seed: seed ^ 0x1a77,
-      count: 7,
-    });
-    this.mainScene.add(this.derelicts.object);
-
-    // Placed just off the middle of the route, so the player passes it broadside at the point
-    // where the legs are longest and the frame would otherwise be emptiest.
-    // Anchored to the course's own frame rather than to world axes, so it reliably sits off
-    // the player's starboard side through the middle legs instead of wherever the route
-    // happened to be pointing.
-    const spanIndex = Math.floor(this.course.spine.length * 0.5);
-    const spanAnchor = this.course.spine[spanIndex];
-    const spanAhead = this.course.spine[Math.min(this.course.spine.length - 1, spanIndex + 6)];
-    const spanForward = new THREE.Vector3().subVectors(spanAhead, spanAnchor).normalize();
-    const spanRight = new THREE.Vector3().crossVectors(spanForward, new THREE.Vector3(0, 1, 0)).normalize();
-    this.shelfSpan = new ShelfSpan({
-      lighting: this.lighting,
-      position: spanAnchor
-        .clone()
-        .addScaledVector(spanRight, 5200)
-        .addScaledVector(spanForward, 2600)
-        .add(new THREE.Vector3(0, -900, 0)),
-      seed: seed ^ 0x5bd1,
-    });
-    this.mainScene.add(this.shelfSpan.object);
-
-    this.dust = new DustField(maxProfile.dustCount, 1100, seed ^ 0x99ab);
-    this.mainScene.add(this.dust.object);
+      initialQuality: profile,
+      maximumQuality: maxProfile,
+    }, missionRuntimeFactory);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
     this.shipMeshHolder.add(this.shipModel.object);
     this.shipRoot.add(this.shipMeshHolder);
     this.mainScene.add(this.shipRoot);
+
+    this.cockpitModel = new CockpitModel(
+      this.selectedLocale,
+      this.activeTranslator,
+      this.isCockpitFontReady(this.selectedLocale),
+    );
+    this.mainScene.add(this.cockpitModel.object);
 
     // Trails live in world space rather than under the ship, because the whole point of them
     // is that they stay where the ship *was*.
@@ -395,11 +530,40 @@ export class Game {
       // not a game fault, and filing it there turned an expected headless condition into a red
       // suite. Observable to a test through telemetry instead.
       this.telemetry.pointerLockRefused = true;
-      this.pushCallout('MOUSE CAPTURE UNAVAILABLE', 'W A S D / ARROWS STILL FLY', 'bad', 4.5);
-      this.pushLog(`mouse capture refused · ${reason}`, 'bad');
+      this.pushCallout({
+        titleMessage: POINTER_LOCK_TITLE_MESSAGE,
+        sub: undefined,
+        subMessage: KEYBOARD_FLIGHT_MESSAGE,
+        tone: 'bad',
+        ttl: 4.5,
+      });
+      this.pushLog({
+        message: { type: 'log.pointer-lock-refused', reason },
+        tone: 'bad',
+      });
     };
     this.input.onAction = (action) => {
-      if (action === 'restart' && (this.phase === 'flying' || this.phase === 'finished')) this.restart();
+      if (
+        action === 'restart' &&
+        (this.phase === 'flying' || this.phase === 'failed' || this.phase === 'finished')
+      ) {
+        this.restart();
+      }
+      if (action === 'view' && !this.paused && (this.phase === 'flying' || this.phase === 'countdown')) {
+        const next = NEXT_CAMERA_MODE[this.settings.value.cameraMode];
+        this.settings.set('cameraMode', next);
+        // Keep the public camera contract synchronous with the key action. The pose itself is
+        // resolved in updateVisuals, but projection state (notably the cockpit near plane) must
+        // not report the previous mode for a driven frame after the persisted setting has moved.
+        if (this.activeVantage === null && !this.cinematic) this.chase.setCameraMode(next);
+        this.pushCallout({
+          titleMessage: CAMERA_TITLE_MESSAGES[next],
+          sub: undefined,
+          subMessage: CAMERA_SUB_MESSAGES[next],
+          tone: 'neutral',
+          ttl: 1.1,
+        });
+      }
     };
 
     this.audio = new AudioEngine();
@@ -424,21 +588,8 @@ export class Game {
        Moving the Overlay construction above this block would reintroduce that swallow silently,
        on the keyboard path only. */
 
-    this.overlay = new Overlay(options.root, {
-      // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
-      // its control primer were fully built and mapped but nothing ever routed to them, so the
-      // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
-      // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
-      audio: this.uiAudio,
-      start: () => this.toBriefing(),
-      engage: () => this.beginRun(),
-      restart: () => this.restart(),
-      pause: () => this.pause(),
-      resume: () => this.resume(),
-      quitToTitle: () => this.toTitle(),
-      setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
-      getSettings: () => this.settings.value,
-    });
+    this.overlay = this.createOverlay(this.activeTranslator);
+    this.overlay.syncCampaign(this.campaignViewModel());
 
     this.telemetry = this.createTelemetry();
     this.grade = {
@@ -488,17 +639,197 @@ export class Game {
     this.autopilot = true;
   }
 
+  private createOverlay(translator: Translator): Overlay {
+    return new Overlay(this.root, {
+      // BEGIN RUN opens the briefing; ENGAGE inside it starts the run. The briefing panel and
+      // its control primer were fully built and mapped but nothing ever routed to them, so the
+      // game never told a player that the mouse steers, that SHIFT boosts or that SPACE brakes —
+      // the two verbs it is actually about — against an 82 s-vs-129 s skill gap.
+      audio: this.uiAudio,
+      start: () => this.toBriefing(),
+      engage: () => this.beginRun(),
+      restart: () => this.restart(),
+      pause: () => this.pause(),
+      resume: () => this.resume(),
+      quitToTitle: () => this.toTitle(),
+      selectMission: (missionId) => this.selectMission(missionId),
+      showMissionSelect: () => this.showMissionSelect(),
+      requestLocale: (locale) => this.applyLocale(locale),
+      setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
+      getSettings: () => this.settings.value,
+    }, translator);
+  }
+
+  private replaceOverlay(translator: Translator): void {
+    const phase = this.phase;
+    const countdown = this.countdown;
+    const pointerLocked = this.input.pointerLocked;
+    const telemetry = this.telemetry;
+    const focus = this.overlay.captureFocusToken();
+
+    this.overlay.dispose();
+    this.overlay = this.createOverlay(translator);
+    this.overlay.syncCampaign(this.campaignViewModel());
+    // Hydrate directly: Game.setPhase has a same-phase guard and would leave every new view closed.
+    this.overlay.setPhase(phase);
+    this.overlay.setCountdown(countdown);
+    this.overlay.setPointerLocked(pointerLocked);
+    this.overlay.update(telemetry, 0);
+    this.overlay.restoreFocusToken(focus);
+  }
+
+  private selectMission(missionId: MissionDefinition['id']): void {
+    if (missionId === this.missionDefinition.id) {
+      this.showMissionSelect();
+      return;
+    }
+
+    const selected = this.progressStore.selectMission(missionId);
+    if (!selected.accepted) return;
+    if (!selected.persistence.reloadSafe) {
+      this.campaignNavigationError = 'storage-unavailable';
+      this.overlay.syncCampaign(this.campaignViewModel());
+      return;
+    }
+
+    const locale = this.activeRunLocale ?? this.selectedLocale;
+    writeLocaleHandoff(locale);
+    const target = new URL(buildMissionUrl(window.location.href, missionId));
+    if (this.phase === 'finished' || this.phase === 'title') target.searchParams.set('briefing', '1');
+    else target.searchParams.delete('briefing');
+    try {
+      window.location.assign(target.href);
+    } catch {
+      this.campaignNavigationError = 'navigation-failed';
+      this.overlay.syncCampaign(this.campaignViewModel());
+    }
+  }
+
+  private showMissionSelect(): void {
+    // NEXT STAGE reloads with `briefing=1`. Returning to the stage rail must consume that
+    // one-shot boot instruction or a later refresh jumps straight back into briefing.
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('briefing')) {
+      url.searchParams.delete('briefing');
+      try {
+        window.history.replaceState(window.history.state, '', url.href);
+      } catch {
+        this.campaignNavigationError = 'navigation-failed';
+      }
+    }
+    this.toTitle();
+    this.overlay.syncCampaign(this.campaignViewModel());
+    this.overlay.focusStageSelection();
+  }
+
+  private campaignViewModel(): CampaignViewModel {
+    return buildCampaignViewModel(
+      this.progressStore.snapshot(),
+      this.missionDefinition.id,
+      this.newlyUnlockedMissionId,
+      this.campaignNavigationError,
+    );
+  }
+
+  private applyLocale(locale: Locale): void {
+    if (this.phase !== 'title') return;
+    this.localeStore.set(locale);
+    const changed = locale !== this.selectedLocale;
+    this.selectedLocale = locale;
+    this.activeTranslator = createTranslator(locale);
+    this.applyDocumentLocale(this.activeTranslator);
+    if (changed) {
+      this.fontGeneration += 1;
+      this.fontPreparation?.cancel();
+      this.fontResult = this.pendingFontResult(locale);
+      const preparation = prepareLocaleFonts(locale);
+      this.fontPreparation = preparation;
+      this.observeFontPreparation(preparation, this.fontGeneration);
+      this.replaceOverlay(this.activeTranslator);
+      this.syncCockpitLocale();
+    }
+  }
+
+  private pendingFontResult(locale: Locale): LocaleFontResult {
+    return locale === 'en'
+      ? { locale, status: 'not-required' }
+      : { locale, status: 'fallback' };
+  }
+
+  private observeFontPreparation(
+    preparation: LocaleFontPreparation,
+    generation: number,
+  ): void {
+    this.observeFontResult(preparation.initial, generation);
+    this.observeFontResult(preparation.settled, generation);
+  }
+
+  private observeFontResult(
+    promise: Promise<LocaleFontResult>,
+    generation: number,
+  ): void {
+    void promise.then(
+      (result) => {
+        if (generation !== this.fontGeneration
+          || result.locale !== this.selectedLocale
+          || this.disposed
+          || this.contextLost) return;
+        this.fontResult = result;
+        this.syncCockpitLocale();
+      },
+      () => {
+        // LocaleFontPreparation promises are non-rejecting; observe defensively at this boundary.
+      },
+    );
+  }
+
+  private isCockpitFontReady(locale: Locale): boolean {
+    return locale === 'en' || this.fontResult.status === 'ready';
+  }
+
+  private syncCockpitLocale(): void {
+    const locale = this.activeRunLocale ?? this.selectedLocale;
+    this.cockpitModel.setLocale(
+      locale,
+      this.activeTranslator,
+      this.isCockpitFontReady(locale),
+    );
+  }
+
+  private lockLocaleForRun(): void {
+    if (this.activeRunLocale !== null) return;
+    this.activeRunLocale = this.selectedLocale;
+    this.activeTranslator = createTranslator(this.activeRunLocale);
+    this.applyDocumentLocale(this.activeTranslator);
+  }
+
+  private applyDocumentLocale(translator: Translator): void {
+    document.documentElement.lang = translator.locale;
+    document.title = translator.messages.meta.documentTitle;
+    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute(
+      'content',
+      translator.messages.meta.documentDescription,
+    );
+  }
+
+  private unlockLocaleAtTitle(): void {
+    this.activeRunLocale = null;
+    this.applyLocale(this.localeStore.reload());
+  }
+
   // ---------------------------------------------------------------------------------
   // lifecycle
   // ---------------------------------------------------------------------------------
 
   private createTelemetry(): Telemetry {
+    const guidance = this.mission.objective.guidance(this.mission.path.startPosition);
     return {
       phase: 'boot',
       speed: 0,
       maxSpeed: FLIGHT.maxSpeed,
       throttle: 0,
       boosting: false,
+      boostLocked: false,
       energy: 1,
       hull: 1,
       roll: 0,
@@ -507,21 +838,31 @@ export class Game {
       velocityAnchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
       gate: {
         index: 0,
-        total: this.course.gates.length,
-        name: this.course.gates[0]?.name ?? '',
+        total: guidance.total,
+        name: guidance.label,
+        nameMessage: guidance.labelMessage,
         distance: 0,
         anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
         alignment: 0,
       },
+      guidance: {
+        label: guidance.label,
+        anchor: { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 },
+        distance: 0,
+        progress: 0,
+        current: 0,
+        total: guidance.total,
+      },
+      objective: this.mission.objective.telemetry(),
       courseRemaining: 0,
-      courseTotal: this.course.totalLength,
+      courseTotal: this.mission.path.totalLength,
       elapsed: 0,
       splits: [],
-      bestTime: readBestTime(this.course.id),
-      bestSplits: readBestSplits(this.course.id),
-      courseLength: this.course.totalLength,
-      sectorName: FICTION.sectorName,
-      destinationName: FICTION.destinationName,
+      bestTime: readBestTime(this.mission.recordId(this.seed)),
+      bestSplits: readBestSplits(this.mission.recordId(this.seed)),
+      courseLength: this.mission.path.totalLength,
+      sectorName: this.missionDefinition.world.canonicalSector,
+      destinationName: this.missionDefinition.world.canonicalDestination,
       callout: null,
       log: this.logLines,
       proximity: 0,
@@ -531,27 +872,33 @@ export class Game {
   }
 
   private buildVantages(): void {
-    this.vantages.push(
-      { name: 'title', t: 0.02, offset: new THREE.Vector3(-17, 4.4, 24), lookAhead: 34, fov: 50, exposureBias: 3.0 },
-      // Pulled back and re-aimed. At a 15 m standoff on a 42 degree lens the airframe overran the
-      // frame: the art review measured the subject severed at x=1599 with the tail under the
-      // NEXT MARKER cluster, and the 2.4 bias — fitted while the vantage camera was still being
-      // thrown off aim — blew the hull out on top of that. Now framed left-of-centre, clear of
-      // the right-hand HUD column.
-      { name: 'hull', t: 0.2, offset: new THREE.Vector3(-26, 5.5, 38), lookAhead: 26, fov: 40, exposureBias: 1.45 },
-      { name: 'chase', t: 0.34, offset: new THREE.Vector3(0, 3.2, 16.5), lookAhead: 90, fov: 76, exposureBias: 1.5 },
-      { name: 'gate-approach', t: 0, offset: new THREE.Vector3(0, 6, 40), lookAhead: 700, fov: 64, gateIndex: 0, gateStandoff: 760 },
-      { name: 'gate-close', t: 0, offset: new THREE.Vector3(34, 12, 62), lookAhead: 260, fov: 58, gateIndex: 2, gateStandoff: 230 },
-      { name: 'field-dive', t: 0, offset: new THREE.Vector3(-60, 22, 130), lookAhead: 1200, fov: 70, gateIndex: 3, gateStandoff: 1900, exposureBias: 1.3 },
-      { name: 'planet-rise', t: 0, offset: new THREE.Vector3(90, -26, 180), lookAhead: 1500, fov: 74, gateIndex: 5, gateStandoff: 2600, exposureBias: 2.4 },
-      { name: 'long-run', t: 0.7, offset: new THREE.Vector3(-26, 8, 62), lookAhead: 2200, fov: 82, exposureBias: 1.25 },
-      { name: 'shelf-edge', t: 0, offset: new THREE.Vector3(120, 44, 240), lookAhead: 1600, fov: 62, gateIndex: 7, gateStandoff: 2100, exposureBias: 1.35 },
-      { name: 'terminus', t: 0, offset: new THREE.Vector3(-60, 26, 480), lookAhead: 3400, fov: 56, terminusStandoff: 4200, exposureBias: 1.25 },
-    );
+    const authored = this.mission.legacy?.vantages();
+    if (!authored) return;
+    for (const vantage of authored) {
+      this.vantages.push({
+        ...vantage,
+        offset: new THREE.Vector3(...vantage.offset),
+      });
+    }
   }
 
-  private resetShipToStart(): void {
-    this.ship.reset(this.course.startPosition, this.course.startQuaternion, FLIGHT.cruiseSpeed * 0.55);
+  private resetShipToStart(resetWorld = true): void {
+    // Title/briefing loops historically rewind moving debris with the ship. Mission resets have
+    // already reset their world, so their call sites pass false and avoid doing the same work twice.
+    if (resetWorld) this.mission.world.reset();
+    this.ship.reset(
+      this.mission.path.startPosition,
+      this.mission.path.startQuaternion,
+      FLIGHT.cruiseSpeed * 0.55,
+    );
+    // A restart is a new visual run as well as a new physics run. Leaving the smoothed boost
+    // value alive made the first countdown frame look like a shutdown transient after restarting
+    // during boost, even though Ship.reset() had already cleared the actual engine state.
+    this.boostBlend = 0;
+    this.wasBoosting = false;
+    this.wasBoostLocked = false;
+    this.gateTickTimer = 0;
+    this.shipModel.resetPlumeState(this.shipVisualClock);
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     for (const trail of this.trails) trail.reset();
@@ -564,29 +911,40 @@ export class Game {
     this.overlay.setPhase(phase);
   }
 
+  private cancelCountdownClear(): void {
+    if (this.countdownClearTimer === null) return;
+    window.clearTimeout(this.countdownClearTimer);
+    this.countdownClearTimer = null;
+  }
+
   /**
    * @param skipIntro jump straight to flying instead of running the three-second countdown.
    *   The interface never passes this; it exists so an unattended playthrough does not spend
    *   three seconds of every run watching numerals.
    */
   beginRun(skipIntro = false): void {
+    this.lockLocaleForRun();
     // Clearing this matters the moment any restart affordance is reachable from the pause
     // menu: without it the new run starts already frozen on the countdown.
+    this.cancelCountdownClear();
     this.paused = false;
     void this.audio.unlock();
-    this.course.reset();
+    this.mission.reset();
     this.gateHistory.length = 0;
     this.logLines.length = 0;
-    this.resetShipToStart();
+    this.resetShipToStart(false);
+    this.ship.resetRunContacts();
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
     this.topSpeed = 0;
     this.impacts = 0;
-    this.lastRadio = -1;
+    this.radioTriggeredAt.fill(-1);
+    this.radioBusyUntil = 0;
+    this.radioEndPending = false;
     this.result = null;
     this.telemetry.splits = [];
-    this.telemetry.bestTime = readBestTime(this.course.id);
-    this.telemetry.bestSplits = readBestSplits(this.course.id);
+    this.telemetry.bestTime = readBestTime(this.mission.recordId(this.seed));
+    this.telemetry.bestSplits = readBestSplits(this.mission.recordId(this.seed));
     this.clearPause();
     this.autopilot = false;
     this.cinematic = false;
@@ -598,7 +956,7 @@ export class Game {
       this.countdownTimer = 0;
       this.overlay.setCountdown(null);
       this.setPhase('flying');
-      this.radio(0);
+      this.queueRadio(0);
       this.input.requestLock();
       return;
     }
@@ -611,6 +969,7 @@ export class Game {
   }
 
   toBriefing(): void {
+    this.lockLocaleForRun();
     this.clearPause();
     this.autopilot = true;
     this.cinematic = true;
@@ -676,17 +1035,21 @@ export class Game {
     this.clearPause();
     /* Pre-existing, and separate from the duck: aborting a pause taken DURING the countdown left
        the countdown element open over the title screen, because nothing here cleared it. */
+    this.cancelCountdownClear();
     this.countdown = null;
     this.overlay.setCountdown(null);
-    this.course.reset();
-    this.resetShipToStart();
+    this.mission.reset();
+    this.resetShipToStart(false);
     this.chase.snapTo(this.ship);
     this.elapsed = 0;
     this.autopilot = true;
     this.cinematic = true;
-    this.activeVantage = this.vantages[0];
+    // Authored vantages are still poses. Keeping one active here made ABORT RUN pin both ship and
+    // camera every frame, while a fresh title correctly enters the moving cinematic orbit.
+    this.activeVantage = null;
     this.input.releaseLock();
     this.setPhase('title');
+    this.unlockLocaleAtTitle();
   }
 
   // ---------------------------------------------------------------------------------
@@ -709,6 +1072,7 @@ export class Game {
     }
     const dt = this.fixedTimestep ?? clamp(rawDt, 0.0005, 0.05);
     this.clock += dt;
+    if (!this.paused) this.shipVisualClock += dt;
     this.grade.time = this.clock;
 
     this.fpsAccumulator += rawDt;
@@ -730,6 +1094,29 @@ export class Game {
       this.firstFrameResolve = null;
       resolve();
     }
+  }
+
+  /**
+   * Harness-only deterministic physics stepping.
+   *
+   * A 120 Hz course proof should exercise the production simulation, collision and progression
+   * path, but rendering every intermediate half-frame turns a one-minute route into a ten-minute
+   * SwiftShader job. Visual and GPU behaviour have their own focused gates, so this advances the
+   * same `simulate()` method without intermediate draws and synchronises the scene/telemetry
+   * state once at the end. Live play and the normal `step()` contract remain unchanged.
+   */
+  stepSimulation(frames: number, rawDt = 1 / 60): void {
+    if (this.disposed || this.contextLost || this.paused) return;
+    const count = Math.max(0, Math.trunc(Number.isFinite(frames) ? frames : 0));
+    const dt = clamp(Number.isFinite(rawDt) ? rawDt : 1 / 60, 0.0005, 0.05);
+    for (let i = 0; i < count; i++) {
+      this.clock += dt;
+      this.shipVisualClock += dt;
+      this.grade.time = this.clock;
+      this.simulate(dt);
+      if (this.phase === 'finished' || this.phase === 'failed') break;
+    }
+    this.updateVisuals(dt);
   }
 
   /**
@@ -836,7 +1223,11 @@ export class Game {
   }
 
   private simulate(dt: number): void {
-    const command = this.resolveCommand(dt);
+    /* Once failed, do not even sample pilot input for the physics path. The input listeners stay
+       alive so N can still reach the restart action, but stick/throttle/gamepad state cannot add
+       control authority behind the terminal overlay. */
+    const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.resolveCommand(dt);
+    this.missionPreviousPosition.copy(this.ship.position);
 
     if (this.phase === 'countdown') {
       this.countdownTimer += dt;
@@ -851,9 +1242,23 @@ export class Game {
           this.audio.play('countdownGo');
           this.countdown = null;
           this.setPhase('flying');
-          this.pushCallout('ENGAGE', FICTION.destinationName, 'good', 1.6);
-          this.radio(0);
-          window.setTimeout(() => this.overlay.setCountdown(null), 700);
+          this.pushCallout({
+            titleMessage: ENGAGE_MESSAGE,
+            sub: this.missionDefinition.world.canonicalDestination,
+            subMessage: undefined,
+            tone: 'good',
+            ttl: 1.6,
+          });
+          this.queueRadio(0);
+          this.cancelCountdownClear();
+          this.countdownClearTimer = window.setTimeout(() => {
+            this.countdownClearTimer = null;
+            /* A restart may already have opened another countdown. Only the run that displayed
+               this GO card is allowed to dismiss it. */
+            if (this.phase === 'flying' && this.countdown === null) {
+              this.overlay.setCountdown(null);
+            }
+          }, 700);
         }
       }
       // The ship holds a slow cruise through the countdown so the frame is never static.
@@ -861,19 +1266,77 @@ export class Game {
     } else if (this.phase === 'flying' || this.phase === 'title' || this.phase === 'briefing') {
       this.ship.update(dt, command);
       if (this.phase === 'flying') this.elapsed += dt;
+    } else if (this.phase === 'failed') {
+      this.ship.update(dt, FAILURE_DRIFT_COMMAND);
     } else {
       this.ship.update(dt, { ...command, throttle: 0.3, boost: false });
     }
 
     this.topSpeed = Math.max(this.topSpeed, this.ship.speed);
-    this.resolveCollisions(dt);
+    this.ship.getForward(this.missionForward);
+    const missionFrame = this.mission.simulate({
+      dt,
+      elapsed: this.elapsed,
+      body: this.ship,
+      previousPosition: this.missionPreviousPosition,
+      forward: this.missionForward,
+      proximityRange: FLIGHT_THRESHOLDS.proximityRange,
+      resolveContacts: this.phase !== 'failed',
+      resolveObjective: this.phase === 'flying',
+      onContact: this.onWorldContact,
+    });
+    this.lastCollisionContacts = this.mission.world.contacts;
+    this.proximity = missionFrame.proximity;
 
     if (this.phase === 'flying') {
-      this.course.update(this.ship.position, this.ship.speed, this.elapsed);
-      this.checkArrival();
+      /* All contacts in this frame have now contributed damage. Resolve the terminal outcome once,
+         before course progression, so a lethal strike and terminus crossing in the same frame
+         deterministically produce a breach rather than a saved result. */
+      if (missionFrame.hullFailed) this.checkFailure();
+      if (this.phase === 'flying') {
+        consumeMissionFrameEvents(
+          this.mission,
+          missionFrame,
+          this.ship,
+          this.rewardEvents,
+        );
+        const objectiveTelemetry = this.mission.objective.telemetry();
+        const collectedBeforeRewards = objectiveTelemetry.kind === 'collection'
+          ? objectiveTelemetry.collected - this.rewardEvents.length
+          : 0;
+        if (objectiveTelemetry.kind === 'collection' && this.rewardEvents.length > 0) {
+          // Collection objectives own their pickup timestamps just as gate objectives own split
+          // crossings. Refresh only on a pickup event, never in the steady frame path.
+          this.telemetry.splits = [...this.mission.bestRunSplits()];
+        }
+        for (let rewardIndex = 0; rewardIndex < this.rewardEvents.length; rewardIndex++) {
+          this.audio.play('checkpoint', 0.85);
+          if (objectiveTelemetry.kind === 'collection') {
+            const core = collectedBeforeRewards + rewardIndex + 1;
+            this.pushCallout({
+              titleMessage: { type: 'callout-title.core-acquired', core },
+              sub: 'BOOST FULL',
+              subMessage: undefined,
+              tone: 'good',
+              ttl: 1.35,
+            });
+            this.pushLog({
+              message: { type: 'log.core-acquired', core, seconds: this.elapsed },
+              tone: 'good',
+            });
+            this.queueRadio(core);
+          }
+        }
+      }
+      if (this.phase === 'flying' && missionFrame.terminal) {
+        const terminal = missionFrame.terminal;
+        if (terminal.status === 'failed') this.failObjective(terminal.reason);
+        else if (terminal.status === 'succeeded') this.finish();
+      }
     } else if (this.phase === 'title' || this.phase === 'briefing') {
       // Keep the title flight looping forever rather than running off the end of the course.
-      if (this.ship.position.distanceTo(this.course.startPosition) > SCALE.gateSpacing * 2.2) {
+      if (this.ship.position.distanceTo(this.mission.path.startPosition) >
+        this.missionDefinition.world.attractLoopDistance) {
         this.resetShipToStart();
         this.chase.snapTo(this.ship);
       }
@@ -896,7 +1359,15 @@ export class Game {
    * struct a human produces, so it exercises the real flight model rather than a shortcut.
    */
   private driveAutopilot(command: FlightCommand, dt: number): FlightCommand {
-    const target = this.course.autopilotTarget(this.ship.position, this.tmpA);
+    const legacy = this.mission.legacy;
+    const target = legacy
+      ? legacy.autopilotTarget(
+        this.ship.position,
+        this.tmpA,
+        this.elapsed,
+        this.ship.speed,
+      )
+      : this.mission.objective.guidance(this.ship.position).anchor;
     this.tmpB.copy(target).sub(this.ship.position);
     const distance = this.tmpB.length();
     if (distance < 1e-3) return command;
@@ -926,57 +1397,55 @@ export class Game {
     // Fixing the loudness at its source rather than ducking it downstream: no menu mix at the
     // title, no new contract surface, and uiClick goes from +0.5 dB over the bed to about +6.7.
     if (this.cinematic) command.throttle = Math.min(command.throttle, Game.ATTRACT_THROTTLE);
-    const gate = this.course.nextGate;
-    const far = gate ? this.ship.position.distanceTo(gate.position) > gate.radius * 12 : true;
-    command.boost = this.autopilotSkill > 0.75 && alignment > 0.985 && far && this.ship.energy01 > 0.45;
-    command.brake = false;
+    const controls = legacy?.autopilotControls({
+      position: this.ship.position,
+      speed: this.ship.speed,
+      energy: this.ship.energy01,
+      skill: this.autopilotSkill,
+      alignment,
+      targetDistance: distance,
+    });
+    // Generic runtimes may use the shared autopilot with independent player buttons. Preserve
+    // those only during active flight; title/briefing attract input remains deliberately neutral.
+    const preserveGenericButtons = legacy === null && this.phase === 'flying';
+    command.brake = resolveAutopilotButton(
+      controls?.brake,
+      command.brake,
+      preserveGenericButtons,
+    );
+    command.boost = resolveAutopilotButton(
+      controls?.boost,
+      command.boost,
+      preserveGenericButtons,
+    );
     command.strafeX = 0;
     command.strafeY = 0;
     void dt;
     return command;
   }
 
-  private resolveCollisions(dt: number): void {
-    void dt;
-    const shipRadius = this.ship.radius;
-    let nearest = Infinity;
-    /* Record WHICH list this pass iterates, through the same variable the loop reads, so the
-       record and the use cannot drift apart. hazard() reports whether this is still the drawn
-       gameplay list by reference identity — the coupling that harness.ts used to assert in prose
-       ("the same set that collides") with nothing enforcing it. A mutation rewiring this loop to
-       the full field changed no check in the gate; now it flips colliderSharesDrawnList and
-       M3.hazard-invariance reds. One reference assignment per frame; the identity test runs only
-       when the harness asks. */
-    const rocks = this.asteroids.activeInstances;
-    this.lastCollisionList = rocks;
-    for (const rock of rocks) {
-      const dx = rock.position.x - this.ship.position.x;
-      const dy = rock.position.y - this.ship.position.y;
-      const dz = rock.position.z - this.ship.position.z;
-      const distSq = dx * dx + dy * dy + dz * dz;
-      const reach = rock.radius + shipRadius + 260;
-      if (distSq > reach * reach) continue;
-
-      const dist = Math.sqrt(distSq);
-      nearest = Math.min(nearest, dist - rock.radius - shipRadius);
-
-      const overlap = rock.radius + shipRadius - dist;
-      if (overlap > 0 && dist > 1e-3) {
-        // A graze that barely breaks the surface is a scrape, not a strike. `scrape` was
-        // synthesised but never called from anywhere, so sliding along a rock was silent.
-        if (overlap < shipRadius * 0.6) this.audio.play('scrape', clamp01(overlap / (shipRadius * 0.6)));
-        this.tmpA.set(-dx / dist, -dy / dist, -dz / dist);
-        const severity = this.ship.applyImpact(this.tmpA, overlap);
-        if (severity > 0.02) {
-          this.impacts++;
-          this.damageFlash = Math.min(1, this.damageFlash + severity * 1.4 + 0.2);
-          this.audio.play('impact', severity);
-          if (severity > 0.25) this.pushCallout('HULL IMPACT', null, 'bad', 1.1);
-          this.pushLog(`hull contact · ${Math.round(severity * 100)}%`, 'bad');
-        }
-      }
+  private handleWorldContact(penetration: number, severity: number): void {
+    if (penetration < this.ship.radius * 0.6) {
+      this.audio.play('scrape', clamp01(penetration / (this.ship.radius * 0.6)));
     }
-    this.proximity = nearest === Infinity ? 0 : clamp01(1 - nearest / 260);
+    if (severity > 0.02) {
+      this.impacts++;
+      this.damageFlash = Math.min(1, this.damageFlash + severity * 1.4 + 0.2);
+      this.audio.play('impact', severity);
+      if (severity > 0.25) {
+        this.pushCallout({
+          titleMessage: HULL_IMPACT_MESSAGE,
+          sub: undefined,
+          subMessage: undefined,
+          tone: 'bad',
+          ttl: 1.1,
+        });
+      }
+      this.pushLog({
+        message: { type: 'log.hull-contact', percent: Math.round(severity * 100) },
+        tone: 'bad',
+      });
+    }
   }
 
   private updateProximity(dt: number): void {
@@ -989,51 +1458,65 @@ export class Game {
     }
   }
 
-  private checkArrival(): void {
-    if (!this.course.complete) return;
-    const signed = this.terminus.signedDistance(this.ship.position);
-    if (signed < 0) return;
-    this.tmpA.copy(this.ship.position).sub(this.terminus.position);
-    const along = this.tmpA.dot(this.terminus.normal);
-    this.tmpA.addScaledVector(this.terminus.normal, -along);
-    if (this.tmpA.length() > this.terminus.apertureRadius * 2.4) return;
-    this.finish();
+  private failObjective(reason: string): void {
+    if (this.phase !== 'flying') return;
+    this.autopilot = false;
+    this.result = null;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    this.setPhase('failed');
+    this.overlay.showFailure(this.elapsed, reason);
+    this.input.releaseLock();
+  }
+
+  private checkFailure(): void {
+    if (this.phase !== 'flying' || this.ship.hull > 0) return;
+    this.autopilot = false;
+    this.result = null;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    this.setPhase('failed');
+    this.overlay.showFailure(this.elapsed);
+    this.input.releaseLock();
   }
 
   private finish(): void {
-    if (this.phase === 'finished') return;
-    const splits = this.course.passes.map((p) => p.time);
-    const best = readBestTime(this.course.id);
+    if (this.phase !== 'flying') return;
+    this.cancelCountdownClear();
+    this.overlay.setCountdown(null);
+    const recordId = this.mission.recordId(this.seed);
+    const splits = [...this.mission.bestRunSplits()];
+    const best = readBestTime(recordId);
     const isNewBest = best === null || this.elapsed < best;
     // Read the previous best's splits BEFORE overwriting, so the results screen compares this
     // run against the run it beat rather than against itself.
-    const bestSplits = readBestSplits(this.course.id);
-    if (isNewBest) writeBestTime(this.course.id, this.elapsed, splits);
+    const bestSplits = readBestSplits(recordId);
+    if (isNewBest) writeBestTime(recordId, this.elapsed, splits);
 
-    const par = (this.course.totalLength / FLIGHT.cruiseSpeed) * 1.06;
-    const ratio = this.elapsed / par;
     const clean = this.impacts === 0;
-    let rank = 'D';
-    if (ratio < 0.74 && clean) rank = 'S';
-    else if (ratio < 0.84) rank = 'A';
-    else if (ratio < 0.96) rank = 'B';
-    else if (ratio < 1.18) rank = 'C';
-
-    this.result = {
+    this.result = this.mission.buildResult({
       totalTime: this.elapsed,
-      splits,
+      hullRemaining: this.ship.hull,
       bestTime: best,
       bestSplits,
       isNewBest,
-      gatesCleared: this.course.passes.length,
-      gatesTotal: this.course.gates.length,
       topSpeed: this.topSpeed,
       cleanRun: clean,
-      rank,
-      destinationName: FICTION.destinationName,
-    };
+      cruiseSpeed: FLIGHT.cruiseSpeed,
+    });
+
+    const progress = this.progressStore.recordSuccessfulFinish(
+      this.missionDefinition.id,
+      this.result,
+    );
+    this.newlyUnlockedMissionId = progress.newlyUnlocked;
+    this.result.newlyUnlockedMissionId = progress.newlyUnlocked;
+    this.campaignNavigationError = progress.newlyUnlocked !== null && !progress.persistence.reloadSafe
+      ? 'storage-unavailable'
+      : null;
 
     this.setPhase('finished');
+    this.overlay.syncCampaign(this.campaignViewModel());
     this.overlay.showResult(this.result);
     this.audio.play('finish');
     if (isNewBest) this.audio.play('newBest');
@@ -1053,13 +1536,15 @@ export class Game {
     // boost-driven effect — FOV kick, streak length, dust density, plume, trail width, lens warp
     // — was keyed off a value that had already been through two independent smoothers, so it lagged
     // badly and never reached full strength. That is why boost barely deformed the frame.
-    this.boostBlend = damp(this.boostBlend, boost, 0.16, dt);
+    if (!this.paused) this.boostBlend = damp(this.boostBlend, boost, 0.16, dt);
     const boostBlend = this.boostBlend;
 
     this.shipRoot.position.copy(this.ship.position);
     this.shipRoot.quaternion.copy(this.ship.quaternion);
     this.shipMeshHolder.rotation.copy(this.ship.visualLean);
 
+    const cockpitActive =
+      this.activeVantage === null && !this.cinematic && this.settings.value.cameraMode === 'cockpit';
     if (this.activeVantage) {
       this.applyVantage(this.activeVantage);
     } else if (this.cinematic) {
@@ -1069,7 +1554,33 @@ export class Game {
         boost: boostBlend,
         impact: this.damageFlash,
         proximity: this.proximity,
-      });
+      }, this.settings.value.cameraMode);
+    }
+
+    this.cockpitModel.setVisible(cockpitActive);
+    if (cockpitActive) {
+      // Failure bypasses Input.update(), exactly like the physics path in simulate(). Keep the
+      // visible stick/head rig on the command that actually reaches the ship instead of leaving
+      // held pre-breach input frozen into the cockpit behind the terminal overlay.
+      const command = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.input.command;
+      const gate = this.mission.legacy?.currentGate() ?? null;
+      this.ship.getForward(this.cockpitForward);
+      const state = this.cockpitState;
+      state.dt = dt;
+      state.speed = this.ship.speed;
+      state.speed01 = speed01;
+      state.throttle = this.ship.throttleSmoothed;
+      state.energy = this.ship.energy01;
+      state.hull = this.ship.hull;
+      state.proximity = this.proximity;
+      state.impact = this.damageFlash;
+      state.alignment = gate ? gate.alignment(this.cockpitForward) : 1;
+      state.pitch = command.pitch;
+      state.yaw = command.yaw;
+      state.roll = command.roll;
+      state.boost = boostBlend;
+      state.brake = command.brake;
+      this.cockpitModel.update(this.chase.camera, this.clock, state);
     }
 
     this.farCamera.quaternion.copy(this.chase.camera.quaternion);
@@ -1083,29 +1594,23 @@ export class Game {
     // Moving the pixel floors past the multiply (last round) fixed the multiply ORDER and left
     // the multiplicand wrong.
     const pixelScale = Math.max(0.6, this.post.renderHeight / 1080);
-    this.starfield.setViewportHeight(this.post.renderHeight);
-    this.starfield.update(this.clock);
-    this.star.update(this.clock, this.farCamera);
-    this.planet.update(this.clock);
-
     const camPos = this.chase.camera.position;
-    this.asteroids.update(dt, camPos);
-    this.derelicts.update(this.clock, camPos);
-    this.shelfSpan.update(this.clock, camPos);
-    this.terminus.update(this.clock, camPos, pixelScale);
-    this.course.update3d(dt, this.clock, camPos, pixelScale);
-
-    // Streak length is measured in seconds of travel, so it scales with actual speed. Kept
-    // short at cruise and only tearing open under boost — that contrast is the point.
-    const stretch = 0.008 + speed01 * 0.026 + boostBlend * 0.055;
-    // Opacity is quadratic in speed: dust is nearly invisible at a crawl and only becomes a
-    // wall of streaks under boost, which is where the cue is actually wanted.
-    // Cubic in speed: nearly invisible at a crawl, a wall of streaks under boost.
-    const dustOpacity = 0.02 + speed01 * speed01 * speed01 * 0.34 + boostBlend * 0.34;
-    this.dust.update(this.ship.position, this.ship.velocity, camPos, stretch, dustOpacity);
+    this.mission.world.updatePresentation({
+      dt,
+      clock: this.clock,
+      runTime: this.elapsed,
+      camera: this.chase.camera,
+      farCamera: this.farCamera,
+      pixelScale,
+      viewportHeight: this.post.renderHeight,
+      shipPosition: this.ship.position,
+      shipVelocity: this.ship.velocity,
+      speed01,
+      boostBlend,
+    });
 
     this.shipModel.update(
-      this.clock,
+      this.shipVisualClock,
       camPos,
       this.ship.throttleSmoothed,
       boostBlend,
@@ -1121,13 +1626,16 @@ export class Game {
         .add(this.ship.position);
       this.trails[i].update(this.tmpA, camPos, trailIntensity, 1 + boostBlend * 1.6);
     }
-    this.shipModel.setVisible(!this.cinematic || this.activeVantage !== null || this.phase !== 'boot');
+    this.shipModel.setVisible(
+      (!this.cinematic || this.activeVantage !== null || this.phase !== 'boot') && !cockpitActive,
+    );
 
     this.updateGrade(dt, speed01, boostBlend);
     this.updateTelemetry(dt);
   }
 
   private updateCinematicCamera(dt: number): void {
+    this.chase.setCameraMode('chase');
     this.cinematicTime += dt;
     // A slow, wide orbit around the ship while it cruises: the title screen is a beauty shot.
     const angle = this.cinematicTime * 0.11;
@@ -1158,33 +1666,8 @@ export class Game {
     }
   }
 
-  /** Pushes a camera anchor out of any asteroid it happens to be sitting inside. */
-  /** Scratch owned by `clearVantageOfObstacles` alone. See the aliasing note below. */
-  private readonly clearScratch = new THREE.Vector3();
-
   private clearVantageOfObstacles(point: THREE.Vector3): void {
-    // The scratch here MUST NOT be one of the shared tmp vectors. `applyVantage` calls this with
-    // `this.tmpB` as `point`, so using `this.tmpB` as the working vector aliased the argument to
-    // the scratch: the normalise wrote into `point` itself, and the next line then evaluated to
-    // `rock.position * (1 + clearance)`. Measured effect — the field-dive camera was placed at
-    // (214707, -209426, -4479816), four and a half million metres out and 120 degrees off aim,
-    // which is why authored stills came back as pictures of empty sky.
-    //
-    // Latent until the hazard rocks landed: this only fires when a vantage anchor falls within
-    // clearance of a rock, and before the racing line had rock in it, it never did.
-    for (let pass = 0; pass < 4; pass++) {
-      let moved = false;
-      for (const rock of this.asteroids.activeInstances) {
-        const clearance = rock.radius + this.ship.radius + 220;
-        const dSq = rock.position.distanceToSquared(point);
-        if (dSq >= clearance * clearance) continue;
-        const d = Math.sqrt(dSq) || 1;
-        this.clearScratch.copy(point).sub(rock.position).divideScalar(d);
-        point.copy(rock.position).addScaledVector(this.clearScratch, clearance);
-        moved = true;
-      }
-      if (!moved) break;
-    }
+    this.mission.legacy?.clearVantage(point, this.ship.radius, 220);
   }
 
   private applyVantage(v: Vantage): void {
@@ -1193,24 +1676,30 @@ export class Game {
     // harness steps exactly one frame before it presents — a damped value would move about 3%
     // of the way there, so the bias would have measured as having no effect at all.
     this.grade.exposure = 1.3 * this.vantageExposure;
-    if (v.gateIndex !== undefined && this.course.gates[v.gateIndex]) {
-      const gate = this.course.gates[v.gateIndex];
-      this.tmpA.copy(gate.position).addScaledVector(gate.normal, -(v.gateStandoff ?? 800));
+    const posedAtGate = v.gateIndex !== undefined && this.mission.legacy?.poseGate(
+      v.gateIndex,
+      v.gateStandoff ?? 800,
+      this.tmpA,
+      this.tmpQuat,
+    );
+    if (posedAtGate) {
       // Nudge clear of anything the ship is parked inside. A vantage that lands touching a
       // boulder reports proximity 1.0, fills half the frame with that rock's bloom, and makes
       // the shot useless as evidence — which is exactly how a "palette" defect turned out to
       // be a staging defect.
       this.clearVantageOfObstacles(this.tmpA);
-      this.tmpQuat.setFromRotationMatrix(
-        new THREE.Matrix4().lookAt(this.tmpA, gate.position, new THREE.Vector3(0, 1, 0)),
-      );
     } else if (v.terminusStandoff !== undefined) {
-      this.tmpA.copy(this.terminus.position).addScaledVector(this.terminus.normal, -v.terminusStandoff);
+      this.tmpA.copy(this.mission.path.terminusPosition)
+        .addScaledVector(this.mission.path.terminusNormal, -v.terminusStandoff);
       this.tmpQuat.setFromRotationMatrix(
-        new THREE.Matrix4().lookAt(this.tmpA, this.terminus.position, new THREE.Vector3(0, 1, 0)),
+        new THREE.Matrix4().lookAt(
+          this.tmpA,
+          this.mission.path.terminusPosition,
+          new THREE.Vector3(0, 1, 0),
+        ),
       );
     } else {
-      this.course.poseAt(v.t, this.tmpA, this.tmpQuat);
+      this.mission.path.poseAt(v.t, this.tmpA, this.tmpQuat);
       this.clearVantageOfObstacles(this.tmpA);
     }
     this.ship.position.copy(this.tmpA);
@@ -1269,10 +1758,13 @@ export class Game {
   private updateTelemetry(dt: number): void {
     const t = this.telemetry;
     const num = Game.num;
+    const legacy = this.mission.legacy;
+    const guidance = this.mission.objective.guidance(this.ship.position);
     t.phase = this.phase;
     t.speed = num(this.ship.speed);
     t.throttle = num(this.ship.throttleSmoothed);
     t.boosting = this.ship.boosting;
+    t.boostLocked = this.ship.boostLocked;
     t.energy = num(this.ship.energy01);
     t.hull = num(this.ship.hull, 1);
     t.gLoad = num(this.ship.gForce);
@@ -1280,7 +1772,9 @@ export class Game {
     t.proximity = num(this.proximity);
     t.impactFlash = num(this.damageFlash);
     t.fps = num(this.fps, 60);
-    t.courseRemaining = num(this.course.remainingDistance(this.ship.position));
+    t.courseRemaining = num(legacy
+      ? legacy.remainingDistance(this.ship.position)
+      : guidance.distance);
 
     // Reused scratch: this runs 60 times a second and allocating an Euler here was measurable.
     this.scratchEuler.setFromQuaternion(this.ship.quaternion, 'ZYX');
@@ -1316,11 +1810,12 @@ export class Game {
       t.velocityAnchor.distance = speed;
     }
 
-    const gate = this.course.nextGate;
-    const targetPosition = gate ? gate.position : this.terminus.position;
-    t.gate.index = this.course.nextIndex;
-    t.gate.total = this.course.gates.length;
-    t.gate.name = gate ? gate.name : FICTION.destinationName;
+    const gate = legacy?.currentGate() ?? null;
+    const targetPosition = gate?.position ?? guidance.anchor;
+    t.gate.index = guidance.current;
+    t.gate.total = guidance.total;
+    t.gate.name = guidance.label;
+    t.gate.nameMessage = guidance.labelMessage;
     t.gate.distance = num(this.ship.position.distanceTo(targetPosition));
 
     this.tmpA.copy(targetPosition).project(this.chase.camera);
@@ -1342,10 +1837,46 @@ export class Game {
     this.ship.getForward(this.tmpC);
     t.gate.alignment = num(gate ? gate.alignment(this.tmpC) : 1, 1);
 
+    t.guidance.label = guidance.label;
+    t.guidance.labelMessage = guidance.labelMessage;
+    t.guidance.distance = num(guidance.distance);
+    t.guidance.progress = num(guidance.progress);
+    t.guidance.current = guidance.current;
+    t.guidance.total = guidance.total;
+    this.tmpA.copy(guidance.anchor).project(this.chase.camera);
+    t.guidance.anchor.x = num(this.tmpA.x);
+    t.guidance.anchor.y = num(this.tmpA.y);
+    t.guidance.anchor.onScreen = this.tmpA.z > -1
+      && this.tmpA.z < 1
+      && Math.abs(this.tmpA.x) <= 1
+      && Math.abs(this.tmpA.y) <= 1;
+    this.tmpB.copy(guidance.anchor).applyMatrix4(this.chase.camera.matrixWorldInverse);
+    t.guidance.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+    t.guidance.anchor.distance = num(guidance.distance);
+    t.objective = this.mission.objective.telemetry();
+    if (t.objective.kind === 'collection') {
+      for (const source of t.objective.sources) {
+        this.tmpC.set(source.position[0], source.position[1], source.position[2]);
+        source.distance = num(this.ship.position.distanceTo(this.tmpC));
+        this.tmpA.copy(this.tmpC).project(this.chase.camera);
+        this.tmpB.copy(this.tmpC).applyMatrix4(this.chase.camera.matrixWorldInverse);
+        source.anchor.x = num(this.tmpA.x);
+        source.anchor.y = num(this.tmpA.y);
+        source.anchor.onScreen = this.tmpB.z < 0
+          && this.tmpA.z > -1
+          && this.tmpA.z < 1
+          && Math.abs(this.tmpA.x) <= 1
+          && Math.abs(this.tmpA.y) <= 1;
+        source.anchor.angle = num(Math.atan2(this.tmpB.y, this.tmpB.x));
+        source.anchor.distance = source.distance;
+      }
+    }
+
     if (t.callout) {
       t.callout.ttl -= dt;
       if (t.callout.ttl <= 0) t.callout = null;
     }
+    this.updateRadioSchedule();
     for (let i = this.logLines.length - 1; i >= 0; i--) {
       this.logLines[i].age += dt;
       if (this.logLines[i].age > 9) this.logLines.splice(i, 1);
@@ -1374,16 +1905,25 @@ export class Game {
     }
     if (ranDry) {
       this.audio.play('boostEmpty');
-      this.pushCallout('DRIVE DRY', 'RESERVE RECHARGING', 'warn', 1.2);
-      this.pushLog('overdrive reserve depleted', 'warn');
+      this.pushCallout({
+        titleMessage: BOOST_DEPLETED_MESSAGE,
+        sub: undefined,
+        subMessage: BOOST_RECHARGING_MESSAGE,
+        tone: 'warn',
+        ttl: 1.2,
+      });
+      this.pushLog({ message: BOOST_DEPLETED_LOG_MESSAGE, tone: 'warn' });
     }
     this.wasBoostLocked = locked;
 
     // A rising tick as the aperture closes: the player should hear the gate arrive.
-    const gate = this.course.nextGate;
+    const gate = this.mission.legacy?.currentGate() ?? null;
     if (gate && this.phase === 'flying') {
       const distance = this.ship.position.distanceTo(gate.position);
-      const band = distance < 900 ? Math.max(0.12, distance / 2600) : 0;
+      const band =
+        distance < FLIGHT_THRESHOLDS.gateTickRange
+          ? Math.max(0.12, distance / FLIGHT_THRESHOLDS.gateTickIntervalDivisor)
+          : 0;
       if (band > 0) {
         // Seconds, not frames. `band` is in seconds, and this ran once per RENDERED frame, so the
     // repeat interval was band * 60/fps: at 120 Hz the first tick at 900 m already fires at
@@ -1395,7 +1935,10 @@ export class Game {
     this.gateTickTimer -= dt;
         if (this.gateTickTimer <= 0) {
           this.gateTickTimer = band;
-          this.audio.play('gateNear', clamp01(1 - distance / 900));
+          this.audio.play(
+            'gateNear',
+            clamp01(1 - distance / FLIGHT_THRESHOLDS.gateTickRange),
+          );
         }
       } else {
         this.gateTickTimer = 0;
@@ -1413,7 +1956,8 @@ export class Game {
     });
     const intensity =
       this.phase === 'flying'
-        ? clamp01(0.34 + this.ship.speed01 * 0.5 + this.course.progress(this.ship.position) * 0.3)
+        ? clamp01(0.34 + this.ship.speed01 * 0.5
+          + this.mission.objective.guidance(this.ship.position).progress * 0.3)
         : this.phase === 'finished'
           ? 0.5
           : 0.22;
@@ -1440,57 +1984,144 @@ export class Game {
   // ---------------------------------------------------------------------------------
 
   private bindCourseEvents(): void {
-    this.course.onPass = (event) => {
-      this.gateHistory.push({
-        index: event.index,
-        time: event.time,
-        radialDistance: event.radialDistance,
-        speed: event.speed,
-        cleared: true,
-      });
-      this.telemetry.splits = this.course.passes.map((p) => p.time);
-      const precision = 1 - event.offset;
-      this.audio.play('gatePass', clamp01(0.4 + precision * 0.6));
-      const label = precision > 0.86 ? 'DEAD CENTRE' : precision > 0.6 ? 'CLEAN' : 'CLEARED';
-      const remaining = this.course.gates.length - this.course.nextIndex;
-      this.pushCallout(
-        label,
-        remaining > 0 ? `${remaining} CAIRN${remaining === 1 ? '' : 'S'} REMAINING` : 'TERMINUS AHEAD',
-        precision > 0.6 ? 'good' : 'neutral',
-        1.15,
-      );
-      this.pushLog(`cairn ${String(event.index + 1).padStart(2, '0')} · ${event.time.toFixed(2)}s`, 'good');
-      this.radio(event.index + 1);
-    };
+    const courseId = this.courseDefinition?.id;
+    if (this.mission.legacy && courseId === undefined) {
+      throw new Error('A legacy gate adapter requires a source course definition');
+    }
+    this.mission.legacy?.bindGateEvents({
+      onPass: (event) => {
+        const recharge = this.ship.rechargeBoost(FLIGHT.boostCapacity * 0.25);
+        this.gateHistory.push({
+          index: event.index,
+          time: event.time,
+          radialDistance: event.radialDistance,
+          speed: event.speed,
+          cleared: true,
+          boostEnergyBefore: recharge.before,
+          boostEnergyAfter: recharge.after,
+        });
+        this.telemetry.splits = [...this.mission.bestRunSplits()];
+        const precision = 1 - event.offset;
+        this.audio.play('gatePass', clamp01(0.4 + precision * 0.6));
+        const accuracy: GateAccuracy = precision > 0.86
+          ? 'dead-centre'
+          : precision > 0.6
+            ? 'clean'
+            : 'cleared';
+        const guidance = this.mission.objective.guidance(this.ship.position);
+        const remaining = guidance.total - guidance.current;
+        this.pushCallout({
+          titleMessage: GATE_ACCURACY_MESSAGES[accuracy],
+          sub: undefined,
+          subMessage: {
+            type: 'callout-sub.gate-progress',
+            remaining,
+            courseId,
+          },
+          tone: precision > 0.6 ? 'good' : 'neutral',
+          ttl: 1.15,
+        });
+        this.pushLog({
+          message: {
+            type: 'log.gate-cleared',
+            gate: event.index + 1,
+            seconds: event.time,
+            courseId,
+          },
+          tone: 'good',
+        });
+        this.queueRadio(event.index + 1);
+      },
 
-    this.course.onMiss = (gate) => {
-      this.audio.play('gateMiss');
-      this.pushCallout('MISSED', 'REALIGN AND RE-ENTER', 'warn', 1.6);
-      this.pushLog(`cairn ${String(gate.index + 1).padStart(2, '0')} missed`, 'warn');
-    };
+      onMiss: (event) => {
+        const shearBlocked = event.blockedBy === 'shear';
+        // Keep the proven miss voice, but strike it at full intensity for a shutter block. The
+        // differentiated callout carries the semantic truth without adding a new procedural graph.
+        this.audio.play('gateMiss', shearBlocked ? 1 : 0.5);
+        this.pushCallout({
+          titleMessage: shearBlocked ? GATE_SHEAR_BLOCKED_MESSAGE : GATE_MISSED_MESSAGE,
+          sub: undefined,
+          subMessage: shearBlocked ? GATE_SHEAR_WINDOW_MESSAGE : GATE_REALIGN_MESSAGE,
+          tone: 'warn',
+          ttl: 1.6,
+        });
+        this.pushLog({
+          message: {
+            type: 'log.gate-missed',
+            gate: event.gateIndex + 1,
+            courseId,
+            blockedBy: event.blockedBy ?? undefined,
+          },
+          tone: 'warn',
+        });
+      },
+    });
   }
 
-  private radio(step: number): void {
-    const line = RADIO_LINES.find((l) => l.at === step);
-    if (!line || this.lastRadio === step) return;
-    this.lastRadio = step;
-    this.audio.play('radio');
-    this.overlay.radio(line.speaker, line.text);
+  private queueRadio(afterGate: number): void {
+    const lines = this.missionDefinition.radio;
+    for (let i = 0; i < lines.length && i < this.radioTriggeredAt.length; i++) {
+      if (lines[i]!.afterGate === afterGate && this.radioTriggeredAt[i] === -1) {
+        this.radioTriggeredAt[i] = this.elapsed;
+      }
+    }
   }
 
-  private pushCallout(title: string, sub: string | null, tone: Callout['tone'], ttl: number): void {
+  private updateRadioSchedule(): void {
+    if (this.phase !== 'flying') return;
+
+    if (this.radioEndPending && this.elapsed >= this.radioBusyUntil) {
+      this.radioEndPending = false;
+      this.audio.play('radio');
+    }
+    if (this.telemetry.callout !== null || this.elapsed < this.radioBusyUntil) return;
+
+    const lines = this.missionDefinition.radio;
+    for (let i = 0; i < lines.length && i < this.radioTriggeredAt.length; i++) {
+      const triggeredAt = this.radioTriggeredAt[i]!;
+      if (triggeredAt < 0) continue;
+
+      const line = lines[i]!;
+      const englishText = LEGACY_ENGLISH.messages.campaign.routes[this.missionDefinition.id][line.messageKey];
+      const remainingWindow = line.safeWindowSeconds - (this.elapsed - triggeredAt);
+      this.radioTriggeredAt[i] = -2;
+      if (!hasRadioSafeWindow(englishText.length, remainingWindow)) continue;
+
+      const localizedText = this.activeTranslator.messages.campaign.routes[this.missionDefinition.id][line.messageKey];
+      const duration = radioDurationSeconds(englishText.length);
+      this.audio.play('radio');
+      this.overlay.radio(line.speaker, localizedText, englishText.length);
+      this.radioBusyUntil = this.elapsed + duration;
+      this.radioEndPending = true;
+      return;
+    }
+  }
+
+  private pushCallout(spec: CalloutSpec): void {
+    const title = LEGACY_ENGLISH.domain(spec.titleMessage);
+    const sub = spec.subMessage
+      ? LEGACY_ENGLISH.domain(spec.subMessage)
+      : spec.sub;
     this.telemetry.callout = {
       id: ++this.calloutId,
       title,
-      sub: sub ?? undefined,
-      tone,
-      ttl,
-      ttlMax: ttl,
+      titleMessage: spec.titleMessage,
+      sub,
+      subMessage: spec.subMessage,
+      tone: spec.tone,
+      ttl: spec.ttl,
+      ttlMax: spec.ttl,
     };
   }
 
-  private pushLog(text: string, tone: LogLine['tone']): void {
-    this.logLines.push({ id: ++this.logId, text, tone, age: 0 });
+  private pushLog(spec: LogSpec): void {
+    this.logLines.push({
+      id: ++this.logId,
+      text: LEGACY_ENGLISH.domain(spec.message),
+      message: spec.message,
+      tone: spec.tone,
+      age: 0,
+    });
     if (this.logLines.length > 6) this.logLines.shift();
   }
 
@@ -1528,9 +2159,7 @@ export class Game {
   private applyQualityPopulations(): void {
     const profile = this.settings.profile;
     const max = qualityProfile('ultra');
-    this.starfield.setVisibleCount(profile.starCount);
-    this.dust.setVisibleCount(profile.dustCount);
-    this.asteroids.setVisibleFraction(profile.asteroidCount / max.asteroidCount);
+    this.mission.world.applyQuality(profile, max);
   }
 
   /**
@@ -1621,13 +2250,31 @@ export class Game {
   /** Fired when the browser or driver drops the GPU context. */
   onContextLost: (() => void) | null = null;
 
-  private readonly handleContextLost = (event: Event): void => {
-    // Preventing the default is what allows a restore event to ever fire.
-    event.preventDefault();
+  /** Fired when the simulation halts after the same frame path repeatedly throws. */
+  onRuntimeFailure: (() => void) | null = null;
+
+  private haltRendering(): void {
     this.contextLost = true;
+    this.fontGeneration += 1;
+    this.fontPreparation?.cancel();
+    this.fontPreparation = null;
+    this.cancelCockpitPrewarm?.();
     this.paused = true;
     this.audio.suspend();
     this.input.releaseLock();
+    // A fatal condition can happen before the first present. Always settle the boot wait so the
+    // loader can hand control to the localized fatal screen instead of hanging indefinitely.
+    if (this.firstFrameResolve) {
+      const resolve = this.firstFrameResolve;
+      this.firstFrameResolve = null;
+      resolve();
+    }
+  }
+
+  private readonly handleContextLost = (event: Event): void => {
+    // Preventing the default is what allows a restore event to ever fire.
+    event.preventDefault();
+    this.haltRendering();
     this.errors.push('webgl context lost');
     this.onContextLost?.();
   };
@@ -1666,10 +2313,101 @@ export class Game {
   // automation surface
   // ---------------------------------------------------------------------------------
 
+  /**
+   * Compiles the cockpit's cold material variants while the loader still covers the canvas.
+   *
+   * The cockpit owns the only Three lights in the near scene. Compiling `mainScene` itself while
+   * the cockpit is visible therefore collects those lights exactly once and warms the same
+   * scene-context variants as the first live cockpit frame. Compiling only the cockpit root
+   * misses two programs used by other near-scene materials under that light state. The active
+   * render target is equally load-bearing: the cockpit is normally drawn into PostFX's linear
+   * HalfFloat target, and Three includes output colour-space state in its program cache key.
+   */
+  private async prewarmCockpitShaders(): Promise<void> {
+    const wasVisible = this.cockpitModel.object.visible;
+    const previousTarget = this.renderer.getRenderTarget();
+    const previousCubeFace = this.renderer.getActiveCubeFace();
+    const previousMipmapLevel = this.renderer.getActiveMipmapLevel();
+    const programs = new Set<ShaderProgramReadiness>();
+
+    try {
+      this.cockpitModel.setVisible(true);
+      this.renderer.setRenderTarget(this.post.sceneTarget);
+      const programsBefore = new Set(this.renderer.info.programs ?? []);
+      const materials = this.renderer.compile(this.mainScene, this.chase.camera);
+
+      // Three's public declarations omit WebGLProgram.isReady(), but compileAsync itself uses
+      // this same renderer-owned method. Track both each material's current program and every
+      // newly cached program so transparent two-pass variants are not missed.
+      for (const material of materials) {
+        const state = this.renderer.properties.get(material) as { currentProgram?: unknown };
+        if (hasShaderProgramReadiness(state.currentProgram)) programs.add(state.currentProgram);
+      }
+      for (const program of this.renderer.info.programs ?? []) {
+        if (!programsBefore.has(program) && hasShaderProgramReadiness(program)) programs.add(program);
+      }
+    } catch {
+      // Shader prewarming is an optimisation, never a launch requirement. The first real render
+      // remains the browser/driver fallback on implementations where compilation fails.
+    } finally {
+      this.cockpitModel.setVisible(wasVisible);
+      this.renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+    }
+
+    if (programs.size > 0) await this.waitForCockpitPrograms(programs);
+  }
+
+  /**
+   * A cancellable counterpart to Three's compileAsync poll. Three's implementation owns an
+   * unexposed recursive timer, so racing its promise cannot stop driver queries after our timeout
+   * and can call isReady() on deleted programs after dispose(). Owning the timer here makes both
+   * terminal paths synchronous and leaves no background work behind.
+   */
+  private waitForCockpitPrograms(programs: ReadonlySet<ShaderProgramReadiness>): Promise<void> {
+    return new Promise((resolve) => {
+      const deadline = performance.now() + COCKPIT_PREWARM_TIMEOUT_MS;
+      let timerId: number | null = null;
+      let finished = false;
+
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        if (timerId !== null) {
+          window.clearTimeout(timerId);
+          timerId = null;
+        }
+        if (this.cancelCockpitPrewarm === finish) this.cancelCockpitPrewarm = null;
+        resolve();
+      };
+      const poll = (): void => {
+        timerId = null;
+        if (this.disposed || this.contextLost || performance.now() >= deadline) {
+          finish();
+          return;
+        }
+        try {
+          for (const program of programs) {
+            if (!program.isReady()) {
+              timerId = window.setTimeout(poll, COCKPIT_PREWARM_POLL_MS);
+              return;
+            }
+          }
+        } catch {
+          // A driver that cannot report readiness falls back to compilation on first use.
+        }
+        finish();
+      };
+
+      this.cancelCockpitPrewarm?.();
+      this.cancelCockpitPrewarm = finish;
+      poll();
+    });
+  }
+
   start(): void {
     this.bindCourseEvents();
     this.fadeTarget = 1;
-    let last = performance.now();
+    let last = 0;
     const loop = (now: number): void => {
       if (this.disposed) return;
       const dt = (now - last) / 1000;
@@ -1683,17 +2421,25 @@ export class Game {
       if (this.driven) return;
       try {
         this.frame(dt);
+        this.frameFailures = 0;
       } catch (error) {
         this.errors.push(`frame: ${error instanceof Error ? error.message : String(error)}`);
         this.frameFailures++;
         // A defect that repeats every frame would otherwise spam until the tab dies.
         if (this.frameFailures > 60) {
-          this.contextLost = true;
-          this.onContextLost?.();
+          this.haltRendering();
+          this.onRuntimeFailure?.();
         }
       }
     };
-    requestAnimationFrame(loop);
+    const beginLoop = (): void => {
+      if (this.disposed) return;
+      // Do not charge loader-only shader work to the first simulation/performance sample.
+      last = performance.now();
+      requestAnimationFrame(loop);
+    };
+    // A rejected/timeout prewarm must not hold the loader or prevent the normal render fallback.
+    void this.prewarmCockpitShaders().then(beginLoop, beginLoop);
   }
 
   private driven = false;
@@ -1717,6 +2463,10 @@ export class Game {
       // `setFixedTimestep` fixes the STEP; this fixes the ORIGIN. Both are needed for two
       // processes to render the same frame.
       this.clock = 0;
+      this.shipVisualClock = 0;
+      // Reset the time origin without inventing an engine edge. A driver can take ownership in
+      // the middle of sustained boost, so the plume's baseline must match the live blend.
+      this.shipModel.rebasePlumeTime(0, this.boostBlend);
       this.grade.time = 0;
     }
   }
@@ -1729,12 +2479,190 @@ export class Game {
     return this.phase;
   }
 
+  getCameraMode(): CameraMode {
+    // Report the camera's applied projection state, not the saved preference. In harness-driven
+    // mode a setting can change between rendered frames, and those two values intentionally
+    // differ until updateVisuals applies the new pose/near plane.
+    return this.chase.getCameraMode();
+  }
+
+  /** Read-only cockpit evidence for deterministic integration and render-budget checks. */
+  getCockpitDebug(): CockpitDebugState {
+    return this.cockpitModel.getDebugState();
+  }
+
+  /** Read-only locale, fitted-label, source-pixel, and final-screen evidence for the MFD. */
+  getCockpitMfd(): CockpitMfdEvidence {
+    const evidence = this.cockpitModel.getMfdEvidence(this.chase.camera);
+    return {
+      ...evidence,
+      screenNdcCorners: evidence.projectedNdcCorners.map((corner) => this.toScreenNdc(corner)),
+      labelScreenNdcCorners: evidence.labelProjectedNdcCorners.map(
+        (corner) => this.toScreenNdc(corner),
+      ),
+    };
+  }
+
+  /**
+   * Invert the composite's radial warp so a projected scene point maps to its final PNG pixel.
+   * Shared by ship and cockpit evidence to keep both screenshot contracts on one implementation.
+   */
+  private toScreenNdc(
+    ndc: readonly [number, number, number],
+  ): [number, number, number] {
+    const centre = this.grade.blurCentre;
+    const dx = ndc[0] * 0.5 + 0.5 - centre.x;
+    const dy = ndc[1] * 0.5 + 0.5 - centre.y;
+    const sourceRadius = Math.hypot(dx, dy);
+    if (sourceRadius < 1e-9 || this.grade.warp <= 0) return [ndc[0], ndc[1], ndc[2]];
+    let outputRadius = sourceRadius;
+    for (let i = 0; i < 5; i++) {
+      const radius2 = outputRadius * outputRadius;
+      outputRadius -= (
+        outputRadius + this.grade.warp * outputRadius * radius2 - sourceRadius
+      ) / (1 + 3 * this.grade.warp * radius2);
+    }
+    const scale = outputRadius / sourceRadius;
+    return [
+      (centre.x + dx * scale) * 2 - 1,
+      (centre.y + dy * scale) * 2 - 1,
+      ndc[2],
+    ];
+  }
+
+  /** Read-only exterior renderer contract used by the boost VFX regression probe. */
+  getShipDebug(): HarnessShipVisualDebugState {
+    const debug = this.shipModel.getDebugState();
+    const plumeLength = debug.plume.length;
+    const plumeWidth = debug.plume.width;
+    this.shipModel.object.updateWorldMatrix(true, false);
+    this.chase.camera.updateMatrixWorld();
+    const projectLocal = (point: THREE.Vector3): [number, number, number] => {
+      const world = this.shipModel.object.localToWorld(point.clone());
+      const ndc = world.project(this.chase.camera);
+      return [ndc.x, ndc.y, ndc.z];
+    };
+    return {
+      ...debug,
+      engineProjection: this.shipModel.nozzles.map((nozzle) => {
+        const mouthNdc = projectLocal(nozzle.position);
+        const mouthRimNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0.38 * plumeWidth, 0, 0)),
+        );
+        const coreNdc = projectLocal(nozzle.position.clone().setZ(6.67));
+        const coreRimNdc = projectLocal(
+          nozzle.position.clone().setZ(6.67).add(new THREE.Vector3(0.14, 0, 0)),
+        );
+        const sheathMidNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0, 0, plumeLength * 0.38)),
+        );
+        const sheathMidRimNdc = projectLocal(nozzle.position.clone().add(new THREE.Vector3(
+          (0.38 * (1 - 0.38) + 0.012 * 0.38) * plumeWidth,
+          0,
+          plumeLength * 0.38,
+        )));
+        const tailNdc = projectLocal(
+          nozzle.position.clone().add(new THREE.Vector3(0, 0, plumeLength)),
+        );
+        return {
+          mouthNdc,
+          mouthRimNdc,
+          coreNdc,
+          coreRimNdc,
+          sheathMidNdc,
+          sheathMidRimNdc,
+          tailNdc,
+          mouthScreenNdc: this.toScreenNdc(mouthNdc),
+          mouthRimScreenNdc: this.toScreenNdc(mouthRimNdc),
+          coreScreenNdc: this.toScreenNdc(coreNdc),
+          coreRimScreenNdc: this.toScreenNdc(coreRimNdc),
+          sheathMidScreenNdc: this.toScreenNdc(sheathMidNdc),
+          sheathMidRimScreenNdc: this.toScreenNdc(sheathMidRimNdc),
+          tailScreenNdc: this.toScreenNdc(tailNdc),
+        };
+      }),
+    };
+  }
+
   getTelemetry(): Telemetry {
     return this.telemetry;
   }
 
-  getResult(): RunResult | null {
+  getLocaleState(): HarnessLocaleState {
+    return {
+      selected: this.selectedLocale,
+      active: this.activeRunLocale,
+      locked: this.activeRunLocale !== null,
+      settingsSubscribers: this.settings.subscriberCount,
+      fontStatus: this.fontResult.status,
+    };
+  }
+
+  getResult(): MissionResult | null {
     return this.result;
+  }
+
+  /** Automation-only structural damage injection for deterministic phase-boundary tests. */
+  damageHull(amount: number): number {
+    if (this.phase !== 'flying') return this.ship.hull;
+    return this.ship.applyHullDamage(amount);
+  }
+
+  /**
+   * Places the ship on a deterministic closing contact with a currently drawn asteroid.
+   * No damage is applied here: the next frame must traverse updateMotion -> mission.simulate ->
+   * Ship.applyImpact, which is why the playtest uses this alongside the direct phase-boundary
+   * injector above instead of mistaking that injector for evidence of a playable failure path.
+   * Hull and the run's contact sequence survive the physical reset, so repeated staging exercises
+   * cumulative production damage rather than a series of isolated first-hit samples.
+   */
+  stageCollision(): { rockId: number; overlap: number; closingSpeed: number } | null {
+    if (this.phase !== 'flying') return null;
+    const contact = this.mission.legacy?.stageContact('debris');
+    if (!contact || typeof contact.id !== 'number') return null;
+
+    const overlap = Math.min(6, contact.radius * 0.5);
+    const closingSpeed = FLIGHT_THRESHOLDS.maxImpactClosingSpeed;
+    this.tmpA.set(0.73, 0.41, -0.54).normalize();
+    this.tmpC.copy(this.tmpA).negate();
+    this.tmpQuat.setFromUnitVectors(this.tmpB.set(0, 0, -1), this.tmpC);
+    this.tmpB.copy(contact.position).addScaledVector(
+      this.tmpA,
+      contact.radius + this.ship.radius - overlap,
+    );
+    const hull = this.ship.hull;
+    this.ship.reset(this.tmpB, this.tmpQuat, closingSpeed);
+    this.ship.hull = hull;
+    this.chase.snapTo(this.ship);
+    for (const trail of this.trails) trail.reset();
+    return { rockId: contact.id, overlap, closingSpeed };
+  }
+
+  /** Stages a real contact against one authored landmark without changing asteroid contracts. */
+  stageLandmarkCollision(): {
+    colliderId: string;
+    overlap: number;
+    closingSpeed: number;
+  } | null {
+    if (this.phase !== 'flying') return null;
+    const contact = this.mission.legacy?.stageContact('landmark');
+    if (!contact || typeof contact.id !== 'string') return null;
+
+    const overlap = Math.min(6, contact.radius * 0.2);
+    const closingSpeed = FLIGHT_THRESHOLDS.maxImpactClosingSpeed;
+    this.tmpA.set(0.73, 0.41, -0.54).normalize();
+    this.tmpC.copy(this.tmpA).negate();
+    this.tmpQuat.setFromUnitVectors(this.tmpB.set(0, 0, -1), this.tmpC);
+    this.tmpB.copy(contact.position).addScaledVector(
+      this.tmpA,
+      contact.radius + this.ship.radius - overlap,
+    );
+    const hull = this.ship.hull;
+    this.ship.reset(this.tmpB, this.tmpQuat, closingSpeed);
+    this.ship.hull = hull;
+    this.chase.snapTo(this.ship);
+    for (const trail of this.trails) trail.reset();
+    return { colliderId: contact.id, overlap, closingSpeed };
   }
 
   setHarnessInput(input: HarnessInput | null): void {
@@ -1747,37 +2675,27 @@ export class Game {
   }
 
   seekCourse(t: number): void {
-    this.course.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
+    this.mission.path.poseAt(clamp01(t), this.tmpA, this.tmpQuat);
     this.ship.reset(this.tmpA, this.tmpQuat, FLIGHT.cruiseSpeed);
+    this.mission.legacy?.resetMotion();
     this.chase.snapTo(this.ship);
     for (const trail of this.trails) trail.reset();
-    // Re-arm the course so gate state matches where the ship actually is.
-    this.course.reset();
-    const index = Math.min(this.course.gates.length - 1, Math.floor(clamp01(t) * this.course.gates.length));
-    for (let i = 0; i < index; i++) {
-      this.course.gates[i].setState('cleared');
-    }
-    this.course.nextIndex = index;
-    this.course.gates[index]?.setState('armed');
+    this.mission.legacy?.seek(t);
   }
 
   setVantage(name: string): void {
     const v = this.vantages.find((x) => x.name === name);
-    if (!v) throw new Error(`unknown vantage: ${name}`);
+    if (!v) {
+      if (this.mission.legacy) throw new Error(`unknown vantage: ${name}`);
+      return;
+    }
     this.activeVantage = v;
     this.cinematic = false;
-    // Put the course into the state a player would actually be in at this point on the route,
-    // so a screenshot shows a lit, armed cairn rather than a dormant prop.
-    if (v.gateIndex !== undefined) {
-      this.course.reset();
-      for (let i = 0; i < v.gateIndex; i++) this.course.gates[i].setState('cleared');
-      this.course.nextIndex = v.gateIndex;
-      this.course.gates[v.gateIndex]?.setState('armed');
-    } else if (v.terminusStandoff !== undefined) {
-      this.course.reset();
-      for (const gate of this.course.gates) gate.setState('cleared');
-      this.course.nextIndex = this.course.gates.length;
-    }
+    this.mission.legacy?.resetMotion();
+    this.mission.legacy?.setVantageState(
+      v.gateIndex,
+      v.terminusStandoff !== undefined,
+    );
   }
 
   clearVantage(): void {
@@ -1838,13 +2756,18 @@ export class Game {
         return {
           position: [cam.position.x, cam.position.y, cam.position.z] as [number, number, number],
           forward: [f.x, f.y, f.z] as [number, number, number],
+          near: cam.near,
+          fov: cam.fov,
         };
       })(),
     };
   }
 
   getActiveInput(): Required<HarnessInput> {
-    const c = this.input.command;
+    // `failed` deliberately bypasses Input.update() and feeds the neutral drift command straight
+    // to Ship.update(). Expose that applied command rather than the last live stick sample; the
+    // harness contract is about authority that reached physics, not keys still held behind UI.
+    const c = this.phase === 'failed' ? FAILURE_DRIFT_COMMAND : this.input.command;
     return {
       pitch: c.pitch,
       yaw: c.yaw,
@@ -1859,40 +2782,27 @@ export class Game {
 
   /** See `HazardReport`. Walks the flown line and measures the room around it. */
   getHazard(samples = 900): HazardReport {
-    const nodes = [
-      this.course.startPosition.clone(),
-      ...this.course.gates.map((g) => g.position.clone()),
-      this.course.terminusPosition.clone(),
-    ];
-    const rocks = this.asteroids.activeInstances;
-    const point = new THREE.Vector3();
-    const clearances: number[] = [];
-    const perSegment = Math.max(2, Math.floor(samples / (nodes.length - 1)));
-
-    for (let i = 0; i < nodes.length - 1; i++) {
-      for (let s = 0; s < perSegment; s++) {
-        point.lerpVectors(nodes[i], nodes[i + 1], s / (perSegment - 1));
-        let nearest = Infinity;
-        for (const rock of rocks) {
-          const d = point.distanceTo(rock.position) - rock.radius;
-          if (d < nearest) nearest = d;
-        }
-        clearances.push(nearest);
-      }
-    }
-
-    const sorted = [...clearances].sort((a, b) => a - b);
-    const at = (f: number): number => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
-    return {
-      activeRocks: rocks.length,
-      gameplayRocks: this.asteroids.instances.filter((r) => r.gameplay).length,
-      totalRocks: this.asteroids.instances.length,
-      minClearance: +sorted[0].toFixed(1),
-      p05Clearance: +at(0.05).toFixed(1),
-      medianClearance: +at(0.5).toFixed(1),
-      tightFraction: +(clearances.filter((c) => c < 200).length / clearances.length).toFixed(3),
-      colliderSharesDrawnList:
-        this.lastCollisionList === null ? null : this.lastCollisionList === this.asteroids.activeInstances,
+    return this.mission.legacy?.hazard(samples, this.lastCollisionContacts) ?? {
+      activeRocks: 0,
+      gameplayRocks: 0,
+      totalRocks: 0,
+      minClearance: 0,
+      p05Clearance: 0,
+      medianClearance: 0,
+      tightFraction: 0,
+      colliderSharesDrawnList: null,
+      motion: {
+        count: 0,
+        cap: 0,
+        elapsed: 0,
+        maxDisplacement: 0,
+        displacementLimit: 0,
+        maxPlayerResponse: 0,
+        playerResponseLimit: 0,
+        minPlayerDistanceDelta: 0,
+        minProtectedVolumeClearance: 0,
+        signature: '',
+      },
     };
   }
 
@@ -1900,7 +2810,7 @@ export class Game {
   getChannelExcursion(): number {
     const pos = this.ship.position;
     let best = Infinity;
-    for (const seg of this.course.clearChannel) {
+    for (const seg of this.mission.path.clearChannel) {
       const d = distanceToSegment(pos, seg.a, seg.b) - seg.radius;
       if (d < best) best = d;
     }
@@ -1909,6 +2819,75 @@ export class Game {
 
   getGateHistory(): GatePassRecord[] {
     return this.gateHistory.slice();
+  }
+
+  getCourseState(): {
+    courseId: MissionDefinition['id'];
+    recordId: string;
+    seed: number;
+    gateCount: number;
+    length: number;
+    resolution: MissionResolution;
+  } {
+    const objective = this.mission.objective.telemetry();
+    return {
+      courseId: this.missionDefinition.id,
+      recordId: this.mission.recordId(this.seed),
+      seed: this.seed,
+      gateCount: objective.kind === 'gate-race'
+        ? objective.gatesTotal
+        : 0,
+      length: this.mission.path.totalLength,
+      resolution: { ...this.missionResolution },
+    };
+  }
+
+  getCampaignProgress(): ReturnType<ProgressStore['snapshot']> {
+    return this.progressStore.snapshot();
+  }
+
+  getCrossingHistory(): {
+    index: number;
+    time: number;
+    radialDistance: number;
+    normalizedOffset: number;
+    speed: number;
+    cleared: boolean;
+    blockedBy: 'aperture' | 'shear' | null;
+  }[] {
+    return this.mission.legacy?.crossings() ?? [];
+  }
+
+  /**
+   * Deterministic test seam for the one failure that cannot be staged by a straight seek: the
+   * course curve and authored gate plane are intentionally not interchangeable. This crosses the
+   * currently armed SHEAR gate through its always-blocked hub, so feedback is exercised through
+   * the same Course.update/onMiss path as real flight without exposing arbitrary world mutation.
+   */
+  stageShearBlock(): ReturnType<Game['getCrossingHistory']>[number] | null {
+    if (this.phase !== 'flying') return null;
+    return this.mission.legacy?.stageShearBlock(this.elapsed, this.ship.speed) ?? null;
+  }
+
+  getShearState(): ReturnType<NonNullable<MissionRuntime['legacy']>['shearState']> {
+    return this.mission.legacy?.shearState(this.elapsed) ?? null;
+  }
+
+  getStageLandmarkState(): HarnessStageLandmarkState {
+    return this.mission.legacy?.landmarkState() ?? {
+      kind: 'none',
+      landmarks: [],
+      signature: '',
+      draws: 0,
+      triangles: 0,
+      geometries: 0,
+      materials: 0,
+      colliders: 0,
+    };
+  }
+
+  getRouteUrl(missionId: MissionDefinition['id']): string {
+    return buildMissionUrl(window.location.href, missionId);
   }
 
   getAudioState(): ReturnType<AudioBus['debugMixState']> {
@@ -1951,7 +2930,12 @@ export class Game {
 
   dispose(): void {
     this.disposed = true;
+    this.fontGeneration += 1;
+    this.fontPreparation?.cancel();
+    this.fontPreparation = null;
+    this.cancelCockpitPrewarm?.();
     this.releaseUnlock();
+    this.cancelCountdownClear();
     if (this.resizeSettleTimer !== null) window.clearTimeout(this.resizeSettleTimer);
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('error', this.handleError);
@@ -1963,17 +2947,9 @@ export class Game {
     this.overlay.dispose();
     this.audio.dispose();
     this.post.dispose();
-    this.starfield.dispose();
-    this.star.dispose();
-    this.planet.dispose();
-    this.nebulaTarget.dispose();
-    this.asteroids.dispose();
-    this.derelicts.dispose();
-    this.shelfSpan.dispose();
-    this.dust.dispose();
-    this.terminus.dispose();
-    this.course.dispose();
+    this.mission.dispose();
     this.shipModel.dispose();
+    this.cockpitModel.dispose();
     for (const trail of this.trails) trail.dispose();
     this.renderer.dispose();
   }

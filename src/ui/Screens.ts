@@ -7,8 +7,18 @@
  * keyboard path and the pointer path are the same path.
  */
 
-import type { HudHost, QualityLevel, RunResult, Settings } from '../core/contracts.ts';
-import { FICTION } from '../core/art.ts';
+import type { HudHost, Locale, MissionResult, QualityLevel, Settings } from '../core/contracts.ts';
+import { PRECISION_MAX_OFFSET } from '../core/Courses.ts';
+import {
+  ACTIVE_MISSION_ORDER,
+  getMissionDefinition,
+  type MasteryId,
+  type MissionCapability,
+  type MissionChapter,
+  type MissionId,
+} from '../core/Missions.ts';
+import type { Translator } from '../i18n/index.ts';
+import type { ControlMessages, SettingMessages } from '../i18n/messages.ts';
 import {
   clamp,
   distanceUnit,
@@ -18,6 +28,7 @@ import {
   formatTime,
   retrigger,
 } from './Hud.ts';
+import { formatPrecisionOffsetPercent } from './precision.ts';
 
 export type ScreenView =
   | 'none'
@@ -31,29 +42,108 @@ export type ScreenView =
 
 export type UiSound = 'hover' | 'click' | 'back' | 'move';
 
-/**
- * Original pre-run fiction. Short: the visuals carry the mood.
- *
- * The closing line names the brake as the answer to a specific problem rather than listing it
- * as a key. It previously read "do not slow for anything that is not a marker", written when
- * the corridor was a 320 m debris-free tube — advice that told the player the one verb they
- * most need is the one thing not to use, and which the course now punishes at 145 m clearance.
- * It is also kept the shortest of the three: a closing beat that runs longer than the lines
- * setting it up stops landing.
- */
-const BRIEF_LINES: readonly string[] = [
-  'ACHRA is going out. Every hour it sheds another kilometre of shelf ice and tumbling iron across the only corridor anything hull-sized can still survive.',
-  'The cairns answer a hail — nine of them, set by hands that stopped setting things a long time ago. They are the line.',
-  'Fly them in order. The line between two markers is not empty — on the tight legs the rock comes in close, and only the brake buys you room.',
-];
+export type ScreenAction =
+  | 'begin'
+  | 'settings'
+  | 'controls'
+  | 'engage'
+  | 'return'
+  | 'resume'
+  | 'restart'
+  | 'abort'
+  | 'retry'
+  | 'select-stage'
+  | 'next-stage'
+  | 'run-again'
+  | 'new-layout'
+  | 'stage-select';
+
+export type CampaignMissionState = 'locked' | 'available' | 'cleared';
+export type CampaignNavigationError = 'navigation-failed' | 'storage-unavailable';
+
+export interface CampaignMissionView {
+  readonly id: MissionId;
+  readonly chapter: MissionChapter;
+  readonly capabilities: readonly MissionCapability[];
+  readonly mastery: readonly { readonly id: MasteryId; readonly complete: boolean }[];
+  readonly state: CampaignMissionState;
+  readonly highestRank: string | null;
+  readonly objectives: {
+    readonly firstClear: boolean;
+    readonly cleanClear: boolean;
+    readonly precision: boolean;
+  };
+}
+
+/** Complete, presentation-ready campaign state. Screens never reads storage or derives unlocks. */
+export interface CampaignViewModel {
+  readonly activeMissionId: MissionId;
+  readonly missions: readonly CampaignMissionView[];
+  /** Next active mission already authorised by Progress; Screens never infers an unlock. */
+  readonly nextMissionId?: MissionId | null;
+  readonly newlyUnlockedMissionId?: MissionId | null;
+  readonly navigationError?: CampaignNavigationError | null;
+}
+
+export interface ScreenFocusToken {
+  view: ScreenView;
+  action?: ScreenAction;
+  nav?: string;
+  locale?: Locale;
+  stage?: MissionId;
+}
+
+const CHAPTER_STAGE_IDS: readonly MissionId[] = ACTIVE_MISSION_ORDER;
+const CAMPAIGN_BRIEF_KEYS = [
+  'briefingLine1',
+  'briefingLine2',
+  'briefingLine3',
+] as const;
+
+function defaultCampaignView(): CampaignViewModel {
+  const activeMissionId = ACTIVE_MISSION_ORDER[0]!;
+  return {
+    activeMissionId,
+    nextMissionId: null,
+    newlyUnlockedMissionId: null,
+    navigationError: null,
+    missions: ACTIVE_MISSION_ORDER.map((id, index) => {
+      const definition = getMissionDefinition(id);
+      return {
+        id,
+        chapter: definition.chapter,
+        capabilities: definition.capabilities,
+        mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+        state: index === 0 ? 'available' : 'locked',
+        highestRank: null,
+        objectives: { firstClear: false, cleanClear: false, precision: false },
+      };
+    }),
+  };
+}
+
+export type ControlId =
+  | 'mouse-steer'
+  | 'throttle'
+  | 'roll'
+  | 'boost'
+  | 'brake'
+  | 'strafe-horizontal'
+  | 'strafe-vertical'
+  | 'keyboard-steer'
+  | 'camera-toggle'
+  | 'pause'
+  | 'restart';
 
 interface ControlRow {
+  /** Stable semantic identifier for UI contracts, independent of the displayed copy. */
+  readonly id: ControlId;
   /**
    * Alternative bindings for one verb. Keys inside a group are a set ("W / S"); separate
-   * groups are alternatives and render with an "or" between them ("SHIFT or LMB").
+   * groups are alternatives and render with an "or" between them ("SPACE or RMB").
    */
   readonly groups: readonly (readonly string[])[];
-  readonly action: string;
+  readonly action: keyof ControlMessages;
   /** Also shown in the briefing primer. Flagged per row so reordering cannot silently change it. */
   readonly primer?: boolean;
   /**
@@ -61,94 +151,190 @@ interface ControlRow {
    * The full legend keeps the longer text — that screen has the width and the reader's
    * attention; the primer has neither.
    */
-  readonly short?: string;
+  readonly short?: keyof ControlMessages;
 }
 
 /**
- * Authoritative bindings, mirrored from src/core/Input.ts. Boost and brake are the two verbs
- * the game is actually about, so they lead the primer alongside steering and throttle.
+ * Authoritative bindings, mirrored from src/core/Input.ts. The primer includes both steering
+ * paths and the view toggle: a first-run player must not conclude that mouse capture is required
+ * or miss the cockpit that makes the ship readable from the pilot's seat.
  */
 const CONTROLS: readonly ControlRow[] = [
-  { groups: [['MOUSE']], action: 'Steer — virtual stick, self-centring', primer: true, short: 'Steer' },
-  { groups: [['W', 'S']], action: 'Throttle up / down', primer: true },
-  { groups: [['A', 'D']], action: 'Roll left / right', primer: true },
-  { groups: [['SHIFT'], ['LMB']], action: 'Boost', primer: true },
-  { groups: [['SPACE'], ['RMB']], action: 'Brake and drift', primer: true },
-  { groups: [['Q', 'E']], action: 'Strafe left / right' },
-  { groups: [['R', 'F']], action: 'Strafe up / down' },
-  { groups: [['↑', '↓', '←', '→']], action: 'Pitch / yaw without the mouse' },
-  { groups: [['ESC']], action: 'Pause' },
-  { groups: [['N']], action: 'Restart the run' },
+  { id: 'mouse-steer', groups: [['MOUSE']], action: 'mouseSteer', primer: true, short: 'mouseSteerShort' },
+  { id: 'throttle', groups: [['W', 'S']], action: 'throttle', primer: true },
+  { id: 'roll', groups: [['A', 'D']], action: 'roll', primer: true },
+  { id: 'boost', groups: [['SHIFT'], ['LMB']], action: 'boost', primer: true },
+  { id: 'brake', groups: [['SPACE'], ['RMB']], action: 'brake', primer: true },
+  { id: 'strafe-horizontal', groups: [['Q', 'E']], action: 'strafeHorizontal' },
+  { id: 'strafe-vertical', groups: [['R', 'F']], action: 'strafeVertical' },
+  {
+    id: 'keyboard-steer',
+    groups: [['↑', '↓', '←', '→']],
+    action: 'keyboardSteer',
+    primer: true,
+    short: 'keyboardSteerShort',
+  },
+  {
+    id: 'camera-toggle',
+    groups: [['C']],
+    action: 'cameraToggle',
+    primer: true,
+    short: 'cameraToggleShort',
+  },
+  { id: 'pause', groups: [['ESC']], action: 'pause' },
+  { id: 'restart', groups: [['N']], action: 'restart' },
 ];
 
 /** Key chips for one binding row, shared by the CONTROLS legend and the briefing primer. */
-function keyChips(row: ControlRow): HTMLElement {
+function keyChips(row: ControlRow, orLabel: string): HTMLElement {
   const wrap = el('span', 'lv-key-keys');
   for (let g = 0; g < row.groups.length; g++) {
-    if (g > 0) wrap.appendChild(el('span', 'lv-key-or', 'or'));
+    if (g > 0) wrap.appendChild(el('span', 'lv-key-or', orLabel));
     const group = row.groups[g]!;
-    for (let k = 0; k < group.length; k++) wrap.appendChild(el('kbd', '', group[k]!));
+    for (let k = 0; k < group.length; k++) {
+      const chip = el('kbd', '', group[k]!);
+      chip.lang = 'en';
+      wrap.appendChild(chip);
+    }
   }
   return wrap;
 }
 
+/**
+ * Writes one complete catalog string while exposing a deliberately small set of Latin tokens
+ * to assistive technology. Text is never parsed as markup: ordinary runs become text nodes and
+ * exact token matches become `lang=en` spans.
+ */
+function writeEnglishTokens(node: HTMLElement, text: string, tokens: readonly string[]): HTMLElement {
+  node.textContent = '';
+  let offset = 0;
+  while (offset < text.length) {
+    let nextToken = '';
+    let nextIndex = text.length;
+    for (const token of tokens) {
+      const index = text.indexOf(token, offset);
+      if (index >= 0 && index < nextIndex) {
+        nextIndex = index;
+        nextToken = token;
+      }
+    }
+    if (!nextToken) {
+      node.appendChild(document.createTextNode(text.slice(offset)));
+      break;
+    }
+    if (nextIndex > offset) node.appendChild(document.createTextNode(text.slice(offset, nextIndex)));
+    const token = el('span', '', nextToken);
+    token.lang = 'en';
+    node.appendChild(token);
+    offset = nextIndex + nextToken.length;
+  }
+  if (text.length === 0) node.textContent = '';
+  return node;
+}
+
+function englishText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
+  const node = el(tag, cls, text);
+  node.lang = 'en';
+  return node;
+}
+
 /* -------------------------------------------------------------- settings map */
 
-type RowSpec =
-  | {
-      kind: 'enum';
-      key: keyof Settings;
-      label: string;
-      hint: string;
-      options: readonly (readonly [string, string])[];
-    }
-  | {
-      kind: 'range';
-      key: keyof Settings;
-      label: string;
-      hint: string;
-      min: number;
-      max: number;
-      step: number;
-      fmt: (v: number) => string;
-    }
-  | { kind: 'bool'; key: keyof Settings; label: string; hint: string };
+type SettingTextKey = keyof SettingMessages;
+type EnumSettingKey = 'assistLevel' | 'cameraMode' | 'quality';
+type RangeSettingKey =
+  | 'mouseSensitivity'
+  | 'fov'
+  | 'cameraShake'
+  | 'renderScale'
+  | 'masterVolume'
+  | 'musicVolume';
+type BoolSettingKey = 'invertY' | 'showFps' | 'motionBlur' | 'filmGrain' | 'chromaticAberration';
+
+type EnumRow = {
+  [K in EnumSettingKey]: {
+    readonly kind: 'enum';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+    readonly options: readonly (readonly [value: Settings[K], label: SettingTextKey])[];
+  }
+}[EnumSettingKey];
+
+type RangeRow = {
+  [K in RangeSettingKey]: {
+    readonly kind: 'range';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+    readonly min: number;
+    readonly max: number;
+    readonly step: number;
+    readonly fmt: (v: number) => string;
+  }
+}[RangeSettingKey];
+
+type BoolRow = {
+  [K in BoolSettingKey]: {
+    readonly kind: 'bool';
+    readonly key: K;
+    readonly label: SettingTextKey;
+    readonly hint?: SettingTextKey;
+  }
+}[BoolSettingKey];
+
+type RowSpec = EnumRow | RangeRow | BoolRow;
+
+interface SettingGroup {
+  readonly title: SettingTextKey;
+  readonly rows: readonly RowSpec[];
+}
 
 const pct = (v: number): string => `${Math.round(v * 100)}%`;
 const mult = (v: number): string => `${v.toFixed(2)}×`;
 const deg = (v: number): string => `${Math.round(v)}°`;
 
-const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
+const SETTING_GROUPS = [
   {
-    title: 'FLIGHT',
+    title: 'sectionFlight',
     rows: [
       {
         kind: 'enum',
         key: 'assistLevel',
-        label: 'Flight assist',
-        hint: 'How much the avionics damp your inputs.',
+        label: 'flightAssist',
+        hint: 'flightAssistHint',
         options: [
-          ['arcade', 'ARCADE'],
-          ['standard', 'STANDARD'],
-          ['raw', 'RAW'],
+          ['arcade', 'arcade'],
+          ['standard', 'standard'],
+          ['raw', 'raw'],
+        ],
+      },
+      {
+        kind: 'enum',
+        key: 'cameraMode',
+        label: 'defaultCamera',
+        hint: 'defaultCameraHint',
+        options: [
+          ['chase', 'chase'],
+          ['cockpit', 'cockpit'],
+          ['far-chase', 'farChase'],
         ],
       },
       {
         kind: 'range',
         key: 'mouseSensitivity',
-        label: 'Mouse sensitivity',
-        hint: '',
+        label: 'mouseSensitivity',
         min: 0.2,
         max: 3,
         step: 0.05,
         fmt: mult,
       },
-      { kind: 'bool', key: 'invertY', label: 'Invert pitch', hint: '' },
+      { kind: 'bool', key: 'invertY', label: 'invertPitch' },
       {
         kind: 'range',
         key: 'fov',
-        label: 'Field of view',
-        hint: 'Wider reads faster, narrower reads further.',
+        label: 'fieldOfView',
+        hint: 'fieldOfViewHint',
         /* 100, not 110: `Settings.ts` sanitises fov to [60, 100] and `commit -> syncSettings ->
            apply()` rewrites input.value from the sanitised store on every input event, so the
            thumb was actively driven back down and the top 20% of the track was dead. `.lv-slider-in`
@@ -164,8 +350,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       {
         kind: 'range',
         key: 'cameraShake',
-        label: 'Camera shake',
-        hint: '',
+        label: 'cameraShake',
         /* 1, not 2: `Settings.ts` sanitises cameraShake with clamp01. Same defect as fov above —
            half this track was dead travel. */
         min: 0,
@@ -176,25 +361,24 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
     ],
   },
   {
-    title: 'DISPLAY',
+    title: 'sectionDisplay',
     rows: [
       {
         kind: 'enum',
         key: 'quality',
-        label: 'Quality',
-        hint: '',
+        label: 'quality',
         options: [
-          ['low', 'LOW'],
-          ['medium', 'MED'],
-          ['high', 'HIGH'],
-          ['ultra', 'ULTRA'],
+          ['low', 'low'],
+          ['medium', 'medium'],
+          ['high', 'high'],
+          ['ultra', 'ultra'],
         ],
       },
       {
         kind: 'range',
         key: 'renderScale',
-        label: 'Render scale',
-        hint: 'Internal resolution. Drop it before you drop quality.',
+        label: 'renderScale',
+        hint: 'renderScaleHint',
         // 0.6, not 0.5: the sanitiser clamps to the adaptive controller's own floor of 0.58, so
         // everything below that was travel the player could move and the game could not honour.
         min: 0.6,
@@ -220,25 +404,24 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
         step: 0.02,
         fmt: pct,
       },
-      { kind: 'bool', key: 'showFps', label: 'Frame counter', hint: '' },
+      { kind: 'bool', key: 'showFps', label: 'frameCounter' },
     ],
   },
   {
-    title: 'IMAGE',
+    title: 'sectionImage',
     rows: [
-      { kind: 'bool', key: 'motionBlur', label: 'Motion blur', hint: '' },
-      { kind: 'bool', key: 'filmGrain', label: 'Film grain', hint: '' },
-      { kind: 'bool', key: 'chromaticAberration', label: 'Chromatic aberration', hint: '' },
+      { kind: 'bool', key: 'motionBlur', label: 'motionBlur' },
+      { kind: 'bool', key: 'filmGrain', label: 'filmGrain' },
+      { kind: 'bool', key: 'chromaticAberration', label: 'chromaticAberration' },
     ],
   },
   {
-    title: 'AUDIO',
+    title: 'sectionAudio',
     rows: [
       {
         kind: 'range',
         key: 'masterVolume',
-        label: 'Master',
-        hint: '',
+        label: 'masterVolume',
         min: 0,
         max: 1,
         step: 0.01,
@@ -247,8 +430,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       {
         kind: 'range',
         key: 'musicVolume',
-        label: 'Score',
-        hint: '',
+        label: 'music',
         min: 0,
         max: 1,
         step: 0.01,
@@ -256,7 +438,7 @@ const SETTING_GROUPS: readonly { title: string; rows: readonly RowSpec[] }[] = [
       },
     ],
   },
-];
+] as const satisfies readonly SettingGroup[];
 
 /* -------------------------------------------------------------------- screens */
 
@@ -272,8 +454,21 @@ export class Screens {
 
   private readonly host: HudHost;
   private readonly opts: ScreensOptions;
+  private readonly translator: Translator;
   private readonly views = new Map<ScreenView, HTMLElement>();
   private view: ScreenView = 'none';
+  private campaign: CampaignViewModel = defaultCampaignView();
+
+  private nTitleSector: HTMLElement | null = null;
+  private nTitleTagline: HTMLElement | null = null;
+  private nBriefTitle: HTMLElement | null = null;
+  private nBriefTransit: HTMLElement | null = null;
+  private readonly nBriefLines: HTMLElement[] = [];
+  private readonly stageNodes = new Map<MissionId, {
+    button: HTMLButtonElement;
+    status: HTMLElement;
+    selected: HTMLElement;
+  }>();
 
   private readonly nCountNum: HTMLElement;
   private readonly nCountRing: SVGCircleElement;
@@ -289,6 +484,12 @@ export class Screens {
      read from telemetry instead of typed — see setCourseFacts. */
   private nStatCorridor: HTMLElement | null = null;
   private nStatMarkers: HTMLElement | null = null;
+  private nStatMarkersLabel: HTMLElement | null = null;
+  private nStatCorridorLabel: HTMLElement | null = null;
+  private nStatPrimaryLabel: HTMLElement | null = null;
+  private nStatPrimaryValue: HTMLElement | null = null;
+  private nStatStateLabel: HTMLElement | null = null;
+  private nStatStateValue: HTMLElement | null = null;
   private pCorridor = -1;
   private pMarkers = -1;
 
@@ -296,9 +497,10 @@ export class Screens {
   private navIndex = 0;
   private lastCountdown: number | null = null;
 
-  constructor(host: HudHost, opts: ScreensOptions) {
+  constructor(host: HudHost, opts: ScreensOptions, translator: Translator) {
     this.host = host;
     this.opts = opts;
+    this.translator = translator;
     this.el = el('div', 'lv-screens');
 
     this.el.appendChild(this.buildTitle());
@@ -340,6 +542,275 @@ export class Screens {
     return this.view;
   }
 
+  /** Places real DOM focus on the active mode after a result-screen return. */
+  focusStageSelection(): void {
+    if (this.view !== 'title') return;
+    const button = this.stageNodes.get(this.campaign.activeMissionId)?.button;
+    const title = this.views.get('title');
+    if (!button || !title || button.closest('[hidden]')) return;
+
+    let index = this.navItems.indexOf(button);
+    if (index < 0) {
+      this.collectNav(title);
+      index = this.navItems.indexOf(button);
+    }
+    if (index < 0) return;
+    this.navIndex = index;
+    button.focus({ preventScroll: true });
+    button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /**
+   * Synchronises campaign presentation from a single host-owned snapshot. The host remains the
+   * authority for unlock and persistence rules; this layer only renders the supplied states.
+   */
+  syncCampaign(viewModel: CampaignViewModel): void {
+    const active = viewModel.missions.find(
+      (mission) => mission.id === viewModel.activeMissionId && mission.state !== 'locked',
+    );
+    const fallback = viewModel.missions.find(
+      (mission) => mission.id === ACTIVE_MISSION_ORDER[0] && mission.state !== 'locked',
+    );
+    const activeMissionId = active?.id ?? fallback?.id ?? ACTIVE_MISSION_ORDER[0]!;
+    this.campaign = { ...viewModel, activeMissionId };
+
+    const m = this.translator.messages;
+    const routeCopy = m.campaign.routes[activeMissionId];
+    const collectionChapter = activeMissionId === 'relay-harvest';
+    if (this.nTitleSector) this.nTitleSector.textContent = routeCopy.sectorName;
+    if (this.nTitleTagline) {
+      writeEnglishTokens(
+        this.nTitleTagline,
+        routeCopy.tagline,
+        [
+          'CAIRN',
+          'TERMINUS',
+          'WRECKLINE',
+          'NADIR RELAY',
+          'ENGINE SPINE',
+          'VECTOR',
+          'ORISON ARRAY',
+          'BLACKOUT RELAY',
+          'RELAY HEART',
+        ],
+      );
+    }
+    if (this.nBriefTitle) this.nBriefTitle.textContent = routeCopy.sectorName;
+    if (this.nBriefTransit) {
+      writeEnglishTokens(
+        this.nBriefTransit,
+        `${m.screens.transitTo} ${routeCopy.destination}`,
+        [routeCopy.destination],
+      );
+    }
+    if (this.nStatMarkersLabel) {
+      this.nStatMarkersLabel.textContent = collectionChapter ? m.screens.sources : m.screens.markers;
+    }
+    if (this.nStatCorridorLabel) {
+      this.nStatCorridorLabel.textContent = collectionChapter ? m.screens.required : m.screens.corridor;
+    }
+    if (this.nStatPrimaryLabel) {
+      this.nStatPrimaryLabel.textContent = collectionChapter ? m.screens.relay : m.screens.primary;
+    }
+    if (this.nStatPrimaryValue) {
+      this.nStatPrimaryValue.textContent = collectionChapter ? m.screens.blackout : m.meta.starName;
+    }
+    if (this.nStatStateLabel) {
+      this.nStatStateLabel.textContent = collectionChapter ? m.screens.field : m.screens.drift;
+    }
+    if (this.nStatStateValue) {
+      this.nStatStateValue.textContent = collectionChapter ? m.screens.live : m.screens.closing;
+    }
+    this.pMarkers = -1;
+    this.pCorridor = -1;
+    for (let i = 0; i < this.nBriefLines.length; i++) {
+      writeEnglishTokens(
+        this.nBriefLines[i]!,
+        routeCopy[CAMPAIGN_BRIEF_KEYS[i]!] ?? '',
+        [
+          'ACHRA',
+          'CAIRN',
+          'WRECKLINE',
+          'TWIN KEELS',
+          'THE FRACTURE',
+          'ENGINE SPINE',
+          'VECTOR',
+          'TWIN SPIRES',
+          'ORISON ARCH',
+          'ORISON ARRAY',
+          'BLACKOUT RELAY',
+          'COLLECTOR ARM',
+          'CORE',
+          'RELAY CHARGE',
+          'BOOST',
+        ],
+      );
+    }
+
+    for (const id of CHAPTER_STAGE_IDS) {
+      const route = viewModel.missions.find((candidate) => candidate.id === id);
+      const nodes = this.stageNodes.get(id);
+      if (!nodes) continue;
+      const state = route?.state
+        ?? (ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked');
+      const selected = id === activeMissionId;
+      const storageBlocked =
+        viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
+      nodes.button.dataset['stageState'] = state;
+      nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
+      nodes.button.dataset['modeSelected'] = selected ? '1' : '0';
+      nodes.button.tabIndex = 0;
+      nodes.button.setAttribute('aria-current', selected ? 'true' : 'false');
+      nodes.button.setAttribute(
+        'aria-disabled',
+        state === 'locked' || storageBlocked ? 'true' : 'false',
+      );
+      if (storageBlocked) nodes.button.setAttribute('aria-describedby', 'lv-campaign-error-title');
+      else nodes.button.removeAttribute('aria-describedby');
+      nodes.status.textContent = state === 'locked'
+        ? m.a11y.stageLocked
+        : state === 'cleared'
+          ? m.a11y.stageCleared
+          : m.a11y.stageAvailable;
+      nodes.selected.textContent = selected ? m.a11y.stageSelected : '';
+      nodes.selected.hidden = !selected;
+    }
+
+    this.syncCampaignErrors();
+    this.syncObjectiveLists();
+  }
+
+  private campaignMission(id: MissionId = this.campaign.activeMissionId): CampaignMissionView {
+    const mission = this.campaign.missions.find((candidate) => candidate.id === id);
+    if (mission) return mission;
+    const definition = getMissionDefinition(id);
+    return {
+      id,
+      chapter: definition.chapter,
+      capabilities: definition.capabilities,
+      mastery: definition.mastery.map((masteryId) => ({ id: masteryId, complete: false })),
+      state: ACTIVE_MISSION_ORDER.indexOf(id) === 0 ? 'available' : 'locked',
+      highestRank: null,
+      objectives: { firstClear: false, cleanClear: false, precision: false },
+    };
+  }
+
+  private syncCampaignErrors(): void {
+    const error = this.campaign.navigationError;
+    const text = error ? this.translator.messages.campaign[
+      error === 'storage-unavailable' ? 'storageUnavailable' : 'navigationFailed'
+    ] : '';
+    const nodes = this.el.querySelectorAll<HTMLElement>('[data-campaign-error]');
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i]!.textContent = text;
+      nodes[i]!.hidden = text.length === 0;
+    }
+  }
+
+  private syncObjectiveLists(): void {
+    const route = this.campaignMission();
+    const lists = this.el.querySelectorAll<HTMLElement>('[data-objective-list]');
+    for (let i = 0; i < lists.length; i++) this.writeObjectiveList(lists[i]!, route);
+  }
+
+  private writeObjectiveList(
+    list: HTMLElement,
+    route: CampaignMissionView,
+    result?: MissionResult,
+  ): void {
+    const m = this.translator.messages;
+    const copy = m.campaign.routes[route.id].objectives;
+    const masteryLabel = (_id: MasteryId): string => copy.precision;
+    const rows = [
+      { id: 'first-clear', label: copy.firstClear, complete: route.objectives.firstClear, value: '', target: true },
+      {
+        id: 'highest-rank',
+        label: copy.highestRank,
+        complete: route.highestRank === 'S',
+        value: route.highestRank ?? m.campaign.noRank,
+        target: true,
+      },
+      { id: 'clean-clear', label: copy.cleanClear, complete: route.objectives.cleanClear, value: '', target: true },
+      ...route.mastery.map((entry) => ({
+        id: entry.id,
+        label: masteryLabel(entry.id),
+        complete: entry.complete,
+        value: '',
+        target: true,
+      })),
+    ];
+    const focusId = result
+      ? rows.find((row) => row.target && !row.complete)?.id ?? null
+      : null;
+    list.textContent = '';
+    if (result) list.dataset['mastered'] = focusId === null ? '1' : '0';
+    else delete list.dataset['mastered'];
+    for (const { id, label, complete, value } of rows) {
+      const row = el('li', 'lv-objective');
+      row.dataset['objective'] = id;
+      row.dataset['complete'] = complete ? '1' : '0';
+      if (id === focusId) row.dataset['focus'] = '1';
+      const state = el('span', 'lv-objective-state', complete ? '◆' : '◇');
+      state.setAttribute('aria-hidden', 'true');
+      const name = writeEnglishTokens(
+        el('span', 'lv-objective-name'),
+        label,
+        ['CAIRN DRIFT', 'BLACKOUT RELAY', 'WRECKLINE', 'RINGFALL'],
+      );
+      name.lang = 'en';
+      if (id === focusId) {
+        name.appendChild(englishText('span', 'lv-objective-next', m.campaign.nextObjective));
+      }
+      const valueNode = englishText(
+        'span',
+        'lv-objective-value',
+        value || (complete ? m.campaign.complete : m.campaign.incomplete),
+      );
+      row.append(state, name, valueNode);
+      list.appendChild(row);
+    }
+  }
+
+  captureFocusToken(): ScreenFocusToken | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !this.el.contains(active)) return null;
+    const view = active.closest<HTMLElement>('[data-view]');
+    if (!view || view.dataset['open'] !== '1') return null;
+    const nav = active.closest<HTMLElement>('[data-nav]');
+    return {
+      view: view.dataset['view'] as ScreenView,
+      action: active.dataset['action'] as ScreenAction | undefined,
+      nav: nav?.dataset['nav'],
+      locale: active.dataset['locale'] as Locale | undefined,
+      stage: active.dataset['stageId'] as MissionId | undefined,
+    };
+  }
+
+  restoreFocusToken(token: ScreenFocusToken | null): void {
+    if (!token || token.view !== this.view) return;
+    const view = this.views.get(token.view);
+    if (!view) return;
+    const candidates = view.querySelectorAll<HTMLElement>('[data-nav], [data-locale]');
+    let match: HTMLElement | null = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i]!;
+      if (candidate.closest('[hidden]')) continue;
+      const candidateNav = candidate.closest<HTMLElement>('[data-nav]');
+      if (token.action !== undefined && candidate.dataset['action'] !== token.action) continue;
+      if (token.nav !== undefined && candidateNav?.dataset['nav'] !== token.nav) continue;
+      if (token.locale !== undefined && candidate.dataset['locale'] !== token.locale) continue;
+      if (token.stage !== undefined && candidate.dataset['stageId'] !== token.stage) continue;
+      match = candidate;
+      break;
+    }
+    if (!match) return;
+    const nav = match.closest<HTMLElement>('[data-nav]');
+    const index = nav ? this.navItems.indexOf(nav) : -1;
+    if (index >= 0) this.navIndex = index;
+    match.focus({ preventScroll: true });
+    match.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
   show(view: ScreenView): void {
     if (view === this.view) return;
     const prev = this.views.get(this.view);
@@ -364,11 +835,11 @@ export class Screens {
   /* -------------------------------------------------------------- navigation */
 
   private collectNav(root: HTMLElement): void {
-    const found = root.querySelectorAll<HTMLElement>('[data-nav]');
+    const found = [...root.querySelectorAll<HTMLElement>('[data-nav]')];
     this.navItems.length = 0;
     for (let i = 0; i < found.length; i++) {
       const node = found[i]!;
-      if (node.dataset['disabled'] !== '1') this.navItems.push(node);
+      if (node.dataset['disabled'] !== '1' && !node.closest('[hidden]')) this.navItems.push(node);
     }
     this.navIndex = 0;
   }
@@ -395,6 +866,51 @@ export class Screens {
     if (sound) this.opts.onSound('move');
   }
 
+  /**
+   * Result actions reflow from a horizontal row to a vertical stack on compact screens. Follow
+   * their rendered geometry instead of pretending one DOM-order axis describes both layouts.
+   * Returning true with no candidate deliberately consumes the perpendicular arrow: pressing
+   * Down on a horizontal row (or Right on a vertical stack) must not move focus sideways.
+   */
+  private moveResultArrow(key: 'ArrowDown' | 'ArrowUp' | 'ArrowLeft' | 'ArrowRight'): boolean {
+    if (this.view !== 'results') return false;
+    const current = this.navItems[this.navIndex];
+    const group = current?.closest<HTMLElement>('.lv-actions--res');
+    if (!current || !group) return false;
+
+    const direction = key === 'ArrowLeft'
+      ? { x: -1, y: 0 }
+      : key === 'ArrowRight'
+        ? { x: 1, y: 0 }
+        : key === 'ArrowUp'
+          ? { x: 0, y: -1 }
+          : { x: 0, y: 1 };
+    const origin = current.getBoundingClientRect();
+    const originX = origin.left + origin.width / 2;
+    const originY = origin.top + origin.height / 2;
+    let bestIndex = -1;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < this.navItems.length; i++) {
+      const candidate = this.navItems[i]!;
+      if (candidate === current || candidate.closest('.lv-actions--res') !== group) continue;
+      const rect = candidate.getBoundingClientRect();
+      const dx = rect.left + rect.width / 2 - originX;
+      const dy = rect.top + rect.height / 2 - originY;
+      const forward = dx * direction.x + dy * direction.y;
+      if (forward <= 1) continue;
+      const cross = Math.abs(dx * direction.y - dy * direction.x);
+      const score = forward + cross * 2;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex >= 0) this.focusNav(bestIndex);
+    return true;
+  }
+
   private onPointerOver = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     const item = target?.closest<HTMLElement>('[data-nav]');
@@ -413,6 +929,7 @@ export class Screens {
     const key = ev.key;
     const active = document.activeElement as HTMLElement | null;
     const isRange = active instanceof HTMLInputElement && active.type === 'range';
+    const activeStage = active?.closest<HTMLElement>('[data-stage-id]') ?? null;
 
     /*
      * Trust the document, not the bookkeeping. `navIndex` only advanced when this class moved
@@ -423,6 +940,13 @@ export class Screens {
     if (active) {
       const actual = this.navItems.indexOf(active);
       if (actual >= 0) this.navIndex = actual;
+    }
+
+    if (
+      (key === 'ArrowDown' || key === 'ArrowUp' || key === 'ArrowLeft' || key === 'ArrowRight')
+      && this.moveResultArrow(key)
+    ) {
+      return true;
     }
 
     if (key === 'ArrowDown' || key === 's' || key === 'S' || (key === 'Tab' && !ev.shiftKey)) {
@@ -445,6 +969,10 @@ export class Screens {
     }
     if (key === 'Enter' || key === ' ') {
       if (isRange) return true;
+      if (activeStage) {
+        activeStage.click();
+        return true;
+      }
       const node = this.navItems[this.navIndex];
       if (!node) return true;
       if (node.dataset['nav'] === 'segmented') {
@@ -494,6 +1022,7 @@ export class Screens {
 
   private makeView(name: ScreenView, label: string, cls = ''): HTMLElement {
     const view = el('section', `lv-screen lv-screen--${name} ${cls}`.trim());
+    view.dataset['view'] = name;
     view.dataset['open'] = '0';
     view.setAttribute('aria-hidden', 'true');
     view.setAttribute('role', 'dialog');
@@ -512,6 +1041,7 @@ export class Screens {
   private button(
     text: string,
     cls: string,
+    action: ScreenAction,
     onClick: () => void,
     sub?: string,
     hint?: string,
@@ -519,19 +1049,21 @@ export class Screens {
     const b = el('button', `lv-btn ${cls}`.trim());
     b.type = 'button';
     b.dataset['nav'] = 'button';
+    b.dataset['action'] = action;
     const marker = el('span', 'lv-btn-mark');
     const wrap = el('span', 'lv-btn-body');
     if (hint) {
       const line = el('span', 'lv-btn-line');
       const chip = el('kbd', 'lv-btn-hint', hint);
+      chip.lang = 'en';
       /* The chip is decoration for the eye; the shortcut is announced via aria-keyshortcuts,
          which is what it is for. Without this the accessible name comes out as "RESTARTN". */
       chip.setAttribute('aria-hidden', 'true');
       b.setAttribute('aria-keyshortcuts', hint.toLowerCase());
-      line.append(el('span', 'lv-btn-t', text), chip);
+      line.append(englishText('span', 'lv-btn-t', text), chip);
       wrap.appendChild(line);
     } else {
-      wrap.appendChild(el('span', 'lv-btn-t', text));
+      wrap.appendChild(englishText('span', 'lv-btn-t', text));
     }
     if (sub) wrap.appendChild(el('span', 'lv-btn-s', sub));
     b.append(marker, wrap);
@@ -547,22 +1079,57 @@ export class Screens {
     return node;
   }
 
+  private modeButton(id: MissionId, text: string, sub: string): HTMLButtonElement {
+    const selected = id === this.campaign.activeMissionId;
+    const button = this.button(
+      text,
+      'lv-mode-btn',
+      'select-stage',
+      () => {
+        const route = this.campaignMission(id);
+        if (route.state === 'locked' || this.campaign.navigationError === 'storage-unavailable') {
+          return;
+        }
+        if (id === this.campaign.activeMissionId) this.host.start();
+        else this.host.selectMission(id);
+      },
+      sub,
+    ) as HTMLButtonElement;
+    button.dataset['stageId'] = id;
+    button.dataset['stageState'] = selected ? 'available' : 'locked';
+    button.dataset['stageSelected'] = selected ? '1' : '0';
+    button.dataset['modeSelected'] = selected ? '1' : '0';
+    button.setAttribute('aria-current', selected ? 'true' : 'false');
+    button.querySelector<HTMLElement>('.lv-btn-s')?.setAttribute('lang', 'en');
+
+    const status = el('span', 'lv-a11y', '');
+    const selectedLabel = el('span', 'lv-a11y', '');
+    selectedLabel.hidden = !selected;
+    button.append(status, selectedLabel);
+    this.stageNodes.set(id, { button, status, selected: selectedLabel });
+    return button;
+  }
+
   /* ------------------------------------------------------------------- title */
 
   private buildTitle(): HTMLElement {
-    const view = this.makeView('title', 'Main menu');
+    const m = this.translator.messages;
+    const view = this.makeView('title', m.a11y.mainMenu);
     const inner = el('div', 'lv-title');
 
     const eyebrow = el('div', 'lv-title-eyebrow');
+    eyebrow.lang = 'en';
+    this.nTitleSector = englishText('span', 'lv-title-sector', m.meta.sectorName);
     eyebrow.append(
-      el('span', '', 'SECTOR'),
+      englishText('span', '', m.screens.sector),
       el('i', 'lv-dot'),
-      el('span', 'lv-title-sector', FICTION.sectorName),
+      this.nTitleSector,
     );
 
     const mark = el('h1', 'lv-wordmark');
-    mark.setAttribute('aria-label', FICTION.gameTitle);
-    const words = FICTION.gameTitle.split(' ');
+    mark.lang = 'en';
+    mark.setAttribute('aria-label', m.meta.gameTitle);
+    const words = m.meta.gameTitle.split(' ');
     for (let w = 0; w < words.length; w++) {
       const word = el('span', 'lv-word');
       const chars = words[w]!;
@@ -578,26 +1145,67 @@ export class Screens {
     const rule = el('div', 'lv-rule');
     rule.appendChild(el('i', 'lv-rule-glint'));
 
-    const tag = el('p', 'lv-tagline', FICTION.tagline);
+    const tag = writeEnglishTokens(el('p', 'lv-tagline'), m.meta.tagline, ['CAIRN', 'TERMINUS']);
+    this.nTitleTagline = tag;
 
-    const menu = el('nav', 'lv-menu');
-    menu.setAttribute('aria-label', 'Main menu');
+    const campaignError = el('p', 'lv-campaign-error');
+    campaignError.id = 'lv-campaign-error-title';
+    campaignError.dataset['campaignError'] = '1';
+    campaignError.setAttribute('role', 'status');
+    campaignError.setAttribute('aria-live', 'polite');
+    campaignError.hidden = true;
+
+    const menu = el('nav', 'lv-menu lv-mode-menu');
+    menu.setAttribute('aria-label', m.a11y.mainMenu);
     menu.append(
-      this.button('BEGIN RUN', 'is-primary', () => this.host.start(), FICTION.destinationName),
-      this.button('SETTINGS', '', () => this.show('settings')),
-      this.button('CONTROLS', '', () => this.show('controls')),
+      this.modeButton('relay-harvest', m.screens.beginHarvest, m.screens.beginHarvestSubtitle),
+      this.modeButton('cairn-drift', m.screens.raceRun, m.screens.raceRunSubtitle),
+      this.button(m.screens.settings, '', 'settings', () => this.show('settings')),
+      this.button(m.screens.controls, '', 'controls', () => this.show('controls')),
     );
+
+    const locale = el('div', 'lv-seg');
+    locale.dataset['nav'] = 'segmented';
+    locale.dataset['value'] = this.translator.locale;
+    locale.tabIndex = 0;
+    locale.setAttribute('role', 'radiogroup');
+    locale.setAttribute('aria-label', this.translator.messages.a11y.languageSelection);
+    const localeOptions: readonly (readonly [Locale, string])[] = [
+      ['ko', this.translator.messages.screens.korean],
+      ['en', this.translator.messages.screens.english],
+    ];
+    for (const [value, text] of localeOptions) {
+      const button = el('button', 'lv-seg-b', text);
+      button.lang = value;
+      button.type = 'button';
+      button.tabIndex = -1;
+      button.dataset['seg'] = value;
+      button.dataset['locale'] = value;
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', value === this.translator.locale ? 'true' : 'false');
+      button.addEventListener('click', () => {
+        this.opts.onSound('click');
+        this.host.requestLocale(value);
+      });
+      locale.appendChild(button);
+    }
+    menu.appendChild(locale);
 
     const foot = el('div', 'lv-title-foot');
+    foot.lang = 'en';
+    const hull = englishText('span', '', '');
+    hull.append(document.createTextNode(`${m.screens.hullPrefix} `), englishText('span', '', m.meta.shipName));
+    const primary = englishText('span', '', '');
+    primary.append(document.createTextNode(`${m.screens.primaryPrefix} `), englishText('span', '', m.meta.starName));
     foot.append(
-      el('span', '', `HULL ${FICTION.shipName}`),
+      hull,
       el('i', 'lv-dot'),
-      el('span', '', `PRIMARY ${FICTION.starName}`),
+      primary,
       el('i', 'lv-dot'),
-      el('span', '', 'NAV LOCK NOMINAL'),
+      englishText('span', '', m.screens.navigationNominal),
     );
 
-    inner.append(eyebrow, mark, rule, tag, menu, foot);
+    inner.append(eyebrow, mark, rule, tag, campaignError, menu, foot);
     view.append(el('div', 'lv-veil'), inner);
     return view;
   }
@@ -605,25 +1213,40 @@ export class Screens {
   /* ---------------------------------------------------------------- briefing */
 
   private buildBriefing(): HTMLElement {
-    const view = this.makeView('briefing', 'Run briefing');
+    const m = this.translator.messages;
+    const routeCopy = m.campaign.routes[this.campaign.activeMissionId];
+    const view = this.makeView('briefing', m.a11y.runBriefing);
     const panel = Screens.frame(el('div', 'lv-brief'));
 
     const head = el('header', 'lv-brief-head');
+    const transit = writeEnglishTokens(
+      el('div', 'lv-brief-sub'),
+      `${m.screens.transitTo} ${routeCopy.destination}`,
+      [routeCopy.destination],
+    );
+    transit.lang = 'en';
+    this.nBriefTransit = transit;
+    this.nBriefTitle = englishText('h2', 'lv-brief-title', routeCopy.sectorName);
     head.append(
-      el('div', 'lv-kicker', 'RUN BRIEFING'),
-      el('h2', 'lv-brief-title', FICTION.sectorName),
-      el('div', 'lv-brief-sub', `TRANSIT TO ${FICTION.destinationName}`),
+      englishText('div', 'lv-kicker', m.screens.runBriefing),
+      this.nBriefTitle,
+      transit,
     );
 
     const cols = el('div', 'lv-brief-cols');
 
     const stats = el('dl', 'lv-stats');
-    const addStat = (k: string, v: string): HTMLElement => {
+    const addStat = (k: string, v: string, valueLang?: 'en'): {
+      label: HTMLElement;
+      value: HTMLElement;
+    } => {
       const row = el('div', 'lv-stat');
+      const label = englishText('dt', '', k);
       const value = el('dd', '', v);
-      row.append(el('dt', '', k), value);
+      if (valueLang) value.lang = valueLang;
+      row.append(label, value);
       stats.appendChild(row);
-      return value;
+      return { label, value };
     };
     /*
      * These two are measurements, not fiction, so they are read rather than typed. CORRIDOR
@@ -633,37 +1256,82 @@ export class Screens {
      * another one, which is the arrangement that goes stale silently. `--` until the first
      * telemetry frame, because a placeholder is honest and a stale literal is not.
      */
-    this.nStatMarkers = addStat('MARKERS', '--');
-    this.nStatCorridor = addStat('CORRIDOR', '--');
-    addStat('PRIMARY', FICTION.starName);
-    addStat('HULL', FICTION.shipName);
-    addStat('DRIFT', 'CLOSING');
+    const markers = addStat(m.screens.markers, '--');
+    this.nStatMarkersLabel = markers.label;
+    this.nStatMarkers = markers.value;
+    const corridor = addStat(m.screens.corridor, '--', 'en');
+    this.nStatCorridorLabel = corridor.label;
+    this.nStatCorridor = corridor.value;
+    const primary = addStat(m.screens.primary, m.meta.starName, 'en');
+    this.nStatPrimaryLabel = primary.label;
+    this.nStatPrimaryValue = primary.value;
+    addStat(m.screens.hull, m.meta.shipName, 'en');
+    const state = addStat(m.screens.drift, m.screens.closing, 'en');
+    this.nStatStateLabel = state.label;
+    this.nStatStateValue = state.value;
+
+    const objectives = el('section', 'lv-objectives');
+    objectives.appendChild(englishText('div', 'lv-kicker', m.campaign.stageObjectives));
+    const objectiveList = el('ul', 'lv-objective-list');
+    objectiveList.dataset['objectiveList'] = 'briefing';
+    objectives.appendChild(objectiveList);
+    this.writeObjectiveList(objectiveList, this.campaignMission());
+
+    const meta = el('div', 'lv-brief-meta');
+    meta.append(stats, objectives);
 
     const prose = el('div', 'lv-prose');
-    for (let i = 0; i < BRIEF_LINES.length; i++) {
-      const p = el('p', 'lv-prose-l', BRIEF_LINES[i]!);
+    for (let i = 0; i < CAMPAIGN_BRIEF_KEYS.length; i++) {
+      const p = writeEnglishTokens(
+        el('p', 'lv-prose-l'),
+        routeCopy[CAMPAIGN_BRIEF_KEYS[i]!],
+        [
+          'ACHRA',
+          'CAIRN',
+          'WRECKLINE',
+          'TWIN KEELS',
+          'THE FRACTURE',
+          'ENGINE SPINE',
+          'VECTOR',
+          'TWIN SPIRES',
+          'ORISON ARCH',
+          'ORISON ARRAY',
+          'BLACKOUT RELAY',
+          'COLLECTOR ARM',
+          'CORE',
+          'RELAY CHARGE',
+          'BOOST',
+          'DRIVE',
+          'NETWORK',
+        ],
+      );
       p.style.setProperty('--n', String(i));
       prose.appendChild(p);
+      this.nBriefLines.push(p);
     }
 
     const primer = el('div', 'lv-primer');
-    primer.appendChild(el('div', 'lv-kicker', 'PRIMER'));
+    primer.appendChild(englishText('div', 'lv-kicker', m.screens.coreControls));
     const keys = el('ul', 'lv-primer-list');
     for (let i = 0; i < CONTROLS.length; i++) {
       const row = CONTROLS[i]!;
       if (!row.primer) continue;
       const li = el('li');
-      li.append(keyChips(row), el('span', '', row.short ?? row.action));
+      li.dataset['control'] = row.id;
+      li.append(
+        keyChips(row, m.controls.or),
+        el('span', '', m.controls[row.short ?? row.action]),
+      );
       keys.appendChild(li);
     }
     primer.appendChild(keys);
 
-    cols.append(stats, prose, primer);
+    cols.append(meta, prose, primer);
 
     const actions = el('div', 'lv-actions');
     actions.append(
-      this.button('ENGAGE', 'is-primary', () => this.host.engage()),
-      this.button('BACK', 'is-ghost', () => this.opts.onBack()),
+      this.button(m.screens.engage, 'is-primary', 'engage', () => this.host.engage()),
+      this.button(m.screens.back, 'is-ghost', 'return', () => this.opts.onBack()),
     );
 
     panel.append(head, cols, actions);
@@ -676,11 +1344,23 @@ export class Screens {
    * fail on every frame after the first.
    */
   setCourseFacts(courseLength: number | undefined, gateTotal: number): void {
-    if (this.nStatMarkers && gateTotal !== this.pMarkers) {
-      this.pMarkers = gateTotal;
-      this.nStatMarkers.textContent = gateTotal > 0 ? (gateTotal < 10 ? '0' : '') + gateTotal : '--';
+    const definition = getMissionDefinition(this.campaign.activeMissionId);
+    const collection = definition.objective.kind === 'collection' ? definition.objective : null;
+    const markerCount = collection?.activeSources ?? gateTotal;
+    if (this.nStatMarkers && markerCount !== this.pMarkers) {
+      this.pMarkers = markerCount;
+      this.nStatMarkers.textContent = markerCount > 0
+        ? (markerCount < 10 ? '0' : '') + markerCount
+        : '--';
     }
     if (this.nStatCorridor) {
+      if (collection) {
+        if (collection.requiredSources !== this.pCorridor) {
+          this.pCorridor = collection.requiredSources;
+          this.nStatCorridor.textContent = `0${collection.requiredSources}`;
+        }
+        return;
+      }
       const m = courseLength !== undefined && courseLength > 0 ? Math.round(courseLength) : -1;
       if (m !== this.pCorridor) {
         this.pCorridor = m;
@@ -698,7 +1378,8 @@ export class Screens {
     ring: SVGCircleElement;
     label: HTMLElement;
   } {
-    const view = this.makeView('countdown', 'Launch countdown', 'is-passthrough');
+    const m = this.translator.messages;
+    const view = this.makeView('countdown', m.a11y.launchCountdown, 'is-passthrough');
     view.setAttribute('role', 'status');
     view.removeAttribute('aria-modal');
     const wrap = el('div', 'lv-count');
@@ -720,7 +1401,8 @@ export class Screens {
     svg.append(track, ring);
 
     const num = el('div', 'lv-count-n', '');
-    const label = el('div', 'lv-count-k', 'LAUNCH SEQUENCE');
+    num.lang = 'en';
+    const label = englishText('div', 'lv-count-k', m.screens.launchSequence);
     wrap.append(svg, num, label);
     view.appendChild(wrap);
     return { view, num, ring, label };
@@ -733,13 +1415,17 @@ export class Screens {
     if (!view) return;
     if (value === null) {
       view.dataset['open'] = '0';
+      delete view.dataset['countdownValue'];
       return;
     }
     view.dataset['open'] = '1';
     const go = value <= 0;
-    this.nCountNum.textContent = go ? 'GO' : String(value);
+    view.dataset['countdownValue'] = go ? 'go' : String(value);
+    this.nCountNum.textContent = go ? this.translator.messages.screens.go : String(value);
     this.nCountNum.dataset['go'] = go ? '1' : '0';
-    this.nCountLabel.textContent = go ? 'VECTOR LIVE' : 'LAUNCH SEQUENCE';
+    this.nCountLabel.textContent = go
+      ? this.translator.messages.screens.vectorLive
+      : this.translator.messages.screens.launchSequence;
     retrigger(this.nCountNum, 'is-tick');
     retrigger(this.nCountRing as unknown as HTMLElement, 'is-sweep');
   }
@@ -747,23 +1433,24 @@ export class Screens {
   /* ------------------------------------------------------------------- pause */
 
   private buildPause(): HTMLElement {
-    const view = this.makeView('pause', 'Paused');
+    const m = this.translator.messages;
+    const view = this.makeView('pause', m.a11y.paused);
     const panel = Screens.frame(el('div', 'lv-pause'));
     panel.append(
-      el('div', 'lv-kicker', 'FLIGHT HELD'),
-      el('h2', 'lv-pause-title', 'PAUSED'),
-      el('p', 'lv-pause-sub', 'Drift continues. The corridor does not wait.'),
+      englishText('div', 'lv-kicker', m.screens.flightHeld),
+      englishText('h2', 'lv-pause-title', m.screens.paused),
+      el('p', 'lv-pause-sub', m.screens.pauseDetail),
     );
     const menu = el('nav', 'lv-menu lv-menu--tight');
     menu.append(
-      this.button('RESUME', 'is-primary', () => this.host.resume()),
+      this.button(m.screens.resume, 'is-primary', 'resume', () => this.host.resume()),
       /* Second, where the genre puts it: in a time trial "go again" is the common verb, and
          N was previously the only way to do it and was documented nowhere. The sub-label
          teaches the shortcut at the point of use. */
-      this.button('RESTART', '', () => this.host.restart(), undefined, 'N'),
-      this.button('SETTINGS', '', () => this.show('settings')),
-      this.button('CONTROLS', '', () => this.show('controls')),
-      this.button('ABORT RUN', 'is-danger', () => this.host.quitToTitle()),
+      this.button(m.screens.restart, '', 'restart', () => this.host.restart(), undefined, 'N'),
+      this.button(m.screens.settings, '', 'settings', () => this.show('settings')),
+      this.button(m.screens.controls, '', 'controls', () => this.show('controls')),
+      this.button(m.screens.abortRun, 'is-danger', 'abort', () => this.host.quitToTitle()),
     );
     panel.appendChild(menu);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -773,20 +1460,24 @@ export class Screens {
   /* ---------------------------------------------------------------- settings */
 
   private buildSettings(): { view: HTMLElement; body: HTMLElement } {
-    const view = this.makeView('settings', 'Settings');
+    const m = this.translator.messages;
+    const view = this.makeView('settings', m.a11y.settings);
     const panel = Screens.frame(el('div', 'lv-settings'));
-    panel.append(el('div', 'lv-kicker', 'CONFIGURATION'), el('h2', 'lv-panel-title', 'SETTINGS'));
+    panel.append(
+      englishText('div', 'lv-kicker', m.screens.configuration),
+      englishText('h2', 'lv-panel-title', m.screens.settings),
+    );
 
     const body = el('div', 'lv-set-body');
     for (const group of SETTING_GROUPS) {
       const sec = el('section', 'lv-set-group');
-      sec.append(el('h3', 'lv-set-grouptitle', group.title));
+      sec.append(englishText('h3', 'lv-set-grouptitle', m.settings[group.title]));
       for (const row of group.rows) sec.appendChild(this.buildSettingRow(row));
       body.appendChild(sec);
     }
 
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', () => this.opts.onBack()));
+    actions.append(this.button(m.screens.back, 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(body, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -794,27 +1485,40 @@ export class Screens {
   }
 
   private buildSettingRow(row: RowSpec): HTMLElement {
+    const m = this.translator.messages;
+    const label = m.settings[row.label];
     const node = el('div', `lv-set-row lv-set-row--${row.kind}`);
     const labels = el('div', 'lv-set-labels');
-    labels.appendChild(el('span', 'lv-set-label', row.label));
-    if (row.hint) labels.appendChild(el('span', 'lv-set-hint', row.hint));
+    labels.appendChild(englishText('span', 'lv-set-label', label));
+    if (row.hint !== undefined) {
+      const hint = writeEnglishTokens(
+        el('span', 'lv-set-hint'),
+        m.settings[row.hint],
+        row.hint === 'defaultCameraHint' ? ['C'] : [],
+      );
+      labels.appendChild(hint);
+    }
     node.appendChild(labels);
 
     if (row.kind === 'enum') {
       const group = el('div', 'lv-seg');
       group.dataset['nav'] = 'segmented';
+      group.dataset['setting'] = row.key;
+      group.dataset['value'] = String(this.host.getSettings()[row.key]);
       group.tabIndex = 0;
+      group.lang = 'en';
       group.setAttribute('role', 'radiogroup');
-      group.setAttribute('aria-label', row.label);
-      for (const [value, text] of row.options) {
-        const b = el('button', 'lv-seg-b', text);
+      group.setAttribute('aria-label', label);
+      for (const [value, textKey] of row.options) {
+        const b = el('button', 'lv-seg-b', m.settings[textKey]);
+        b.lang = 'en';
         b.type = 'button';
         b.tabIndex = -1;
         b.dataset['seg'] = value;
         b.setAttribute('role', 'radio');
         b.setAttribute('aria-checked', 'false');
         b.addEventListener('click', () => {
-          this.commit(row.key, value as Settings[keyof Settings]);
+          this.commit(row.key, value as Settings[typeof row.key]);
           this.opts.onSound('click');
         });
         group.appendChild(b);
@@ -823,6 +1527,7 @@ export class Screens {
       this.settingNodes.push({
         row,
         apply: (v) => {
+          group.dataset['value'] = String(v);
           const buttons = group.querySelectorAll<HTMLElement>('[data-seg]');
           for (let i = 0; i < buttons.length; i++) {
             const b = buttons[i]!;
@@ -837,23 +1542,27 @@ export class Screens {
       const sw = el('button', 'lv-switch');
       sw.type = 'button';
       sw.dataset['nav'] = 'switch';
+      sw.dataset['setting'] = row.key;
+      sw.dataset['value'] = String(this.host.getSettings()[row.key]);
+      sw.lang = 'en';
       sw.setAttribute('role', 'switch');
       sw.setAttribute('aria-checked', 'false');
-      sw.setAttribute('aria-label', row.label);
-      sw.append(el('i', 'lv-switch-knob'), el('span', 'lv-switch-t', 'OFF'));
+      sw.setAttribute('aria-label', label);
+      sw.append(el('i', 'lv-switch-knob'), englishText('span', 'lv-switch-t', m.settings.off));
       sw.addEventListener('click', () => {
         const next = sw.getAttribute('aria-checked') !== 'true';
-        this.commit(row.key, next as Settings[keyof Settings]);
+        this.commit(row.key, next);
         this.opts.onSound('click');
       });
       node.appendChild(sw);
       this.settingNodes.push({
         row,
         apply: (v) => {
+          sw.dataset['value'] = String(v);
           const on = v === true;
           sw.setAttribute('aria-checked', on ? 'true' : 'false');
           const t = sw.querySelector('.lv-switch-t');
-          if (t) t.textContent = on ? 'ON' : 'OFF';
+          if (t) t.textContent = on ? m.settings.on : m.settings.off;
         },
       });
       return node;
@@ -866,8 +1575,12 @@ export class Screens {
     input.max = String(row.max);
     input.step = String(row.step);
     input.dataset['nav'] = 'range';
-    input.setAttribute('aria-label', row.label);
+    input.dataset['setting'] = row.key;
+    input.dataset['value'] = String(this.host.getSettings()[row.key]);
+    input.lang = 'en';
+    input.setAttribute('aria-label', label);
     const read = el('span', 'lv-slider-v', '');
+    read.lang = 'en';
     const track = el('div', 'lv-slider-track');
     const fill = el('i', 'lv-slider-fill');
     track.appendChild(fill);
@@ -876,13 +1589,14 @@ export class Screens {
       const v = Number(input.value);
       fill.style.transform = `scaleX(${((v - row.min) / (row.max - row.min)).toFixed(4)})`;
       read.textContent = row.fmt(v);
-      this.commit(row.key, v as Settings[keyof Settings]);
+      this.commit(row.key, v);
     });
     node.appendChild(wrap);
     this.settingNodes.push({
       row,
       apply: (v) => {
         const num = typeof v === 'number' ? v : row.min;
+        input.dataset['value'] = String(num);
         input.value = String(num);
         fill.style.transform = `scaleX(${((num - row.min) / (row.max - row.min)).toFixed(4)})`;
         read.textContent = row.fmt(num);
@@ -912,26 +1626,27 @@ export class Screens {
   /* ---------------------------------------------------------------- controls */
 
   private buildControls(): HTMLElement {
-    const view = this.makeView('controls', 'Controls');
+    const m = this.translator.messages;
+    const view = this.makeView('controls', m.a11y.controls);
     const panel = Screens.frame(el('div', 'lv-controls'));
-    panel.append(el('div', 'lv-kicker', 'PILOT REFERENCE'), el('h2', 'lv-panel-title', 'CONTROLS'));
+    panel.append(
+      englishText('div', 'lv-kicker', m.controls.heading),
+      englishText('h2', 'lv-panel-title', m.screens.controls),
+    );
 
     const list = el('ul', 'lv-keys');
     for (let i = 0; i < CONTROLS.length; i++) {
       const row = CONTROLS[i]!;
       const li = el('li', 'lv-key');
+      li.dataset['control'] = row.id;
       li.style.setProperty('--n', String(i));
-      li.append(keyChips(row), el('span', 'lv-key-d', row.action));
+      li.append(keyChips(row, m.controls.or), el('span', 'lv-key-d', m.controls[row.action]));
       list.appendChild(li);
     }
 
-    const note = el(
-      'p',
-      'lv-note',
-      'Pointer lock captures the mouse on launch. ESC releases it and holds the flight.',
-    );
+    const note = writeEnglishTokens(el('p', 'lv-note'), m.controls.pointerLockNote, ['ESC']);
     const actions = el('div', 'lv-actions');
-    actions.append(this.button('BACK', 'is-primary', () => this.opts.onBack()));
+    actions.append(this.button(m.screens.back, 'is-primary', 'return', () => this.opts.onBack()));
 
     panel.append(list, note, actions);
     view.append(el('div', 'lv-veil lv-veil--blur'), panel);
@@ -941,28 +1656,43 @@ export class Screens {
   /* ----------------------------------------------------------------- results */
 
   private buildResults(): { view: HTMLElement; body: HTMLElement } {
-    const view = this.makeView('results', 'Run complete');
+    const view = this.makeView('results', this.translator.messages.a11y.runComplete);
     const panel = el('div', 'lv-results');
     const body = el('div', 'lv-res-body');
+    body.lang = 'en';
     panel.appendChild(body);
     view.append(el('div', 'lv-veil lv-veil--results'), panel);
     return { view, body };
   }
 
-  showResult(r: RunResult): void {
+  showResult(r: MissionResult): void {
+    if (r.kind !== 'gate-race') {
+      this.showCommonMissionResult(r);
+      return;
+    }
+    const m = this.translator.messages;
+    const campaignMission = this.campaignMission(r.missionId);
+    const routeCopy = m.campaign.routes[campaignMission.id];
     const body = this.nResultBody;
     body.textContent = '';
+    delete body.dataset['state'];
+    delete body.dataset['failureReason'];
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
 
     /* headline: destination left, rating right, so the top edge is not weighted to one side */
     const head = el('header', 'lv-res-head');
     head.style.setProperty('--n', '0');
     const headline = el('div', 'lv-res-headline');
     headline.append(
-      el('div', 'lv-kicker', r.gatesCleared >= r.gatesTotal ? 'ARRIVAL CONFIRMED' : 'RUN ENDED'),
-      el('h2', 'lv-res-title', r.destinationName),
+      el(
+        'div',
+        'lv-kicker',
+        r.gatesCleared >= r.gatesTotal ? m.results.arrivalConfirmed : m.results.runComplete,
+      ),
+      englishText('h2', 'lv-res-title', routeCopy.destination),
     );
     const rank = el('div', 'lv-res-rank');
-    rank.append(el('div', 'lv-res-k', 'RATING'), el('div', 'lv-res-letter', r.rank));
+    rank.append(el('div', 'lv-res-k', m.results.rank), englishText('div', 'lv-res-letter', r.rank));
     rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
     head.append(headline, rank);
     body.appendChild(head);
@@ -972,31 +1702,111 @@ export class Screens {
     main.style.setProperty('--n', '1');
 
     const left = el('div', 'lv-res-left');
+    /* Explicit null means "this finish unlocked nothing". Do not null-coalesce it to the
+       campaign snapshot: Game retains the last reveal for title hydration, and doing so would
+       make every replay look like another first clear. Undefined alone denotes an older fixture. */
+    const newlyUnlocked = r.newlyUnlockedMissionId;
+    const revealedStage = newlyUnlocked
+      ? this.campaign.missions.find((mission) => mission.id === newlyUnlocked)
+      : undefined;
+    const nextStageId = this.campaign.nextMissionId !== undefined
+      ? this.campaign.nextMissionId
+      : newlyUnlocked;
+    const nextStage = nextStageId
+      ? this.campaign.missions.find((mission) => mission.id === nextStageId)
+      : undefined;
+    const advanceStage =
+      nextStage !== undefined &&
+      nextStage.state !== 'locked' &&
+      nextStage.id !== campaignMission.id &&
+      this.campaign.navigationError !== 'storage-unavailable'
+        ? nextStage
+        : undefined;
+    const firstClearAdvance =
+      advanceStage !== undefined && revealedStage?.id === advanceStage.id;
+    if (revealedStage && revealedStage.state !== 'locked') {
+      const unlock = el('div', 'lv-stage-unlock');
+      unlock.dataset['stageId'] = revealedStage.id;
+      unlock.dataset['stageState'] = revealedStage.state;
+      const unlockText = writeEnglishTokens(
+        el('span'),
+        m.campaign.routes[revealedStage.id].unlockNotice,
+        ['CAIRN DRIFT', 'WRECKLINE', 'RINGFALL'],
+      );
+      unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
+        ? this.translator.locale
+        : 'en';
+      unlock.append(
+        el('i', 'lv-stage-unlock-mark'),
+        unlockText,
+      );
+      left.appendChild(unlock);
+    }
     const timeBlock = el('div', 'lv-res-timeblock');
-    timeBlock.append(el('div', 'lv-res-k', 'TOTAL'), el('div', 'lv-res-time', formatTime(r.totalTime)));
+    timeBlock.append(
+      el('div', 'lv-res-k', m.results.totalTime),
+      el('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
     if (r.isNewBest) {
       const badge = el('div', 'lv-newbest');
-      badge.append(el('i', 'lv-newbest-tick'), el('span', '', 'NEW BEST'));
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
       timeBlock.appendChild(badge);
     } else if (r.bestTime != null) {
       const d = r.totalTime - r.bestTime;
-      const delta = el('div', 'lv-res-delta', `${formatDelta(d)} vs BEST ${formatTime(r.bestTime)}`);
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(d), formatTime(r.bestTime)),
+      );
       delta.dataset['tone'] = d <= 0 ? 'good' : 'bad';
       timeBlock.appendChild(delta);
     }
     left.appendChild(timeBlock);
 
     const stats = el('dl', 'lv-res-stats');
-    const addStat = (k: string, v: string, tone?: string): void => {
+    const addStat = (
+      k: string,
+      v: string,
+      tone?: string,
+      englishTokens: readonly string[] = [],
+      id?: string,
+    ): void => {
       const cell = el('div', 'lv-res-stat');
-      cell.append(el('dt', 'lv-res-statk', k), el('dd', 'lv-res-statv', v));
+      if (id) cell.dataset['stat'] = id;
+      const value = writeEnglishTokens(el('dd', 'lv-res-statv'), v, englishTokens);
+      cell.append(el('dt', 'lv-res-statk', k), value);
       if (tone) cell.dataset['tone'] = tone;
       stats.appendChild(cell);
     };
-    addStat('MARKERS', `${r.gatesCleared} / ${r.gatesTotal}`);
-    addStat('TOP SPEED', `${Math.round(r.topSpeed)} M/S`);
-    addStat('HULL', r.cleanRun ? 'UNTOUCHED' : 'SCARRED', r.cleanRun ? 'good' : 'warn');
+    addStat(m.results.markers, `${r.gatesCleared} / ${r.gatesTotal}`);
+    addStat(m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`, undefined, [m.results.speedUnit]);
+    addStat(
+      m.results.hull,
+      r.cleanRun ? m.results.clean : m.results.damaged,
+      r.cleanRun ? 'good' : 'warn',
+    );
+    if (
+      r.gatesCleared > 0 &&
+      typeof r.maxGateOffset === 'number' &&
+      Number.isFinite(r.maxGateOffset)
+    ) {
+      addStat(
+        m.results.widestMarker,
+        `${formatPrecisionOffsetPercent(r.maxGateOffset)} / <${(PRECISION_MAX_OFFSET * 100).toFixed(1)}%`,
+        r.maxGateOffset < PRECISION_MAX_OFFSET ? 'good' : 'warn',
+        [],
+        'max-gate-offset',
+      );
+    }
     left.appendChild(stats);
+
+    const objectives = el('section', 'lv-objectives lv-objectives--result');
+    objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+    const objectiveList = el('ul', 'lv-objective-list');
+    objectiveList.dataset['objectiveList'] = 'results';
+    objectives.appendChild(objectiveList);
+    this.writeObjectiveList(objectiveList, campaignMission, r);
+    left.appendChild(objectives);
 
     /*
      * Splits, with a bar per segment so the shape of the run reads without arithmetic.
@@ -1037,12 +1847,12 @@ export class Screens {
     table.dataset['delta'] = hasBest ? '1' : '0';
     const header = el('div', 'lv-res-row is-head');
     header.append(
-      el('span', '', 'MARKER'),
-      el('span', '', 'SEGMENT'),
+      el('span', '', m.results.marker),
+      el('span', '', m.results.segment),
       el('span', ''),
-      el('span', '', 'ELAPSED'),
+      el('span', '', m.results.elapsed),
     );
-    if (hasBest) header.append(el('span', '', 'Δ BEST'));
+    if (hasBest) header.append(el('span', '', m.results.versusBest));
     table.appendChild(header);
 
     /* The run-in is a leg like any other for scaling purposes — leaving it out of `slowest`
@@ -1093,6 +1903,7 @@ export class Screens {
       }
       row.dataset['fast'] = seg <= fastest + 1e-6 ? '1' : '0';
       if (terminus) row.dataset['term'] = '1';
+      if (terminus) row.querySelector<HTMLElement>('.lv-res-idx')!.lang = 'en';
       table.appendChild(row);
     };
 
@@ -1107,7 +1918,7 @@ export class Screens {
        reconcile with the headline instead of falling short of it. */
     addRow(
       r.splits.length,
-      'TERMINUS',
+      routeCopy.terminalMarker,
       runIn,
       r.totalTime,
       hasRunInBest ? runIn - bestRunIn : null,
@@ -1121,12 +1932,279 @@ export class Screens {
 
     const actions = el('div', 'lv-actions lv-actions--res');
     actions.style.setProperty('--n', '2');
-    actions.append(
-      this.button('RUN AGAIN', 'is-primary', () => this.host.restart()),
-      this.button('RETURN', 'is-ghost', () => this.host.quitToTitle()),
-    );
+    const nextStageButton = (primary: boolean): HTMLElement | null => {
+      if (!advanceStage) return null;
+      const button = this.button(
+        m.campaign.nextStage,
+        primary ? 'is-primary' : '',
+        'next-stage',
+        () => this.host.selectMission(advanceStage.id),
+        m.campaign.routes[advanceStage.id].destination,
+      );
+      button.dataset['stageId'] = advanceStage.id;
+      button.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      return button;
+    };
+    if (firstClearAdvance) {
+      const next = nextStageButton(true);
+      if (next) actions.appendChild(next);
+    }
+    actions.append(this.button(
+      m.results.runAgain,
+      firstClearAdvance ? '' : 'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    }
+    if (!firstClearAdvance && advanceStage) {
+      const next = nextStageButton(false);
+      if (next) actions.appendChild(next);
+    } else if (!advanceStage) {
+      actions.appendChild(
+        this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      );
+    }
+    const error = el('p', 'lv-campaign-error lv-campaign-error--result');
+    error.lang = this.translator.locale;
+    error.dataset['campaignError'] = '1';
+    error.setAttribute('role', 'status');
+    error.setAttribute('aria-live', 'polite');
+    error.hidden = true;
+    body.appendChild(error);
     body.appendChild(actions);
+    this.syncCampaignErrors();
 
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /** Compact result shell for the collection chapter. */
+  private showCommonMissionResult(r: Exclude<MissionResult, { kind: 'gate-race' }>): void {
+    const m = this.translator.messages;
+    const campaignMission = this.campaignMission(r.missionId);
+    const body = this.nResultBody;
+    body.textContent = '';
+    delete body.dataset['state'];
+    delete body.dataset['failureReason'];
+    this.views.get('results')?.setAttribute('aria-label', m.a11y.runComplete);
+
+    const head = el('header', 'lv-res-head');
+    head.style.setProperty('--n', '0');
+    const headline = el('div', 'lv-res-headline');
+    headline.append(
+      el(
+        'div',
+        'lv-kicker',
+        m.results.relayStabilised,
+      ),
+      englishText('h2', 'lv-res-title', r.destinationName),
+    );
+    const rank = el('div', 'lv-res-rank');
+    rank.append(el('div', 'lv-res-k', m.results.rank), englishText('div', 'lv-res-letter', r.rank));
+    rank.dataset['rank'] = r.rank.charAt(0).toUpperCase();
+    head.append(headline, rank);
+
+    const main = el('div', 'lv-res-main');
+    main.style.setProperty('--n', '1');
+    const left = el('div', 'lv-res-left');
+    const newlyUnlocked = r.newlyUnlockedMissionId;
+    const revealedStage = newlyUnlocked
+      ? this.campaign.missions.find((mission) => mission.id === newlyUnlocked)
+      : undefined;
+    const nextStageId = this.campaign.nextMissionId !== undefined
+      ? this.campaign.nextMissionId
+      : newlyUnlocked;
+    const nextStage = nextStageId
+      ? this.campaign.missions.find((mission) => mission.id === nextStageId)
+      : undefined;
+    const advanceStage = nextStage !== undefined
+      && nextStage.state !== 'locked'
+      && nextStage.id !== campaignMission.id
+      && this.campaign.navigationError !== 'storage-unavailable'
+        ? nextStage
+        : undefined;
+    const firstClearAdvance = advanceStage !== undefined && revealedStage?.id === advanceStage.id;
+    if (revealedStage && revealedStage.state !== 'locked') {
+      const unlock = el('div', 'lv-stage-unlock');
+      unlock.dataset['stageId'] = revealedStage.id;
+      unlock.dataset['stageState'] = revealedStage.state;
+      const unlockText = writeEnglishTokens(
+        el('span'),
+        m.campaign.routes[revealedStage.id].unlockNotice,
+        ['CAIRN DRIFT', 'BLACKOUT RELAY', 'WRECKLINE', 'RINGFALL'],
+      );
+      unlockText.lang = /[가-힣]/u.test(m.campaign.routes[revealedStage.id].unlockNotice)
+        ? this.translator.locale
+        : 'en';
+      unlock.append(el('i', 'lv-stage-unlock-mark'), unlockText);
+      left.appendChild(unlock);
+    }
+    const time = el('div', 'lv-res-timeblock');
+    time.append(
+      el('div', 'lv-res-k', m.results.totalTime),
+      el('div', 'lv-res-time', formatTime(r.totalTime)),
+    );
+    if (r.isNewBest) {
+      const badge = el('div', 'lv-newbest');
+      badge.append(el('i', 'lv-newbest-tick'), el('span', '', m.results.newRecord));
+      time.appendChild(badge);
+    } else if (r.bestTime != null) {
+      const deltaSeconds = r.totalTime - r.bestTime;
+      const delta = el(
+        'div',
+        'lv-res-delta',
+        m.results.bestComparison(formatDelta(deltaSeconds), formatTime(r.bestTime)),
+      );
+      delta.dataset['tone'] = deltaSeconds <= 0 ? 'good' : 'bad';
+      time.appendChild(delta);
+    }
+    const stats = el('dl', 'lv-res-stats');
+    const objectiveStats: readonly (readonly [string, string])[] = [
+      [m.results.coresRecovered, `${r.collected} / ${r.activeTotal}`],
+      [m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`],
+      [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
+    ];
+    for (const [label, value] of objectiveStats) {
+      const cell = el('div', 'lv-res-stat');
+      cell.append(el('dt', 'lv-res-statk', label), el('dd', 'lv-res-statv', value));
+      stats.appendChild(cell);
+    }
+    left.append(time, stats);
+    const objectives = el('section', 'lv-objectives lv-objectives--result');
+    objectives.appendChild(el('div', 'lv-kicker', m.campaign.stageObjectives));
+    const objectiveList = el('ul', 'lv-objective-list');
+    objectiveList.dataset['objectiveList'] = 'results';
+    objectives.appendChild(objectiveList);
+    this.writeObjectiveList(objectiveList, campaignMission, r);
+    left.appendChild(objectives);
+    main.appendChild(left);
+
+    const actions = el('div', 'lv-actions lv-actions--res');
+    actions.style.setProperty('--n', '2');
+    const nextStageButton = (primary: boolean): HTMLElement | null => {
+      if (!advanceStage) return null;
+      const button = this.button(
+        m.campaign.nextStage,
+        primary ? 'is-primary' : '',
+        'next-stage',
+        () => this.host.selectMission(advanceStage.id),
+        m.campaign.routes[advanceStage.id].destination,
+      );
+      button.dataset['stageId'] = advanceStage.id;
+      button.querySelector<HTMLElement>('.lv-btn-s')!.lang = 'en';
+      return button;
+    };
+    if (firstClearAdvance) {
+      const next = nextStageButton(true);
+      if (next) actions.appendChild(next);
+    }
+    actions.append(this.button(
+      m.results.runAgain,
+      firstClearAdvance ? '' : 'is-primary',
+      'run-again',
+      () => this.host.restart(),
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    }
+    if (!firstClearAdvance && advanceStage) {
+      const next = nextStageButton(false);
+      if (next) actions.appendChild(next);
+    } else if (!advanceStage) {
+      actions.appendChild(
+        this.button(m.results.returnToTitle, 'is-ghost', 'return', () => this.host.quitToTitle()),
+      );
+    }
+    const error = el('p', 'lv-campaign-error lv-campaign-error--result');
+    error.lang = this.translator.locale;
+    error.dataset['campaignError'] = '1';
+    error.setAttribute('role', 'status');
+    error.setAttribute('aria-live', 'polite');
+    error.hidden = true;
+    body.append(head, main, error, actions);
+    this.syncCampaignErrors();
+
+    if (this.view === 'results') {
+      this.collectNav(this.views.get('results')!);
+      this.focusNav(0, false);
+    }
+  }
+
+  /** Reuses the result shell for the only terminal failure: hull breach. */
+  showFailure(elapsed: number, reason?: string): void {
+    const m = this.translator.messages;
+    const body = this.nResultBody;
+    body.textContent = '';
+    body.dataset['state'] = 'failure';
+    if (reason === undefined) delete body.dataset['failureReason'];
+    else body.dataset['failureReason'] = reason;
+    this.views.get('results')?.setAttribute(
+      'aria-label',
+      reason === undefined ? m.a11y.hullBreach : m.a11y.missionFailed,
+    );
+
+    const head = el('header', 'lv-res-head');
+    head.style.setProperty('--n', '0');
+    if (reason !== undefined) {
+      head.append(
+        englishText('div', 'lv-kicker', m.results.runComplete),
+        englishText('h2', 'lv-res-title', m.results.missionFailed),
+      );
+    } else {
+      head.appendChild(el('h2', 'lv-res-title', m.results.hullBreach));
+    }
+
+    const timeBlock = el('div', 'lv-res-timeblock');
+    timeBlock.style.setProperty('--n', '1');
+    timeBlock.append(
+      el('div', 'lv-res-k', m.results.time),
+      el('div', 'lv-res-time', formatTime(elapsed)),
+    );
+    const actions = el('div', 'lv-actions lv-actions--res');
+    actions.style.setProperty('--n', '2');
+    actions.append(this.button(
+      m.results.retry,
+      'is-primary',
+      'retry',
+      () => this.host.restart(),
+      undefined,
+      'N',
+    ));
+    if (CHAPTER_STAGE_IDS.length > 1) {
+      actions.appendChild(this.button(
+        m.campaign.stageSelect,
+        'is-ghost',
+        'stage-select',
+        () => this.host.showMissionSelect(),
+      ));
+    } else {
+      actions.appendChild(this.button(
+        m.results.returnToTitle,
+        'is-ghost',
+        'return',
+        () => this.host.quitToTitle(),
+      ));
+    }
+
+    body.append(head, timeBlock, actions);
+
+    /* setPhase may have opened this shared view before its failure body was populated. Refresh
+       navigation after mutation so keyboard focus lands on RETRY instead of a detached result
+       action from the previous run. */
     if (this.view === 'results') {
       this.collectNav(this.views.get('results')!);
       this.focusNav(0, false);

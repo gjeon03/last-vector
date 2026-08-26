@@ -145,6 +145,7 @@ function sanitise(raw: Partial<Settings>): Settings {
   s.cameraShake = clamp01(s.cameraShake);
   if (!(s.quality in PROFILES)) s.quality = 'high';
   if (!['arcade', 'standard', 'raw'].includes(s.assistLevel)) s.assistLevel = 'standard';
+  if (!['chase', 'cockpit', 'far-chase'].includes(s.cameraMode)) s.cameraMode = 'chase';
   /* A hand-edited or truncated blob must not leave this as a string or a number, since it decides
      whether a later quality change overwrites the player's render scale. */
   s.renderScaleTouched = s.renderScaleTouched === true;
@@ -196,6 +197,11 @@ export class SettingsStore {
 
   get profile(): QualityProfile {
     return qualityProfile(this.current.quality);
+  }
+
+  /** Read-only lifecycle evidence; Overlay replacement must never duplicate this subscription. */
+  get subscriberCount(): number {
+    return this.listeners.size;
   }
 
   set<K extends keyof Settings>(key: K, value: Settings[K]): void {
@@ -266,6 +272,31 @@ export function writeBestTime(courseId: string, seconds: number, splits: number[
   if (prev && prev.time <= seconds) return;
   all[courseId] = { time: seconds, splits: splits.slice() };
   writeJson(BEST_KEY, all);
+}
+
+/**
+ * Read-only migration probe for campaign progress.
+ *
+ * A best run is written only after a successful finish, so an existing seeded CAIRN record is
+ * sufficient evidence for the one fact the old schema can recover: the route was cleared once.
+ * Keep this narrow rather than exporting the best-run blob and creating a second owner for it.
+ */
+export function hasBestRunPrefix(prefix: string): boolean {
+  const all = readJson<Record<string, number | BestRun>>(BEST_KEY);
+  if (!all || typeof all !== 'object') return false;
+  return Object.entries(all).some(([key, value]) => {
+    if (!key.startsWith(prefix)) return false;
+    const suffix = key.slice(prefix.length);
+    if (!/^(0|[1-9]\d*)$/.test(suffix)) return false;
+    const seed = Number(suffix);
+    if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) return false;
+    const seconds = typeof value === 'number'
+      ? value
+      : value && typeof value === 'object'
+        ? value.time
+        : NaN;
+    return Number.isFinite(seconds) && seconds > 0;
+  });
 }
 
 /** Storage can throw in private mode or sandboxed iframes; settings are never load-bearing. */

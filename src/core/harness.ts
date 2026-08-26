@@ -5,7 +5,19 @@
  * This is a stable contract: the playtest tooling under `scripts/playtest/` depends on it.
  */
 
-import type { Phase, RunResult, Settings, Telemetry } from './contracts.ts';
+import type {
+  CameraMode,
+  Locale,
+  LocaleFontStatus,
+  Phase,
+  MissionResult,
+  Settings,
+  Telemetry,
+} from './contracts.ts';
+import type { CourseId, ObjectiveId } from './Courses.ts';
+import type { MissionId } from './Missions.ts';
+import type { MissionResolution } from './MissionSelection.ts';
+import type { ProgressV2, ProgressWriteOutcome } from './Progress.ts';
 
 export interface HarnessInput {
   /**
@@ -79,7 +91,114 @@ export interface HarnessPose {
   camera: {
     position: [number, number, number];
     forward: [number, number, number];
+    /** Active perspective near plane, metres. Cockpit mode needs a substantially closer plane. */
+    near: number;
+    /** Active vertical field of view, degrees. */
+    fov: number;
   };
+}
+
+/**
+ * Read-only proof that the first-person interior is a physical, state-fed scene rather than a
+ * screen-space frame. Geometry counts are cockpit-only, not totals for the world render.
+ */
+export interface HarnessCockpitDebugState {
+  visible: boolean;
+  fov: number;
+  near: number;
+  perspectiveScale: [number, number, number];
+  drawCalls: number;
+  triangles: number;
+  minCameraDistance: number;
+  motionX: number;
+  motionY: number;
+  motionZ: number;
+  motionPitch: number;
+  motionYaw: number;
+  motionRoll: number;
+  stickPitch: number;
+  stickYaw: number;
+  stickRoll: number;
+  throttleAngle: number;
+  mfdUpdates: number;
+}
+
+/** JSON-safe proof of the physical MFD's locale, fitted labels, pixels, and projection. */
+export interface HarnessCockpitMfdEvidence {
+  locale: Locale;
+  renderedLocale: Locale;
+  fontReady: boolean;
+  visible: boolean;
+  canvas: { width: 1024; height: 256 };
+  labelRoi: { x: number; y: number; width: number; height: number; hash: string };
+  labels: ReadonlyArray<{
+    key: string;
+    text: string;
+    fontPx: number;
+    measuredWidth: number;
+    allowedWidth: number;
+    ellipsized: boolean;
+  }>;
+  /** Final model projection before post-processing, in TL/TR/BR/BL order. */
+  projectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Projection after the final composite's radial warp, in TL/TR/BR/BL order. */
+  screenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI projection before post-processing, in TL/TR/BR/BL order. */
+  labelProjectedNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  /** Fixed canvas label ROI after the final composite's radial warp, in TL/TR/BR/BL order. */
+  labelScreenNdcCorners: ReadonlyArray<readonly [number, number, number]>;
+  mfdUpdates: number;
+}
+
+/**
+ * Read-only proof for the exterior ship and its paired drive plume. Counts describe only the
+ * ship model, so world debris density cannot make this regression contract fluctuate.
+ */
+export interface HarnessShipVisualDebugState {
+  visible: boolean;
+  drawCalls: number;
+  triangles: number;
+  plumeTriangles: number;
+  materials: number;
+  nozzleAnchors: ReadonlyArray<ShipNozzleAnchor>;
+  /** Final model-world projection points for screenshot-space engine ROI measurement. */
+  engineProjection: ReadonlyArray<ShipEngineProjection>;
+  plume: {
+    power: number;
+    boost: number;
+    length: number;
+    width: number;
+    coreStretch: number;
+    coreGain: number;
+    ignite: number;
+    release: number;
+    cells: number;
+    cellFreq: number;
+    glowPower: number;
+  };
+}
+
+export interface ShipEngineProjection {
+  mouthNdc: readonly [number, number, number];
+  mouthRimNdc: readonly [number, number, number];
+  coreNdc: readonly [number, number, number];
+  coreRimNdc: readonly [number, number, number];
+  sheathMidNdc: readonly [number, number, number];
+  sheathMidRimNdc: readonly [number, number, number];
+  tailNdc: readonly [number, number, number];
+  /** The same points after inverting the boost lens warp into final screenshot coordinates. */
+  mouthScreenNdc: readonly [number, number, number];
+  mouthRimScreenNdc: readonly [number, number, number];
+  coreScreenNdc: readonly [number, number, number];
+  coreRimScreenNdc: readonly [number, number, number];
+  sheathMidScreenNdc: readonly [number, number, number];
+  sheathMidRimScreenNdc: readonly [number, number, number];
+  tailScreenNdc: readonly [number, number, number];
+}
+
+export interface ShipNozzleAnchor {
+  position: readonly [number, number, number];
+  radius: number;
 }
 
 export interface GatePassRecord {
@@ -90,6 +209,94 @@ export interface GatePassRecord {
   radialDistance: number;
   speed: number;
   cleared: boolean;
+  /** Normalised overdrive reserve immediately before and after the gate's 25% reward. */
+  boostEnergyBefore: number;
+  boostEnergyAfter: number;
+}
+
+export interface HarnessLocaleState {
+  selected: Locale;
+  active: Locale | null;
+  locked: boolean;
+  settingsSubscribers: number;
+  fontStatus: LocaleFontStatus;
+}
+
+/** Stable, JSON-safe identity for the one route whose world was built at boot. */
+export interface HarnessCourseState {
+  /** Historical field name; active launches are now keyed by the mission catalog. */
+  courseId: MissionId;
+  recordId: string;
+  seed: number;
+  gateCount: number;
+  length: number;
+  resolution: MissionResolution;
+}
+
+/** Dependency-free catalog projection; it deliberately excludes render/world objects. */
+export interface HarnessCatalogState {
+  /** Player-facing active mission sequence. */
+  order: readonly MissionId[];
+  /** Sanitized identities, including dormant definitions retained for migration. */
+  recognizedOrder: readonly CourseId[];
+  courses: ReadonlyArray<{
+    id: CourseId | MissionId;
+    order: number;
+    defaultSeed: number;
+    recordId: string;
+    active: boolean;
+    nextCourseId: MissionId | null;
+    gateCount: number;
+    sector: string;
+    destination: string;
+    objectives: readonly ObjectiveId[];
+    shearGates: readonly number[];
+    landmarkKind: string;
+    radio: ReadonlyArray<{
+      afterGate: number;
+      speaker: string;
+      messageKey: string;
+      safeWindowSeconds: number;
+    }>;
+  }>;
+}
+
+/** Every aperture-plane crossing, including recoverable misses. */
+export interface HarnessCourseCrossing {
+  index: number;
+  time: number;
+  radialDistance: number;
+  speed: number;
+  /** Fraction of the aperture radius. */
+  normalizedOffset: number;
+  cleared: boolean;
+  blockedBy: 'aperture' | 'shear' | null;
+}
+
+/** Shared render/predicate phase evidence for the active route's SHEAR field. */
+export interface HarnessShearState {
+  drawCalls: number;
+  triangles: number;
+  halfWidthRadians: number;
+  hubRadiusFraction: number;
+  states: ReadonlyArray<{
+    gateIndex: number;
+    phase: number;
+    initialPhase: number;
+    angularSpeed: number;
+  }>;
+}
+
+/** Fixed authored landmark resource/collision evidence for the one boot-built stage. */
+export interface HarnessStageLandmarkState {
+  kind: string;
+  landmarks: readonly string[];
+  signature: string;
+  draws: number;
+  triangles: number;
+  geometries: number;
+  materials: number;
+  colliders: number;
 }
 
 export interface HarnessApi {
@@ -112,8 +319,52 @@ export interface HarnessApi {
   /** Latest telemetry snapshot. */
   telemetry(): Telemetry;
   phase(): Phase;
-  /** Non-null once the run has finished. */
-  result(): RunResult | null;
+  /** Non-null once the run has finished successfully; failures deliberately keep this null. */
+  result(): MissionResult | null;
+  /** Active boot-built route identity and URL-resolution evidence. */
+  course(): HarnessCourseState;
+  /** Immutable route authoring projected to a compact JSON-safe catalog. */
+  catalog(): HarnessCatalogState;
+  /** Sanitized campaign progress, kept separate from per-seed PB storage. */
+  progress(): ProgressV2;
+  /** Current route's moving-barrier phases, or null for a route without SHEAR. */
+  shear(): HarnessShearState | null;
+  /** Read-only signature and bounded resource counts for the selected stage landmarks. */
+  landmarks(): HarnessStageLandmarkState;
+  /** Aperture-plane outcomes; unlike gateHistory(), this includes misses. */
+  crossings(): HarnessCourseCrossing[];
+  /**
+   * Test-only: cross the currently armed SHEAR gate through its blocked hub using the production
+   * Course.update -> onMiss path. The caller must first stage a SHEAR gate with seekCourse().
+   */
+  stageShearBlock(): HarnessCourseCrossing | null;
+  /** Test-only validated progress installation. Raw storage stays encapsulated. */
+  installProgress(value: unknown): ProgressWriteOutcome;
+  /** Build navigation data only. This never changes location or simulation state. */
+  routeUrl(missionId: MissionId): string;
+  /**
+   * Apply normalised structural damage for deterministic terminal-state tests.
+   *
+   * Damage is accepted only while actively flying. Reaching zero does not change phase inside
+   * this call: the next simulation step resolves all same-frame damage first, then transitions
+   * once to `failed`. The clamped hull value is returned in every phase.
+   */
+  damageHull(amount: number): number;
+  /**
+   * Stage one deterministic contact against a currently drawn asteroid.
+   *
+   * This moves the ship into overlap at a known closing speed but applies no damage itself. The
+   * next `step()` must run the production asteroid-motion, collision and `Ship.applyImpact` path.
+   * Repeated calls preserve accumulated hull damage and the run's contact sequence. Returns null
+   * outside active flight or when no drawn asteroid is available.
+   */
+  stageCollision(): { rockId: number; overlap: number; closingSpeed: number } | null;
+  /** Stage a collision through the authored landmark contact path; null when none exist. */
+  stageLandmarkCollision(): {
+    colliderId: string;
+    overlap: number;
+    closingSpeed: number;
+  } | null;
   /** Override pilot input. Values persist until changed. `null` returns control to the human. */
   setInput(input: HarnessInput | null): void;
   /**
@@ -130,6 +381,8 @@ export interface HarnessApi {
   seekCourse(t: number): void;
   /** Park a free camera at a named cinematic vantage point for screenshots. */
   vantage(name: string): void;
+  /** Return from an authored vantage to the player's selected flight camera. */
+  clearVantage(): void;
   /** Names accepted by `vantage`. */
   vantages(): string[];
   /**
@@ -156,6 +409,11 @@ export interface HarnessApi {
    */
   step(frames: number, dt?: number): Promise<void>;
   /**
+   * Advance only the production simulation path, then synchronise visuals/telemetry once.
+   * Intended for high-rate deterministic course proofs; performance and pixels use normal frames.
+   */
+  stepSimulation(frames: number, dt?: number): void;
+  /**
    * Waits for the compositor to show what has already been rendered. Does NOT render.
    *
    * While driven, the rAF loop advances nothing, so a frame only exists after `step()`. Calling
@@ -166,6 +424,8 @@ export interface HarnessApi {
   present(): Promise<void>;
   /** Physical state of the ship this frame. */
   pose(): HarnessPose;
+  /** Exterior ship/plume topology and the scalar VFX state currently presented. */
+  shipDebug(): HarnessShipVisualDebugState;
   /** The pilot command actually applied this frame, after overrides and assists. */
   activeInput(): Required<HarnessInput>;
   /** Every gate crossing so far, in order. Survives until the next `startRun`. */
@@ -200,6 +460,14 @@ export interface HarnessApi {
   profile(seconds: number): Promise<PerfSample>;
   settings(): Settings;
   setSettings(patch: Partial<Settings>): void;
+  /** Selected title locale and the nullable locale snapshot locked to the current run. */
+  locale(): HarnessLocaleState;
+  /** The flight camera mode currently applied by the game, not merely the stored preference. */
+  cameraMode(): CameraMode;
+  /** Physical cockpit pose, controls, instrument cadence, and cockpit-only render cost. */
+  cockpitDebug(): HarnessCockpitDebugState;
+  /** Physical MFD locale, fitted-label, source-pixel, and final-screen evidence. */
+  cockpitMfd(): HarnessCockpitMfdEvidence;
   /**
    * Freezes SIMULATION only. Does NOT open the pause menu, release pointer lock or duck the
    * drive, so it reaches a state no player can occupy: paused, pointer still locked, audio at
@@ -265,6 +533,24 @@ export interface HazardReport {
    * the collider. Identity of the recorded list does.
    */
   colliderSharesDrawnList: boolean | null;
+  /** Deterministic, gameplay-only moving subset; never varies with the quality population. */
+  motion: {
+    count: number;
+    cap: number;
+    elapsed: number;
+    /** Peak metres any moving rock has left its authored position since the last motion reset. */
+    maxDisplacement: number;
+    displacementLimit: number;
+    /** Peak player-proximity retreat since reset; outward from the line and separately bounded. */
+    maxPlayerResponse: number;
+    playerResponseLimit: number;
+    /** Minimum distance change caused by reaction; non-negative means it never approaches. */
+    minPlayerDistanceDelta: number;
+    /** Minimum observed surface clearance to the protected spawn bubble and gate apertures. */
+    minProtectedVolumeClearance: number;
+    /** Stable ids and quantised positions, suitable for reset/seed determinism assertions. */
+    signature: string;
+  };
 }
 
 declare global {

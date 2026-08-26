@@ -159,7 +159,7 @@ const APPROACH_LIGHT_FRAG = /* glsl */ `
  * orientation can never drift out of alignment with the circumference, which is exactly how
  * the first attempt collapsed into an unreadable knot.
  */
-function buildRingHull(
+export function buildRingHull(
   radius: number,
   halfRadial: number,
   halfAxial: number,
@@ -215,6 +215,36 @@ function buildRingHull(
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+export interface StructureMaterialOptions {
+  lighting: LightingUniforms;
+  base: number;
+  accent: number;
+  window: number;
+  windowDensity: number;
+}
+
+/**
+ * Shared material construction for authored built-space landmarks.
+ *
+ * Existing owners intentionally retain their current constructors and resource lifecycles;
+ * this factory only lets new stage-local owners reuse the exact structure shader pair without
+ * copying it or reaching through a class instance for its private material.
+ */
+export function createStructureMaterial(options: StructureMaterialOptions): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: withLighting(options.lighting, {
+      uCameraPos: { value: new THREE.Vector3() },
+      uBase: { value: new THREE.Color(options.base) },
+      uAccent: { value: new THREE.Color(options.accent) },
+      uWindow: { value: new THREE.Color(options.window) },
+      uWindowDensity: { value: options.windowDensity },
+      uTime: { value: 0 },
+    }),
+    vertexShader: STRUCTURE_VERT,
+    fragmentShader: STRUCTURE_FRAG,
+  });
 }
 
 /**
@@ -406,6 +436,13 @@ export interface TerminusOptions {
   normal: THREE.Vector3;
   lighting: LightingUniforms;
   seed: number;
+  apertureRadius?: number;
+  palette?: {
+    hullBase: number;
+    hullAccent: number;
+    window: number;
+    aperture: number;
+  };
 }
 
 /**
@@ -419,7 +456,7 @@ export interface TerminusOptions {
  */
 export class Terminus {
   readonly object = new THREE.Group();
-  readonly apertureRadius = 430;
+  readonly apertureRadius: number;
   readonly position: THREE.Vector3;
   readonly normal: THREE.Vector3;
 
@@ -430,6 +467,7 @@ export class Terminus {
   private readonly geometries: THREE.BufferGeometry[] = [];
 
   constructor(options: TerminusOptions) {
+    this.apertureRadius = options.apertureRadius ?? 430;
     this.position = options.position.clone();
     this.normal = options.normal.clone().normalize();
     const rng = new Rng(options.seed);
@@ -437,9 +475,9 @@ export class Terminus {
     this.hullMat = new THREE.ShaderMaterial({
       uniforms: withLighting(options.lighting, {
         uCameraPos: { value: new THREE.Vector3() },
-        uBase: { value: new THREE.Color(0x49525f) },
-        uAccent: { value: new THREE.Color(0x9aa6b4) },
-        uWindow: { value: new THREE.Color(0xffcf92).multiplyScalar(1.1) },
+        uBase: { value: new THREE.Color(options.palette?.hullBase ?? 0x49525f) },
+        uAccent: { value: new THREE.Color(options.palette?.hullAccent ?? 0x9aa6b4) },
+        uWindow: { value: new THREE.Color(options.palette?.window ?? 0xffcf92).multiplyScalar(1.1) },
         uWindowDensity: { value: 0.34 },
         uTime: { value: 0 },
       }),
@@ -613,7 +651,7 @@ export class Terminus {
     // --- aperture light band: the thing you actually aim at ----------------------------
     this.bandMat = new THREE.ShaderMaterial({
       uniforms: {
-        uColor: { value: new THREE.Color(PALETTE.gateArmed) },
+        uColor: { value: new THREE.Color(options.palette?.aperture ?? PALETTE.gateArmed) },
         uTime: { value: 0 },
       },
       vertexShader: /* glsl */ `
@@ -671,7 +709,7 @@ export class Terminus {
         uTime: { value: 0 },
         uPixelScale: { value: 1 },
         uCount: { value: lightCount },
-        uColor: { value: new THREE.Color(PALETTE.gateArmed) },
+        uColor: { value: new THREE.Color(options.palette?.aperture ?? PALETTE.gateArmed) },
       },
       vertexShader: APPROACH_LIGHT_VERT,
       fragmentShader: APPROACH_LIGHT_FRAG,
@@ -684,6 +722,7 @@ export class Terminus {
     lights.renderOrder = 7;
     this.spinner.add(lights);
 
+    this.spinner.scale.setScalar(this.apertureRadius / 430);
     this.object.add(this.spinner);
     this.object.position.copy(this.position);
     this.object.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.normal);

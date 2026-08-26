@@ -7,10 +7,17 @@
 
 import './styles.css';
 
-import type { HudHost, Phase, RunResult, Settings, Telemetry } from '../core/contracts.ts';
+import type { HudHost, MissionResult, Phase, Settings, Telemetry } from '../core/contracts.ts';
 import { FONT, UI } from '../core/art.ts';
+import type { Translator } from '../i18n/index.ts';
 import { Hud, el } from './Hud.ts';
-import { Screens, type ScreenView, type UiSound } from './Screens.ts';
+import {
+  Screens,
+  type CampaignViewModel,
+  type ScreenFocusToken,
+  type ScreenView,
+  type UiSound,
+} from './Screens.ts';
 
 /** Views that are reachable from more than one place and therefore need a return target. */
 const SUB_VIEWS: readonly ScreenView[] = ['settings', 'controls'];
@@ -31,26 +38,26 @@ export class Overlay {
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
 
-  constructor(rootEl: HTMLElement, host: HudHost) {
+  constructor(rootEl: HTMLElement, host: HudHost, translator: Translator) {
     this.host = host;
 
     this.root = el('div', 'lv-root');
     this.root.dataset['phase'] = 'boot';
-    this.applyTokens();
+    this.applyTokens(translator);
 
     this.grain = el('div', 'lv-veneer');
     this.grain.setAttribute('aria-hidden', 'true');
     this.grain.append(el('i', 'lv-veneer-scan'), el('i', 'lv-veneer-grain'));
     this.root.appendChild(this.grain);
 
-    this.hud = new Hud();
+    this.hud = new Hud(translator);
     this.hud.mount(this.root);
 
     this.screens = new Screens(this.proxyHost(), {
       onSettingChanged: () => this.syncSettings(),
       onSound: (kind) => this.emitSound(kind),
       onBack: () => this.back(),
-    });
+    }, translator);
     this.screens.mount(this.root);
 
     rootEl.appendChild(this.root);
@@ -68,7 +75,7 @@ export class Overlay {
 
   /* ------------------------------------------------------------------ tokens */
 
-  private applyTokens(): void {
+  private applyTokens(translator: Translator): void {
     const s = this.root.style;
     s.setProperty('--c-primary', UI.primary);
     s.setProperty('--c-primary-dim', UI.primaryDim);
@@ -83,8 +90,9 @@ export class Overlay {
     s.setProperty('--c-panel-solid', UI.panelSolid);
     s.setProperty('--c-hairline', UI.hairline);
     s.setProperty('--c-scanline', UI.scanline);
-    s.setProperty('--f-mono', FONT.mono);
-    s.setProperty('--f-display', FONT.display);
+    const hangul = translator.locale === 'ko' ? `${FONT.hangul}, ` : '';
+    s.setProperty('--f-mono', `${hangul}${FONT.mono}`);
+    s.setProperty('--f-display', `${hangul}${FONT.display}`);
   }
 
   /* ------------------------------------------------------------- host bridge */
@@ -122,7 +130,13 @@ export class Overlay {
         this.paused = false;
         host.quitToTitle();
       },
+      selectMission: (missionId) => host.selectMission(missionId),
+      showMissionSelect: () => {
+        this.paused = false;
+        host.showMissionSelect();
+      },
       pause: () => host.pause(),
+      requestLocale: (locale) => host.requestLocale(locale),
       setSetting: (key, value) => host.setSetting(key, value),
       getSettings: () => host.getSettings(),
     };
@@ -163,6 +177,22 @@ export class Overlay {
     this.screens.setCourseFacts(t.courseLength, t.gate.total);
   }
 
+  syncCampaign(viewModel: CampaignViewModel): void {
+    this.screens.syncCampaign(viewModel);
+  }
+
+  focusStageSelection(): void {
+    this.screens.focusStageSelection();
+  }
+
+  captureFocusToken(): ScreenFocusToken | null {
+    return this.screens.captureFocusToken();
+  }
+
+  restoreFocusToken(token: ScreenFocusToken | null): void {
+    this.screens.restoreFocusToken(token);
+  }
+
   setPhase(phase: Phase): void {
     if (phase === this.phase) return;
     this.phase = phase;
@@ -172,8 +202,12 @@ export class Overlay {
     this.applyView();
   }
 
-  showResult(result: RunResult): void {
+  showResult(result: MissionResult): void {
     this.screens.showResult(result);
+  }
+
+  showFailure(elapsed: number, reason?: string): void {
+    this.screens.showFailure(elapsed, reason);
   }
 
   setCountdown(value: number | null): void {
@@ -183,8 +217,8 @@ export class Overlay {
     this.applyHudActivity();
   }
 
-  radio(speaker: string, text: string): void {
-    this.hud.radio(speaker, text);
+  radio(speaker: string, text: string, durationBasisLength?: number): void {
+    this.hud.radio(speaker, text, durationBasisLength);
   }
 
   setPointerLocked(locked: boolean): void {
@@ -241,6 +275,7 @@ export class Overlay {
         return 'title';
       case 'briefing':
         return 'briefing';
+      case 'failed':
       case 'finished':
         return 'results';
       default:
@@ -253,7 +288,11 @@ export class Overlay {
     const counting = this.phase === 'countdown' || this.countdown !== null;
     this.hud.setActive(flying || counting, counting || this.paused);
     const menuish =
-      this.phase === 'title' || this.phase === 'briefing' || this.phase === 'finished' || this.paused;
+      this.phase === 'title' ||
+      this.phase === 'briefing' ||
+      this.phase === 'failed' ||
+      this.phase === 'finished' ||
+      this.paused;
     this.grain.dataset['on'] = menuish ? '1' : '0';
   }
 

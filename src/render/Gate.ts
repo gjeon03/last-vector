@@ -4,6 +4,7 @@ import { GLSL_LIGHTING, withLighting, type LightingUniforms } from './lighting.t
 import { PALETTE } from '../core/art.ts';
 import { Rng } from '../core/rng.ts';
 import { clamp01, damp, smoothstep } from '../core/mathx.ts';
+import type { GateNameMessage } from '../core/contracts.ts';
 
 /**
  * A CAIRN — one of the navigation markers the drift is strung with. Not a neon hoop: five
@@ -198,6 +199,10 @@ export interface GateOptions {
   radius: number;
   lighting: LightingUniforms;
   seed: number;
+  /** Authored roll applied after the deterministic visual seed rotation. */
+  bank: number;
+  name: string;
+  nameMessage?: GateNameMessage;
 }
 
 export class Gate {
@@ -207,6 +212,10 @@ export class Gate {
   readonly normal: THREE.Vector3;
   readonly radius: number;
   readonly name: string;
+  readonly nameMessage: GateNameMessage | undefined;
+  /** Final rendered local +X/+Y axes in world space, including seed rotation and authored bank. */
+  readonly planeX = new THREE.Vector3();
+  readonly planeY = new THREE.Vector3();
 
   state: GateState = 'dormant';
 
@@ -227,7 +236,8 @@ export class Gate {
     this.position = options.position.clone();
     this.normal = options.normal.clone().normalize();
     this.radius = options.radius;
-    this.name = options.index === options.total - 1 ? 'TERMINUS APPROACH' : `CAIRN ${String(options.index + 1).padStart(2, '0')}`;
+    this.name = options.name;
+    this.nameMessage = options.nameMessage;
 
     const rng = new Rng(options.seed);
 
@@ -436,6 +446,9 @@ export class Gate {
     this.object.position.copy(this.position);
     this.object.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.normal);
     this.object.rotateZ(rng.range(0, Math.PI * 2));
+    this.object.rotateZ(options.bank);
+    this.planeX.set(1, 0, 0).applyQuaternion(this.object.quaternion).normalize();
+    this.planeY.set(0, 1, 0).applyQuaternion(this.object.quaternion).normalize();
   }
 
   /** A tapered slab, wider at the base, with a chamfered inward edge. */
@@ -578,6 +591,18 @@ export class Gate {
     return out.length();
   }
 
+  /** Allocation-free projection into the final rendered gate plane. */
+  worldToPlane(point: THREE.Vector3, out: THREE.Vector2): THREE.Vector2 {
+    const dx = point.x - this.position.x;
+    const dy = point.y - this.position.y;
+    const dz = point.z - this.position.z;
+    out.set(
+      dx * this.planeX.x + dy * this.planeX.y + dz * this.planeX.z,
+      dx * this.planeY.x + dy * this.planeY.y + dz * this.planeY.z,
+    );
+    return out;
+  }
+
   /** 0..1 alignment of a heading with the gate's forward axis. */
   alignment(heading: THREE.Vector3): number {
     return clamp01(smoothstep(-0.2, 1, heading.dot(this.normal)));
@@ -594,4 +619,3 @@ export class Gate {
     this.shockMat.dispose();
   }
 }
-

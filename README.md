@@ -4,12 +4,16 @@
 
 **▶ 플레이: https://gjeon03.github.io/last-vector/**
 
-죽어가는 호박색 별을 도는 잔해 대륙 **케언 드리프트(the Cairn Drift)**를 가로지르는 브라우저
-우주선 비행. 이곳을 처음 측량한 누군가가 남긴 거대한 항법 표지들이 항로에 늘어서 있다. 아홉 개의
-케언을 꿰고, 드리프트가 닫히기 전에 **베스퍼 터미너스(Vesper Terminus)**에 닿아야 한다.
+죽어가는 호박색 별의 잔해 지대를 건너는 2챕터 브라우저 우주선 비행. Chapter 01
+**CAIRN DRIFT**에서는 아홉 개의 케언을 순서대로 통과해 VESPER TERMINUS에 도달한다. 완주하면
+Chapter 02 **BLACKOUT RELAY**가 열린다. 차갑고 빽빽한 파손 릴레이 안에서 불안정한 CORE 열 개를
+빠르게 회수해야 한다. 놓친 CORE는 다른 고정 후보 지점으로 이동하며, 마지막 CORE를 확보한 뒤에는
+제한시간 안에 출발 릴레이로 돌아와야 완주된다. CORE 하나는 CHARGE 10과 BOOST 예비량 25를 준다.
 
-전부 브라우저 안에서 돈다. 서버도, 런타임 네트워크도, 바이너리 에셋도 없다. 빌드에 들어 있는 모든
-바위와 별과 성운과 선체 패널과 소리는 로드 시점에 시드 하나에서 생성된다.
+전부 브라우저 안에서 돈다. 서버나 런타임 외부 네트워크는 없다. 바위와 별과 성운, 선체 패널, 소리는
+로드 시점에 시드 하나에서 생성되며 모델·텍스처·오디오 샘플을 내려받지 않는다. 라디오 연출은 자막과
+절차적으로 합성한 통신 큐로만 구성되며 TTS나 녹음 음성은 사용하지 않는다. 유일한 바이너리 에셋은
+저장소에 함께 두는 한국어 UI 글꼴 WOFF2 세 파일이다.
 
 ## 로컬에서 실행
 
@@ -20,10 +24,28 @@ pnpm dev            # http://127.0.0.1:5173
 
 ```bash
 pnpm build          # 타입체크 + dist/ 정적 빌드
+pnpm preview        # Vite 미리보기 서버
 pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정적 서버
 ```
 
 `dist/`는 경로가 상대적이고 자기완결적이다. 아무 정적 호스트에나 올리면 그대로 돈다.
+
+## 언어
+
+저장값이 없는 첫 실행은 한국어다. 영어 전환은 타이틀 화면의 언어 선택기에서만 가능하며 선택값은
+`last-vector.locale.v1`에 `ko` 또는 `en`으로 저장된다. 브리핑에 들어가면 그 언어가 현재 주행에
+고정되어 재시작과 재도전에도 유지되고, 타이틀로 돌아온 뒤에만 저장된 언어를 다시 읽고 바꿀 수 있다.
+
+## 항로와 진행
+
+타이틀에는 **CAIRN DRIFT**와 **BLACKOUT RELAY**가 챕터 순서대로 표시된다. 처음에는 CAIRN만
+열려 있으며, 랭크나 부가 목표와 관계없이 한 번 완주하면 RELAY가 열린다. 최초 완주, 최고 랭크,
+무충돌 완주와 미션별 숙련 목표는 `last-vector.progress.v2`에 저장된다.
+
+결정적인 미션 URL은 `?mission=cairn-drift`와 `?mission=relay-harvest`를 사용한다. RELAY의
+`layout=<index>`는 열 CORE와 두 예비 위치의 배치를 고정한다. 결과 화면의 **RUN AGAIN**은 같은 배치와 PB 구획을
+유지해 다시 시작하고, **NEW LAYOUT**은 다른 검증된 배치로 새로 로드한다. 잠긴 미션이나 잘못된 ID로
+접근하면 CAIRN으로 안전하게 되돌아간다.
 
 ## 배포
 
@@ -42,6 +64,7 @@ pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정�
 | **Q / E** | 좌 / 우 스트레이프 |
 | **R / F** | 상 / 하 스트레이프 |
 | **방향키** | 마우스 없이 피치와 요 |
+| **C** | 체이스 시점 / 1인칭 조종석 시점 전환 (출발 카운트다운·비행 중) |
 | **Esc** | 일시정지 |
 | **N** | 주행 재시작 |
 
@@ -54,6 +77,7 @@ src/core/       서브시스템 간 계약, 입력, 설정, 시드 기반 난수
 src/render/     렌더러: HDR 포스트 스택, 절차적 하늘, 바위, 게이트, 선체, 스테이션
 src/game/       비행 모델, 체이스 카메라, 항로, 오케스트레이션, 자동화 표면
 src/audio/      절차적 WebAudio 엔진 — 합성만, 샘플 없음
+src/i18n/       한국어·영어 카탈로그, locale 저장, 글꼴 준비와 도메인 메시지 렌더링
 src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하나
 ```
 
@@ -77,17 +101,37 @@ src/ui/         HUD와 화면: 텍스트는 DOM, 벡터 계기는 캔버스 하�
 성능 측정, 스크린샷 매트릭스를 헤드리스로 구동할 수 있다.
 
 ```bash
-pnpm playtest              # 무인 전체 주행 + 어서션
-pnpm playtest:perf         # 1080p / 1440p 프레임타임 측정
+pnpm typecheck             # TypeScript 검사
+pnpm test:i18n             # 카탈로그·타입·안전 DOM 계약
+pnpm test:campaign         # 2챕터 카탈로그·선택·진행 저장 계약
+pnpm test:boost            # BOOST 계약
+pnpm test:relay            # BLACKOUT RELAY 수집·배치 계약
+pnpm test:relay-render     # RELAY 렌더·충돌 예산 계약
+pnpm test:stage-landmarks  # 랜드마크 저작·충돌 계약
+
+pnpm playtest              # CAIRN 무인 주행과 입력·비행 어서션
+pnpm playtest:perf         # 브라우저 성능 측정
+pnpm playtest:boost-vfx    # BOOST 시각 효과 검증
+pnpm playtest:campaign     # 2챕터 해금과 전환 검증
+pnpm playtest:relay        # RELAY 수집·재도전·새 배치 실주행 검증
 pnpm playtest:screenshots  # 결정적 스크린샷 매트릭스
-pnpm playtest:all          # 위 셋을 모두
+pnpm playtest:all          # 전체 브라우저·계약·성능·오디오 게이트 집계
 ```
 
-이 스크립트들은 **빌드하지 않고** `dist/`를 정적 서빙한다. 현재 작업 트리를 검증하려면 반드시
-`pnpm build`를 먼저 돌려야 한다. 그러지 않으면 이전 산출물을 측정하게 된다.
+브라우저 playtest는 **빌드하지 않고** `dist/`를 정적 서빙한다. 현재 작업 트리를 검증하려면 반드시
+`pnpm build`를 먼저 돌려야 한다. 그러지 않으면 이전 산출물을 측정하게 된다. `test:*` 계약은 소스를
+직접 검사한다.
 
 API는 `load` 시점이 아니라 비동기 부팅이 끝난 뒤 설치된다. 구동하기 전에 `window.__LV` 또는
 `html[data-lv-ready="1"]`를 기다려야 한다. `?seed=<uint32>`로 월드를 고정할 수 있다.
+
+## 한국어 글꼴
+
+`public/fonts/`의 NanumSquare Neo Light·Regular·Bold WOFF2는 NAVER 공식 배포본의 바이트를 수정하지
+않고 자체 호스팅한다. 저작권·원본 ZIP 매핑·해시는 `NOTICE.md`, 라이선스 전문은 `OFL.txt`에 있으며
+SIL Open Font License 1.1을 따른다. 글꼴은 한국어 locale에서만 런타임에 준비되고 preload하지 않는다.
+따라서 깨끗한 영어 부팅은 이 WOFF2 파일을 요청하지 않으며, 한국어 로딩 실패도 시스템 글꼴 폴백으로
+부팅을 계속한다.
 
 ## 크레딧과 독창성
 

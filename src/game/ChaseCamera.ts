@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Ship } from './Ship.ts';
+import type { CameraMode } from '../core/contracts.ts';
 import { clamp01, damp, lerp } from '../core/mathx.ts';
 
 /**
@@ -20,6 +21,14 @@ export interface CameraShakeSource {
 }
 
 const BASE_OFFSET = new THREE.Vector3(0, 2.3, 13.4);
+const FAR_OFFSET = new THREE.Vector3(0, 5.1, 27.6);
+const COCKPIT_OFFSET = new THREE.Vector3(0, 1.05, -2.15);
+const CHASE_NEAR = 1.5;
+const COCKPIT_NEAR = 0.1;
+const COCKPIT_FOV_BONUS = 8;
+// Settings top out at 100; speed, boost, and impact can add another 16. Keeping the ceiling at
+// that full chase target plus the cockpit bonus prevents the cap from ever making cockpit narrower.
+const COCKPIT_MAX_FOV = 124;
 
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
@@ -42,15 +51,16 @@ export class ChaseCamera {
   private fov = 76;
   private shakeTime = 0;
   private initialised = false;
+  private mode: CameraMode = 'chase';
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(this.baseFov, aspect, 1.5, 90000);
+    this.camera = new THREE.PerspectiveCamera(this.baseFov, aspect, CHASE_NEAR, 90000);
   }
 
   snapTo(ship: Ship): void {
     this.boomPosition.copy(ship.position);
     this.boomQuaternion.copy(ship.quaternion);
-    this.offset.copy(BASE_OFFSET);
+    this.offset.copy(this.mode === 'far-chase' ? FAR_OFFSET : BASE_OFFSET);
     this.relative.copy(this.offset).applyQuaternion(this.boomQuaternion);
     this.camera.position.copy(ship.position).add(this.relative);
     ship.getForward(this.scratch);
@@ -59,57 +69,72 @@ export class ChaseCamera {
     this.initialised = true;
   }
 
-  update(dt: number, ship: Ship, shake: CameraShakeSource): void {
+  update(dt: number, ship: Ship, shake: CameraShakeSource, mode: CameraMode = 'chase'): void {
+    this.setCameraMode(mode);
     if (!this.initialised) this.snapTo(ship);
 
     const speed01 = ship.speed01;
     const boost = clamp01(shake.boost);
 
-    // The camera is tracked in a frame that *moves with the ship*, not in world space.
-    //
-    // This matters more than it sounds. An exponential follower chasing a target that is
-    // moving at constant velocity settles at a permanent lag proportional to that velocity, so
-    // a world-space chase camera drifts further behind the faster you go — at 800 m/s the ship
-    // shrank to a dot exactly when the player most wants to see it. Tracking the *offset*
-    // instead makes the steady-state distance exactly the boom length at any speed and any
-    // frame rate, while still smoothing every transient.
-    //
-    // The sense of the camera being thrown around comes from two places that remain: the boom
-    // orientation lags the ship's rotation (so a hard turn swings the camera wide and you watch
-    // your own airframe bank), and the boom lengthens with speed and boost.
-    const orientationTau = lerp(0.16, 0.085, speed01);
-    this.boomQuaternion.slerp(ship.quaternion, 1 - Math.exp(-dt / orientationTau));
+    if (mode === 'cockpit') {
+      // The pilot's eye is rigidly mounted in the airframe. Keeping this pose in the ship's
+      // frame prevents the speed-dependent positional lag that made the chase camera drift, and
+      // preserves roll as useful first-person flight information instead of levelling it away.
+      this.camera.position.copy(COCKPIT_OFFSET).applyQuaternion(ship.quaternion).add(ship.position);
+      ship.getForward(this.scratch);
+      this.lookTarget.copy(this.camera.position).addScaledVector(this.scratch, 120);
+      this.upVector.set(0, 1, 0).applyQuaternion(ship.quaternion);
+      this.camera.up.copy(this.upVector);
+      this.camera.lookAt(this.lookTarget);
+    } else {
+      // The camera is tracked in a frame that *moves with the ship*, not in world space.
+      //
+      // This matters more than it sounds. An exponential follower chasing a target that is
+      // moving at constant velocity settles at a permanent lag proportional to that velocity, so
+      // a world-space chase camera drifts further behind the faster you go — at 800 m/s the ship
+      // shrank to a dot exactly when the player most wants to see it. Tracking the *offset*
+      // instead makes the steady-state distance exactly the boom length at any speed and any
+      // frame rate, while still smoothing every transient.
+      //
+      // The sense of the camera being thrown around comes from two places that remain: the boom
+      // orientation lags the ship's rotation (so a hard turn swings the camera wide and you watch
+      // your own airframe bank), and the boom lengthens with speed and boost.
+      const orientationTau = lerp(0.16, 0.085, speed01);
+      this.boomQuaternion.slerp(ship.quaternion, 1 - Math.exp(-dt / orientationTau));
 
-    this.offset.set(
-      BASE_OFFSET.x,
-      BASE_OFFSET.y + speed01 * 0.35,
-      BASE_OFFSET.z + speed01 * 2.2 + boost * 1.2,
-    );
-    this.desiredPosition.copy(this.offset).applyQuaternion(this.boomQuaternion);
+      const baseOffset = mode === 'far-chase' ? FAR_OFFSET : BASE_OFFSET;
+      const distanceScale = mode === 'far-chase' ? 1.55 : 1;
+      this.offset.set(
+        baseOffset.x,
+        baseOffset.y + speed01 * 0.35 * distanceScale,
+        baseOffset.z + (speed01 * 2.2 + boost * 1.2) * distanceScale,
+      );
+      this.desiredPosition.copy(this.offset).applyQuaternion(this.boomQuaternion);
 
-    const followTau = 0.075;
-    this.relative.x = damp(this.relative.x, this.desiredPosition.x, followTau, dt);
-    this.relative.y = damp(this.relative.y, this.desiredPosition.y, followTau, dt);
-    this.relative.z = damp(this.relative.z, this.desiredPosition.z, followTau, dt);
-    this.camera.position.copy(ship.position).add(this.relative);
-    this.boomPosition.copy(ship.position);
+      const followTau = 0.075;
+      this.relative.x = damp(this.relative.x, this.desiredPosition.x, followTau, dt);
+      this.relative.y = damp(this.relative.y, this.desiredPosition.y, followTau, dt);
+      this.relative.z = damp(this.relative.z, this.desiredPosition.z, followTau, dt);
+      this.camera.position.copy(ship.position).add(this.relative);
+      this.boomPosition.copy(ship.position);
 
-    // Aim ahead of the ship, biased toward where the velocity vector is actually going. At
-    // high slip this points off the nose, which is exactly the information a pilot wants.
-    ship.getForward(this.scratch);
-    this.lookTarget
-      .copy(ship.position)
-      .addScaledVector(this.scratch, 44 + speed01 * 78);
-    if (ship.speed > 12) {
-      this.lookTarget.addScaledVector(ship.velocity, 0.035 + boost * 0.02);
+      // Aim ahead of the ship, biased toward where the velocity vector is actually going. At
+      // high slip this points off the nose, which is exactly the information a pilot wants.
+      ship.getForward(this.scratch);
+      this.lookTarget
+        .copy(ship.position)
+        .addScaledVector(this.scratch, 44 + speed01 * 78);
+      if (ship.speed > 12) {
+        this.lookTarget.addScaledVector(ship.velocity, 0.035 + boost * 0.02);
+      }
+      this.smoothedLook.x = damp(this.smoothedLook.x, this.lookTarget.x, 0.08, dt);
+      this.smoothedLook.y = damp(this.smoothedLook.y, this.lookTarget.y, 0.08, dt);
+      this.smoothedLook.z = damp(this.smoothedLook.z, this.lookTarget.z, 0.08, dt);
+
+      this.upVector.set(0, 1, 0).applyQuaternion(this.boomQuaternion);
+      this.camera.up.copy(this.upVector);
+      this.camera.lookAt(this.smoothedLook);
     }
-    this.smoothedLook.x = damp(this.smoothedLook.x, this.lookTarget.x, 0.08, dt);
-    this.smoothedLook.y = damp(this.smoothedLook.y, this.lookTarget.y, 0.08, dt);
-    this.smoothedLook.z = damp(this.smoothedLook.z, this.lookTarget.z, 0.08, dt);
-
-    this.upVector.set(0, 1, 0).applyQuaternion(this.boomQuaternion);
-    this.camera.up.copy(this.upVector);
-    this.camera.lookAt(this.smoothedLook);
 
     // --- shake ------------------------------------------------------------------------
     this.shakeTime += dt;
@@ -133,7 +158,10 @@ export class ChaseCamera {
     // 99 degrees at full boost shrank the ship's on-screen size by 2.6x and smeared the
     // frame edges. The player's own ship is the only object of known size in view; removing it
     // turns speed into a screen effect instead of a vehicle moving through a world.
-    const targetFov = this.baseFov + speed01 * 4 + boost * 9 + shake.impact * 3;
+    const chaseTargetFov = this.baseFov + speed01 * 4 + boost * 9 + shake.impact * 3;
+    const targetFov = mode === 'cockpit'
+      ? Math.min(chaseTargetFov + COCKPIT_FOV_BONUS, COCKPIT_MAX_FOV)
+      : chaseTargetFov;
     this.fov = damp(this.fov, targetFov, boost > 0.5 ? 0.16 : 0.28, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;
@@ -147,8 +175,24 @@ export class ChaseCamera {
     this.camera.updateProjectionMatrix();
   }
 
+  setCameraMode(mode: CameraMode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.camera.near = mode === 'cockpit' ? COCKPIT_NEAR : CHASE_NEAR;
+    this.camera.updateProjectionMatrix();
+    // Every exterior mode has a distinct spring-arm length. Re-snap when entering either one so
+    // cockpit's rigid pose and the other chase mode's relative offset cannot sweep through the
+    // hull or spend the first seconds at the wrong distance.
+    if (mode !== 'cockpit') this.initialised = false;
+  }
+
+  getCameraMode(): CameraMode {
+    return this.mode;
+  }
+
   /** Places the camera at an arbitrary pose, for cinematic vantages and screenshots. */
   setPose(position: THREE.Vector3, target: THREE.Vector3, fov: number): void {
+    this.setCameraMode('chase');
     this.camera.position.copy(position);
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(target);
