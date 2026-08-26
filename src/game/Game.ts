@@ -1320,6 +1320,11 @@ export class Game {
         const collectedBeforeRewards = objectiveTelemetry.kind === 'collection'
           ? objectiveTelemetry.collected - this.rewardEvents.length
           : 0;
+        if (objectiveTelemetry.kind === 'collection' && this.rewardEvents.length > 0) {
+          // Collection objectives own their pickup timestamps just as gate objectives own split
+          // crossings. Refresh only on a pickup event, never in the steady frame path.
+          this.telemetry.splits = [...this.mission.bestRunSplits()];
+        }
         for (let rewardIndex = 0; rewardIndex < this.rewardEvents.length; rewardIndex++) {
           this.audio.play('checkpoint', 0.85);
           if (objectiveTelemetry.kind === 'collection') {

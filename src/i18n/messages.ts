@@ -202,6 +202,7 @@ export interface HudMessages {
   best: string;
   nextMarker: string;
   relayCharge: string;
+  returnToRelay: string;
   cores: string;
   primaryCore: string;
   departure: string;
@@ -219,6 +220,8 @@ export interface HudMessages {
   boostRecharging: (percent: number) => string;
   coreProgress: (collected: number, required: number) => string;
   chargeProgress: (charge: number, required: number) => string;
+  coreStability: (seconds: number) => string;
+  returnWindow: (seconds: number) => string;
 }
 
 export interface EventMessages {

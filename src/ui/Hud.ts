@@ -603,7 +603,7 @@ export class Hud {
     this.nCollectionSummary = el('div', 'lv-collection-summary');
     this.nCollectionSources = el('div', 'lv-collection-sources');
     this.nCollectionSources.setAttribute('aria-hidden', 'true');
-    for (let index = 0; index < 5; index++) {
+    for (let index = 0; index < 10; index++) {
       const pip = el('i', 'lv-collection-source');
       this.nCollectionSourcePips.push(pip);
       this.nCollectionSources.appendChild(pip);
@@ -938,11 +938,15 @@ export class Hud {
 
     const collection = t.objective.kind === 'collection' ? t.objective : null;
     this.vs.coreHot = false;
-    const objectiveKind = t.objective.kind;
+    const objectiveKind = collection
+      ? `${t.objective.kind}:${collection.phase}`
+      : t.objective.kind;
     if (objectiveKind !== this.pObjectiveKind) {
       this.pObjectiveKind = objectiveKind;
       this.nObjectiveKind.textContent = collection
-        ? this.messages.hud.relayCharge
+        ? collection.phase === 'returning'
+          ? this.messages.hud.returnToRelay
+          : this.messages.hud.relayCharge
         : this.messages.hud.nextMarker;
       this.nCollectionStatus.hidden = collection === null;
     }
@@ -978,7 +982,9 @@ export class Hud {
       retrigger(this.nGateName, 'is-in');
     }
     if (collection) {
-      const status = `${this.messages.hud.chargeProgress(collection.charge, collection.chargeRequired)} · ${this.messages.hud.coreProgress(collection.collected, collection.required)}`;
+      const status = collection.phase === 'returning'
+        ? `${this.messages.hud.coreProgress(collection.collected, collection.required)} · ${this.messages.hud.returnWindow(collection.relayRemaining ?? 0)}`
+        : `${this.messages.hud.chargeProgress(collection.charge, collection.chargeRequired)} · ${this.messages.hud.coreProgress(collection.collected, collection.required)} · ${this.messages.hud.coreStability(collection.primaryExpiresIn ?? 0)}`;
       if (status !== this.pCollectionStatus) {
         this.pCollectionStatus = status;
         this.nCollectionSummary.textContent = status;
@@ -987,7 +993,8 @@ export class Hud {
       for (let index = 0; index < collection.sources.length; index++) {
         const source = collection.sources[index]!;
         if (source.collected) sourceBits |= 1 << index;
-        if (source.primary) sourceBits |= 1 << (index + 5);
+        // Ten collection bits occupy 0..9; keep primary bits disjoint at 10..19.
+        if (source.primary) sourceBits |= 1 << (index + 10);
       }
       if (sourceBits !== this.pCollectionSourceBits) {
         this.pCollectionSourceBits = sourceBits;

@@ -34,6 +34,7 @@ export const createRelayHarvestMissionRuntime: GameMissionRuntimeFactory = (cont
     farScene: context.farScene,
     mainScene: context.mainScene,
     sources: state.sources,
+    protectedPositions: state.authoredPositions,
     seed: context.seed,
     lighting: context.lighting,
     initialQuality: context.initialQuality,

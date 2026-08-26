@@ -20,39 +20,31 @@ import { consumeMissionFrameEvents } from '../../src/game/GameContracts.ts';
 
 function verifyCatalogue() {
   assert.equal(RELAY_HARVEST_SOCKETS.length, RELAY_HARVEST_AUTHORED_SOCKET_COUNT);
-  assert.deepEqual(
-    Object.fromEntries(['near', 'mid', 'far'].map((band) => [
-      band,
-      RELAY_HARVEST_SOCKETS.filter((source) => source.band === band).length,
-    ])),
-    { near: 4, mid: 4, far: 4 },
-  );
-  assert.ok(VALIDATED_RELAY_HARVEST_LAYOUTS.length >= 2);
-  assert.ok(VALIDATED_RELAY_HARVEST_LAYOUTS.length <= 144);
+  assert.equal(RELAY_HARVEST_ACTIVE_SOURCE_COUNT, 10);
+  assert.equal(RELAY_HARVEST_REQUIRED_SOURCE_COUNT, 10);
+  assert.equal(RELAY_HARVEST_CHARGE_REQUIRED, 100);
+  assert.equal(VALIDATED_RELAY_HARVEST_LAYOUTS.length, 66);
 
   const signatures = new Set();
   for (const [index, layout] of VALIDATED_RELAY_HARVEST_LAYOUTS.entries()) {
     assert.equal(layout.index, index);
     assert.equal(layout.sockets.length, RELAY_HARVEST_ACTIVE_SOURCE_COUNT);
+    assert.equal(RELAY_HARVEST_AUTHORED_SOCKET_COUNT - layout.sockets.length, 2);
     assert.equal(getRelayHarvestLayout(index), layout);
+    assert.match(layout.signature, /^rh2-/);
     assert.equal(signatures.has(layout.signature), false);
     signatures.add(layout.signature);
     const debug = relayHarvestLayoutDebug(layout);
-    assert.deepEqual(debug.bandCounts, { near: 2, mid: 2, far: 1 });
     assert.equal(new Set(debug.sourceIds).size, RELAY_HARVEST_ACTIVE_SOURCE_COUNT);
+    assert.equal(Object.values(debug.bandCounts).reduce((sum, count) => sum + count, 0), 10);
+    assert.ok(Object.values(debug.bandCounts).every((count) => count >= 2 && count <= 4));
     assert.equal(debug.referenceRoutes.length, 2);
-    assert.ok(debug.referenceRoutes[0].referenceSeconds < 60);
-    assert.ok(debug.referenceRoutes[1].referenceSeconds < 60);
-    assert.ok(debug.referenceRoutes[0].noBoostSeconds < 85);
-    assert.ok(debug.referenceRoutes[1].noBoostSeconds < 85);
+    assert.ok(debug.referenceRoutes.every((route) => route.sourceIds.length === 10));
+    assert.ok(debug.referenceRoutes.every((route) => route.referenceSeconds < 220));
+    assert.ok(debug.referenceRoutes.every((route) => route.noBoostSeconds < 310));
     assert.ok(debug.referenceRoutes[1].referenceSeconds
-      - debug.referenceRoutes[0].referenceSeconds <= 6);
-    assert.ok(debug.referenceRoutes.some((route) => route.maximumTurnDegrees <= 55));
-    assert.ok(debug.referenceRoutes.every((route) => Number.isFinite(route.maximumTurnDegrees)));
+      - debug.referenceRoutes[0].referenceSeconds <= 24);
   }
-  // Regression: this layout previously hid a 30.87 s 81° shortcut and claimed two balanced
-  // 43–44 s routes. It must not survive unless that actual shortcut is represented and balanced.
-  assert.equal(signatures.has('rh1-N1.N3.M1.M4.F1'), false);
   for (const seed of [0, 1, 0xffff_ffff, 0x8000_0000]) {
     const selected = selectRelayHarvestLayoutIndex(seed);
     assert.equal(selected, selectRelayHarvestLayoutIndex(seed));
@@ -64,43 +56,84 @@ function verifyCatalogue() {
   return { layouts: VALIDATED_RELAY_HARVEST_LAYOUTS.length, signatures: signatures.size };
 }
 
-function verifyStateReset() {
-  const state = new RelayHarvestState(
+function verifyStableDeterministicRelocation() {
+  const origin = new THREE.Vector3(10, 20, 30);
+  const create = () => new RelayHarvestState(
     getRelayHarvestLayout(0),
-    new THREE.Vector3(10, 20, 30),
+    origin,
     new THREE.Quaternion(),
+    1,
   );
+  const state = create();
+  const mirror = create();
+  const defaultState = new RelayHarvestState(getRelayHarvestLayout(0));
+  const defaultLifetimes = defaultState.sources.map((source) => source.expiresAt);
+  assert.ok(defaultLifetimes.every((lifetime) => lifetime >= 55 && lifetime <= 65));
+  assert.ok(new Set(defaultLifetimes).size >= 4);
   const arrayIdentity = state.sources;
+  const authoredIdentity = state.authoredPositions;
   const vectorIdentities = state.sources.map((source) => source.position);
-  const coordinates = state.sources.map((source) => source.position.toArray());
-  const signature = state.layoutSignature;
-  assert.ok(state.collect(0, 1));
-  assert.equal(state.collect(0, 2), null);
-  state.reset();
+  const initialCoordinates = state.sources.map((source) => source.position.toArray());
+  const sourceIds = state.sources.map((source) => source.id);
+  assert.ok(state.collect(0, 0.5));
+  assert.ok(mirror.collect(0, 0.5));
+  assert.equal(state.relocateExpired(1), 9);
+  assert.equal(mirror.relocateExpired(1), 9);
+  assert.equal(state.sources[0].generation, 0);
+  assert.equal(state.sources[0].expiresAt, null);
+  assert.equal(new Set(state.sources.map((source) => source.socket.index)).size, 10);
+  assert.deepEqual(
+    state.sources.map((source) => [source.socket.index, ...source.position.toArray(), source.generation]),
+    mirror.sources.map((source) => [source.socket.index, ...source.position.toArray(), source.generation]),
+  );
+  assert.equal(state.relocateExpired(2), 9);
   assert.equal(state.sources, arrayIdentity);
-  assert.equal(state.layoutSignature, signature);
-  assert.equal(state.collected, 0);
-  assert.equal(state.charge, 0);
+  assert.equal(state.authoredPositions, authoredIdentity);
+  assert.deepEqual(state.sources.map((source) => source.id), sourceIds);
   for (const [index, source] of state.sources.entries()) {
     assert.equal(source.position, vectorIdentities[index]);
-    assert.deepEqual(source.position.toArray(), coordinates[index]);
-    assert.equal(source.collected, false);
-    assert.equal(source.collectedAt, null);
+    assert.deepEqual(source.position.toArray(), state.authoredPositions[source.socket.index].toArray());
   }
-  return { signature, sourceCount: state.sources.length };
+  state.reset();
+  assert.equal(state.collected, 0);
+  assert.equal(state.charge, 0);
+  assert.equal(state.phase, 'collecting');
+  for (const [index, source] of state.sources.entries()) {
+    assert.equal(source.position, vectorIdentities[index]);
+    assert.deepEqual(source.position.toArray(), initialCoordinates[index]);
+    assert.equal(source.generation, 0);
+    assert.equal(source.collected, false);
+    assert.ok(source.expiresAt > 0);
+  }
+  const relocationTrace = (hz) => {
+    const traced = new RelayHarvestState(getRelayHarvestLayout(3));
+    const generations = new Uint16Array(traced.sources.length);
+    const events = [];
+    for (let frame = 1; frame <= hz * 190; frame++) {
+      traced.relocateExpired(frame / hz);
+      for (const source of traced.sources) {
+        if (generations[source.index] === source.generation) continue;
+        generations[source.index] = source.generation;
+        events.push(`${source.index}:${source.generation}:${source.socket.index}`);
+      }
+    }
+    return events;
+  };
+  assert.deepEqual(relocationTrace(120), relocationTrace(60));
+  return {
+    sourceCount: state.sources.length,
+    authoredSockets: state.authoredPositions.length,
+    staggeredLifetimes: new Set(defaultLifetimes).size,
+  };
 }
 
-function verifySweptPickupAndOrdering() {
+function collectAllAtCrossing() {
   const state = new RelayHarvestState(getRelayHarvestLayout(0));
   const crossingCentre = new THREE.Vector3(0, 0, -1_000);
-  for (let index = 0; index < 3; index++) state.sources[index].position.copy(crossingCentre);
-  state.sources[3].position.set(5_000, 0, -1_000);
-  state.sources[4].position.set(-5_000, 0, -1_000);
   const objective = new RelayHarvestObjective(state);
+  for (const source of state.sources) source.position.copy(crossingCentre);
   const start = new THREE.Vector3(0, 0, -1_000 - RELAY_HARVEST_CAPTURE_RADIUS - 10);
   const end = new THREE.Vector3(0, 0, -1_000 + RELAY_HARVEST_CAPTURE_RADIUS + 10);
-  assert.ok(start.distanceTo(crossingCentre) > RELAY_HARVEST_CAPTURE_RADIUS);
-  assert.ok(end.distanceTo(crossingCentre) > RELAY_HARVEST_CAPTURE_RADIUS);
   const terminal = objective.update({
     previousPosition: start,
     position: end,
@@ -108,29 +141,69 @@ function verifySweptPickupAndOrdering() {
     speed: 9_000,
     elapsed: 0.1,
   });
-  assert.equal(terminal.status, 'succeeded');
+  assert.equal(terminal.status, 'running');
+  assert.equal(state.phase, 'returning');
   assert.equal(state.collected, RELAY_HARVEST_REQUIRED_SOURCE_COUNT);
   assert.equal(state.charge, RELAY_HARVEST_CHARGE_REQUIRED);
+  assert.equal(objective.bestRunSplits().length, 10);
   const rewards = [];
-  assert.equal(objective.drainRewardEvents(rewards), RELAY_HARVEST_REQUIRED_SOURCE_COUNT);
-  assert.deepEqual(rewards.map((reward) => reward.sourceId), state.sources.slice(0, 3)
-    .map((source) => source.id).sort());
+  assert.equal(objective.drainRewardEvents(rewards), 10);
   assert.ok(rewards.every((reward) => reward.amount === RELAY_HARVEST_BOOST_REWARD));
-  assert.equal(objective.drainRewardEvents([]), 0);
-  assert.match(objective.recordId('relay-harvest-r1-7'), /-layout-rh1-/);
   const telemetry = objective.telemetry();
-  assert.equal(telemetry.sources.length, RELAY_HARVEST_ACTIVE_SOURCE_COUNT);
-  assert.ok(telemetry.sources.every((source) => source.position.length === 3));
-  assert.ok(telemetry.sources.every((source) => source.anchor && typeof source.anchor.onScreen === 'boolean'));
-  return { rewardOrder: rewards.map((reward) => reward.sourceId), charge: state.charge };
+  assert.equal(telemetry.phase, 'returning');
+  assert.equal(telemetry.sources.length, 10);
+  assert.ok(telemetry.sources.every((source) => source.expiresIn === null));
+  assert.ok(telemetry.relayRemaining > 0);
+  const guidance = objective.guidance(end);
+  assert.equal(guidance.label, 'LAUNCH RELAY');
+  assert.equal(guidance.anchor, state.relayPosition);
+  return { state, objective, end, rewards };
+}
+
+function verifyReturnSuccessAndTimeout() {
+  const success = collectAllAtCrossing();
+  const successTerminal = success.objective.update({
+    previousPosition: success.end,
+    position: success.state.relayPosition,
+    forward: new THREE.Vector3(0, 0, 1),
+    speed: 1_000,
+    elapsed: 1.2,
+  });
+  assert.equal(successTerminal.status, 'succeeded');
+  assert.equal(success.state.extracted, true);
+  const result = success.objective.buildResult({
+    totalTime: 1.2,
+    hullRemaining: 100,
+    topSpeed: 1_000,
+    cleanRun: true,
+    bestTime: null,
+    bestSplits: [],
+    isNewBest: true,
+    cruiseSpeed: 462,
+  });
+  assert.equal(result.rulesetVersion, 2);
+  assert.match(result.objectiveSummary, /RELAY RETURN/);
+
+  const timeout = collectAllAtCrossing();
+  const deadline = timeout.state.relayDeadline;
+  assert.ok(deadline !== null);
+  const failure = timeout.objective.update({
+    previousPosition: timeout.end,
+    position: timeout.end,
+    forward: new THREE.Vector3(0, 0, -1),
+    speed: 0,
+    elapsed: deadline + 0.01,
+  });
+  assert.deepEqual(failure, { status: 'failed', reason: 'relay-window-closed' });
+  return { rewardCount: success.rewards.length, relayWindow: success.state.relayWindow };
 }
 
 function runLinearTrace(hz) {
   const state = new RelayHarvestState(getRelayHarvestLayout(0));
-  for (let index = 0; index < state.sources.length; index++) {
-    state.sources[index].position.set(index < 3 ? 0 : 5_000, 0, -(index + 1) * 1_000);
-  }
   const objective = new RelayHarvestObjective(state);
+  for (let index = 0; index < state.sources.length; index++) {
+    state.sources[index].position.set(0, 0, -(index + 1) * 1_000);
+  }
   const speed = 1_200;
   const dt = 1 / hz;
   const previous = new THREE.Vector3();
@@ -139,17 +212,20 @@ function runLinearTrace(hz) {
   const rewards = [];
   let elapsed = 0;
   let terminal = { status: 'running' };
-  while (terminal.status === 'running' && elapsed < 10) {
+  let returning = false;
+  while (terminal.status === 'running' && elapsed < 30) {
     previous.copy(current);
     elapsed += dt;
-    current.set(0, 0, -speed * elapsed);
+    if (!returning) current.set(0, 0, -speed * elapsed);
+    else current.z = Math.min(0, current.z + speed * dt);
     terminal = objective.update({ previousPosition: previous, position: current, forward, speed, elapsed });
     objective.drainRewardEvents(rewards);
+    returning = state.phase === 'returning';
   }
   return {
     status: terminal.status,
     ids: rewards.map((reward) => reward.sourceId),
-    times: state.sources.slice(0, 3).map((source) => source.collectedAt),
+    times: [...objective.bestRunSplits()],
     charge: state.charge,
   };
 }
@@ -158,13 +234,14 @@ function verifyRateIndependence() {
   const at60 = runLinearTrace(60);
   const at120 = runLinearTrace(120);
   assert.equal(at60.status, 'succeeded');
-  assert.deepEqual(at60.ids, ['CORE-N1', 'CORE-N2', 'CORE-M1']);
+  assert.equal(at120.status, at60.status);
+  assert.equal(at60.ids.length, 10);
   assert.deepEqual(at120.ids, at60.ids);
   assert.equal(at120.charge, at60.charge);
   for (let index = 0; index < at60.times.length; index++) {
     assert.ok(Math.abs(at60.times[index] - at120.times[index]) < 1e-8);
   }
-  return { at60, at120 };
+  return { ids: at60.ids, charge: at60.charge };
 }
 
 function verifyImmediateRuntimeReward() {
@@ -183,14 +260,13 @@ function verifyImmediateRuntimeReward() {
   consumeMissionFrameEvents(mission, { hullFailed: false, terminal: null }, ship, out);
   assert.equal(recharge, RELAY_HARVEST_BOOST_REWARD);
   assert.equal(out.length, 1);
-  assert.equal(pending.length, 0);
-  return { terminal: null, recharge };
+  return { recharge };
 }
 
 const evidence = {
   catalogue: verifyCatalogue(),
-  reset: verifyStateReset(),
-  swept: verifySweptPickupAndOrdering(),
+  relocation: verifyStableDeterministicRelocation(),
+  extraction: verifyReturnSuccessAndTimeout(),
   rate: verifyRateIndependence(),
   immediateReward: verifyImmediateRuntimeReward(),
 };

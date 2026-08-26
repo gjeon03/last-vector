@@ -619,13 +619,13 @@
 .lv-collection-sources {
   display: flex;
   justify-content: flex-end;
-  gap: 0.42rem;
+  gap: clamp(0.18rem, 0.35vw, 0.38rem);
   margin-top: 0.48rem;
 }
 
 .lv-collection-source {
-  width: 0.52rem;
-  height: 0.52rem;
+  width: 0.44rem;
+  height: 0.44rem;
   border: 1px solid var(--c-primary);
   opacity: 0.64;
   transform: rotate(45deg);

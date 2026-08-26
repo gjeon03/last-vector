@@ -80,8 +80,8 @@ async function runRelayHarvest({ report, session, options }) {
 
   await report.check({
     id: 'RELAY.initial-state',
-    name: 'Five visible physical sources project into a clean collection HUD',
-    assertion: 'Before launch the objective exposes five distinct uncollected sources, requires three, and renders five status pips.',
+    name: 'Ten visible physical sources project into a clean collection HUD',
+    assertion: 'Before launch the objective exposes ten distinct unstable sources, requires all ten, and renders ten status pips.',
   }, async () => {
     const telemetry = await callHarness(page, 'telemetry');
     const objective = telemetry.objective;
@@ -91,19 +91,19 @@ async function runRelayHarvest({ report, session, options }) {
       oldCopy: document.body.textContent?.match(/LAST ASCENT|DEAD SIGNAL|FIRE/g) ?? [],
     }));
     verify(objective.kind === 'collection', 'Objective is not collection.', { objective });
-    verify(objective.sources.length === 5 && new Set(objective.sources.map((source) => source.id)).size === 5,
-      'Objective does not expose five unique sources.', { objective });
-    verify(objective.collected === 0 && objective.required === 3 && objective.chargeRequired === 60,
+    verify(objective.sources.length === 10 && new Set(objective.sources.map((source) => source.id)).size === 10,
+      'Objective does not expose ten unique sources.', { objective });
+    verify(objective.collected === 0 && objective.required === 10 && objective.chargeRequired === 100,
       'Initial charge contract is wrong.', { objective });
-    verify(dom.pips === 5, 'HUD does not contain five fixed source pips.', dom);
+    verify(dom.pips === 10, 'HUD does not contain ten fixed source pips.', dom);
     verify(dom.oldCopy.length === 0, 'Rejected mission copy remains in the live product.', dom);
     return { objective, dom };
   });
 
   const firstRun = await report.check({
     id: 'RELAY.collection-60hz',
-    name: 'Production flight collects any three sources and ends immediately',
-    assertion: 'The real 60 Hz ship/autopilot path collects three distinct cores, reaches charge 60, receives rewards, and finishes without a return gate.',
+    name: 'Production flight sweeps ten sources and returns to the relay',
+    assertion: 'The real 60 Hz ship/autopilot path collects all ten cores, reaches charge 100, then returns to RELAY HEART before the window closes.',
   }, async () => {
     await callHarness(page, 'startRun', [{ skipIntro: true }]);
     await callHarness(page, 'setInput', [{ boost: true }]);
@@ -133,7 +133,7 @@ async function runRelayHarvest({ report, session, options }) {
     const pickupCapture = resolve(captures, '02-relay-pickup.png');
     await page.screenshot({ path: pickupCapture });
     report.addArtifact('screenshot', pickupCapture, { state: 'relay-pickup' });
-    for (let chunk = 0; chunk < 14 && await callHarness(page, 'phase') === 'flying'; chunk++) {
+    for (let chunk = 0; chunk < 24 && await callHarness(page, 'phase') === 'flying'; chunk++) {
       await callHarness(page, 'stepSimulation', [600, 1 / 60], options.timeoutMs);
     }
     const phase = await callHarness(page, 'phase');
@@ -141,10 +141,10 @@ async function runRelayHarvest({ report, session, options }) {
     const telemetry = await callHarness(page, 'telemetry');
     verify(phase === 'finished', 'Relay reference flight did not finish.', { phase, result, objective: telemetry.objective });
     verify(result?.kind === 'collection', 'Result is not collection.', { result });
-    verify(result.collected === 3 && result.required === 3 && result.charge === 60,
-      'Third core did not terminate at exact threshold.', { result });
-    verify(telemetry.objective.sources.filter((source) => source.collected).length === 3,
-      'Telemetry did not preserve exactly three collected sources.', { objective: telemetry.objective });
+    verify(result.collected === 10 && result.required === 10 && result.charge === 100,
+      'Ten-core sweep did not finish at the exact threshold.', { result });
+    verify(telemetry.objective.sources.filter((source) => source.collected).length === 10,
+      'Telemetry did not preserve all ten collected sources.', { objective: telemetry.objective });
     // The result view has a 340 ms entrance. An immediate screenshot records the transparent
     // first frame and can make a valid result screen look absent.
     await page.waitForTimeout(450);
@@ -198,7 +198,7 @@ async function runRelayHarvest({ report, session, options }) {
   }, async () => {
     await callHarness(page, 'setInput', [{ boost: true }]);
     await callHarness(page, 'setAutopilot', [true, { skill: 1 }]);
-    for (let chunk = 0; chunk < 16 && await callHarness(page, 'phase') === 'flying'; chunk++) {
+    for (let chunk = 0; chunk < 26 && await callHarness(page, 'phase') === 'flying'; chunk++) {
       await callHarness(page, 'stepSimulation', [600, 1 / 60], options.timeoutMs);
     }
     verify(await callHarness(page, 'phase') === 'finished', 'Second same-layout run did not finish.');
@@ -218,7 +218,7 @@ async function runRelayHarvest({ report, session, options }) {
 
   await report.check({
     id: 'RELAY.performance',
-    name: 'The five-source relay field stays inside the live frame budget',
+    name: 'The ten-source relay field stays inside the live frame budget',
     assertion: 'At high quality and the requested pixel ratio, a live three-second all-source run sustains at least 55 fps, p95 <= 22 ms, no late long-frame burst, and stable full render scale.',
   }, async () => {
     await callHarness(page, 'startRun', [{ skipIntro: true }]);

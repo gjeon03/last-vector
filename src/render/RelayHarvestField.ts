@@ -3,7 +3,7 @@ import type { QualityProfile } from '../core/Settings.ts';
 import type { LightingUniforms } from './lighting.ts';
 import { buildRingHull, createStructureMaterial } from './Structures.ts';
 
-export const RELAY_HARVEST_SOURCE_CAPACITY = 5;
+export const RELAY_HARVEST_SOURCE_CAPACITY = 10;
 export const RELAY_HARVEST_SOURCE_DRAW_CAP = 3;
 export const RELAY_HARVEST_SOURCE_TRIANGLE_CAP = 5_000;
 
@@ -12,6 +12,8 @@ export interface RelayHarvestSourceView {
   readonly id: string;
   readonly band?: 'near' | 'mid' | 'far';
   readonly position: THREE.Vector3;
+  readonly generation: number;
+  readonly expiresAt: number | null;
   readonly collected: boolean;
   readonly collectedAt: number | null;
 }
@@ -37,7 +39,7 @@ const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
 const ARC_RADIUS = 1_050;
 const ARC_LENGTH = Math.PI * 1.48;
 const ARC_CONTACTS = 10;
-const BANK_COUNT = 3;
+const BANK_COUNT = 6;
 const SOURCE_STRUCTURE_CLEARANCE = 500;
 
 const SOURCE_VERT = /* glsl */ `
@@ -192,6 +194,7 @@ export class RelayHarvestField {
 
   private readonly sources: readonly RelayHarvestSourceView[];
   private readonly sourcePositions: readonly THREE.Vector3[];
+  private readonly protectedPositions: readonly THREE.Vector3[];
   private readonly structureMaterial: THREE.ShaderMaterial;
   private readonly conduitMaterial: THREE.LineBasicMaterial;
   private readonly wreckTraceMaterial: THREE.LineBasicMaterial;
@@ -210,26 +213,35 @@ export class RelayHarvestField {
   private readonly cages: THREE.InstancedMesh;
   private readonly beacons: THREE.InstancedMesh;
   private readonly sourceAttributes: readonly THREE.InstancedBufferAttribute[];
+  private readonly conduitPositions = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY * 4 * 2 * 3);
+  private readonly sourceMatrix = new THREE.Matrix4();
+  private readonly sourceQuaternion = new THREE.Quaternion();
+  private readonly visualGeneration = new Uint32Array(RELAY_HARVEST_SOURCE_CAPACITY);
   private readonly visualCollected = new Uint8Array(RELAY_HARVEST_SOURCE_CAPACITY);
   private readonly visualCollectedAt = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY);
   private readonly debug: RelayHarvestFieldDebug;
 
   constructor(options: {
     readonly sources: readonly RelayHarvestSourceView[];
+    /** All authored relocation sockets, so dense wreckage never turns a future spawn into a trap. */
+    readonly protectedPositions?: readonly THREE.Vector3[];
     readonly lighting: LightingUniforms;
   }) {
     validateSources(options.sources);
     this.sources = options.sources;
     this.sourcePositions = Object.freeze(options.sources.map((source) => source.position));
+    this.protectedPositions = Object.freeze(
+      (options.protectedPositions ?? this.sourcePositions).map((position) => position),
+    );
     this.object.name = 'BLACKOUT RELAY / WRECK AND ENERGY SOURCES';
 
     this.structureMaterial = createStructureMaterial({
       lighting: options.lighting,
       // This chapter is route-choice gameplay, so the wreck must read as physical navigation
       // space rather than disappear into the starfield behind its HUD diamonds.
-      base: 0x283b4b,
-      accent: 0x7795a4,
-      window: 0x4ff5ff,
+      base: 0x1c302d,
+      accent: 0x688b78,
+      window: 0xb4ff68,
       windowDensity: 0.12,
     });
     this.conduitMaterial = new THREE.LineBasicMaterial({
@@ -251,8 +263,16 @@ export class RelayHarvestField {
 
     this.arcGeometry = buildRingHull(ARC_RADIUS, 92, 138, 48, 8, 4.2, ARC_LENGTH);
     const arcs = new THREE.InstancedMesh(this.arcGeometry, this.structureMaterial, BANK_COUNT);
-    const trusses = new THREE.InstancedMesh(this.trussGeometry, this.structureMaterial, 9);
-    const fins = new THREE.InstancedMesh(this.finGeometry, this.structureMaterial, 6);
+    const trusses = new THREE.InstancedMesh(
+      this.trussGeometry,
+      this.structureMaterial,
+      BANK_COUNT * 3,
+    );
+    const fins = new THREE.InstancedMesh(
+      this.finGeometry,
+      this.structureMaterial,
+      BANK_COUNT * 2,
+    );
     arcs.name = 'BLACKOUT RELAY / BROKEN COLLECTOR ARCS';
     trusses.name = 'BLACKOUT RELAY / TRUSS ARMS';
     fins.name = 'BLACKOUT RELAY / SHATTERED COLLECTOR FINS';
@@ -267,14 +287,19 @@ export class RelayHarvestField {
     const sortedSources = this.sourcePositions
       .map((source) => source)
       .sort((a, b) => a.z - b.z);
-    const nearSource = options.sources.find((source) => source.band === 'near')?.position;
-    const midSource = options.sources.find((source) => source.band === 'mid')?.position;
-    const farSource = options.sources.find((source) => source.band === 'far')?.position;
-    const bankSources = nearSource && midSource && farSource
-      ? [nearSource, midSource, farSource]
-      : [sortedSources[4]!, sortedSources[2]!, sortedSources[0]!];
-    const bankScales = [0.94, 1.08, 1] as const;
-    const bankRotations = [0.38, 2.42, 4.46] as const;
+    const sourcesForBand = (band: RelayHarvestSourceView['band']): THREE.Vector3[] =>
+      options.sources.filter((source) => source.band === band).slice(0, 2)
+        .map((source) => source.position);
+    const authoredBanks = [
+      ...sourcesForBand('near'),
+      ...sourcesForBand('mid'),
+      ...sourcesForBand('far'),
+    ];
+    const bankSources = authoredBanks.length === BANK_COUNT
+      ? authoredBanks
+      : sortedSources.slice(0, BANK_COUNT);
+    const bankScales = [0.88, 1.02, 0.94, 1.08, 0.96, 1.04] as const;
+    const bankRotations = [0.38, 1.46, 2.42, 3.4, 4.46, 5.52] as const;
     const colliderList: RelayHarvestCollider[] = [];
     let trussIndex = 0;
     let finIndex = 0;
@@ -331,9 +356,9 @@ export class RelayHarvestField {
             center.y + Math.sin(angle) * radialDistance,
             center.z + (arm - 1) * 120,
           );
-          if (clearsEverySource(position, contactRadius, this.sourcePositions)) break;
+          if (clearsEverySource(position, contactRadius, this.protectedPositions)) break;
         }
-        if (!clearsEverySource(position, contactRadius, this.sourcePositions)) continue;
+        if (!clearsEverySource(position, contactRadius, this.protectedPositions)) continue;
         quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle);
         scale.set(820 * bankScale, 86, 110);
         matrix.compose(position, quaternion, scale);
@@ -357,9 +382,9 @@ export class RelayHarvestField {
             center.y + Math.sin(angle) * radialDistance,
             center.z + (panel === 0 ? -230 : 260),
           );
-          if (clearsEverySource(position, contactRadius, this.sourcePositions)) break;
+          if (clearsEverySource(position, contactRadius, this.protectedPositions)) break;
         }
-        if (!clearsEverySource(position, contactRadius, this.sourcePositions)) continue;
+        if (!clearsEverySource(position, contactRadius, this.protectedPositions)) continue;
         quaternion.setFromEuler(new THREE.Euler(
           panel === 0 ? 0.22 : -0.31,
           bank * 0.17,
@@ -395,7 +420,6 @@ export class RelayHarvestField {
     wreckTrace.frustumCulled = false;
     wreckTrace.renderOrder = 4;
 
-    const conduitPositions = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY * 4 * 2 * 3);
     let conduitOffset = 0;
     for (let index = 0; index < this.sourcePositions.length; index++) {
       const source = this.sourcePositions[index]!;
@@ -403,17 +427,17 @@ export class RelayHarvestField {
         const angle = index * 0.71 + spoke * Math.PI * 0.5;
         const x = Math.cos(angle);
         const y = Math.sin(angle);
-        conduitPositions[conduitOffset++] = source.x + x * 265;
-        conduitPositions[conduitOffset++] = source.y + y * 265;
-        conduitPositions[conduitOffset++] = source.z;
-        conduitPositions[conduitOffset++] = source.x + x * 780;
-        conduitPositions[conduitOffset++] = source.y + y * 780;
-        conduitPositions[conduitOffset++] = source.z + (spoke % 2 === 0 ? -90 : 90);
+        this.conduitPositions[conduitOffset++] = source.x + x * 265;
+        this.conduitPositions[conduitOffset++] = source.y + y * 265;
+        this.conduitPositions[conduitOffset++] = source.z;
+        this.conduitPositions[conduitOffset++] = source.x + x * 780;
+        this.conduitPositions[conduitOffset++] = source.y + y * 780;
+        this.conduitPositions[conduitOffset++] = source.z + (spoke % 2 === 0 ? -90 : 90);
       }
     }
     this.conduitGeometry.setAttribute(
       'position',
-      new THREE.BufferAttribute(conduitPositions, 3),
+      new THREE.BufferAttribute(this.conduitPositions, 3).setUsage(THREE.DynamicDrawUsage),
     );
     const conduits = new THREE.LineSegments(this.conduitGeometry, this.conduitMaterial);
     conduits.name = 'BLACKOUT RELAY / LIVE POWER CONDUITS';
@@ -495,17 +519,18 @@ export class RelayHarvestField {
     }
     this.sourceAttributes = Object.freeze(attributes);
 
-    const identityQuaternion = new THREE.Quaternion();
     for (let index = 0; index < RELAY_HARVEST_SOURCE_CAPACITY; index++) {
-      matrix.compose(this.sourcePositions[index]!, identityQuaternion, UNIT_SCALE);
+      matrix.compose(this.sourcePositions[index]!, this.sourceQuaternion, UNIT_SCALE);
       this.cores.setMatrixAt(index, matrix);
       this.cages.setMatrixAt(index, matrix);
       this.beacons.setMatrixAt(index, matrix);
     }
     for (const mesh of [this.cores, this.cages, this.beacons]) {
-      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      // Source relocation is rare and bounded to ten matrix uploads; no mesh/material is rebuilt.
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceMatrix.needsUpdate = true;
     }
+    this.visualGeneration.fill(0xffff_ffff);
     this.visualCollected.fill(2);
     this.syncSources(0);
 
@@ -559,11 +584,12 @@ export class RelayHarvestField {
   reset(): void {
     // MissionRuntime resets the world before the objective. Mark the cache invalid and let the
     // first presentation frame observe the objective's already-reset shared state.
+    this.visualGeneration.fill(0xffff_ffff);
     this.visualCollected.fill(2);
   }
 
   applyQuality(_profile: QualityProfile, _maximum: QualityProfile): void {
-    // Gameplay structure and all five sources stay identical across quality levels. The field is
+    // Gameplay structure and all ten sources stay identical across quality levels. The field is
     // already substantially below its fixed budget, so hiding geometry would only desynchronise
     // visible structure from the collider union.
   }
@@ -590,9 +616,15 @@ export class RelayHarvestField {
   }
 
   private syncSources(runTime: number): void {
-    let dirty = false;
+    let attributeDirty = false;
+    let transformDirty = false;
     for (let index = 0; index < RELAY_HARVEST_SOURCE_CAPACITY; index++) {
       const source = this.sources[index]!;
+      if (this.visualGeneration[index] !== source.generation) {
+        this.visualGeneration[index] = source.generation;
+        this.syncSourceTransform(index);
+        transformDirty = true;
+      }
       const collected = source.collected ? 1 : 0;
       let collectedAt = -1;
       if (collected === 1) {
@@ -606,9 +638,38 @@ export class RelayHarvestField {
       this.visualCollected[index] = collected;
       this.visualCollectedAt[index] = collectedAt;
       for (const attribute of this.sourceAttributes) attribute.setX(index, collectedAt);
-      dirty = true;
+      attributeDirty = true;
     }
-    if (!dirty) return;
-    for (const attribute of this.sourceAttributes) attribute.needsUpdate = true;
+    if (attributeDirty) {
+      for (const attribute of this.sourceAttributes) attribute.needsUpdate = true;
+    }
+    if (transformDirty) {
+      this.cores.instanceMatrix.needsUpdate = true;
+      this.cages.instanceMatrix.needsUpdate = true;
+      this.beacons.instanceMatrix.needsUpdate = true;
+      const conduit = this.conduitGeometry.getAttribute('position');
+      if (conduit) conduit.needsUpdate = true;
+    }
+  }
+
+  private syncSourceTransform(index: number): void {
+    const source = this.sources[index]!;
+    this.sourceMatrix.compose(source.position, this.sourceQuaternion, UNIT_SCALE);
+    this.cores.setMatrixAt(index, this.sourceMatrix);
+    this.cages.setMatrixAt(index, this.sourceMatrix);
+    this.beacons.setMatrixAt(index, this.sourceMatrix);
+
+    let offset = index * 4 * 2 * 3;
+    for (let spoke = 0; spoke < 4; spoke++) {
+      const angle = index * 0.71 + spoke * Math.PI * 0.5;
+      const x = Math.cos(angle);
+      const y = Math.sin(angle);
+      this.conduitPositions[offset++] = source.position.x + x * 265;
+      this.conduitPositions[offset++] = source.position.y + y * 265;
+      this.conduitPositions[offset++] = source.position.z;
+      this.conduitPositions[offset++] = source.position.x + x * 780;
+      this.conduitPositions[offset++] = source.position.y + y * 780;
+      this.conduitPositions[offset++] = source.position.z + (spoke % 2 === 0 ? -90 : 90);
+    }
   }
 }

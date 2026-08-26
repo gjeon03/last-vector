@@ -11,9 +11,9 @@ same ship, six-axis-capable handling, camera, hull, BOOST economy and guidance l
 chapter owns a different objective and world.
 
 - **Chapter 01 — CAIRN DRIFT:** fly all nine cairns in order and reach VESPER TERMINUS.
-- **Chapter 02 — BLACKOUT RELAY:** keep all five live CORE signals visible, choose any three to
-  recover, and stabilise the relay. Each CORE adds 20 RELAY CHARGE and restores 25 BOOST; the third
-  CORE reaches the required charge of 60 and ends the mission.
+- **Chapter 02 — BLACKOUT RELAY:** sweep ten unstable CORE signals through a dense wreck field,
+  then return their charge to the launch relay before its distance-derived window closes. Each
+  CORE adds 10 RELAY CHARGE and restores 25 BOOST.
 
 CAIRN is initially available. Its first successful clear unlocks BLACKOUT RELAY; rank and optional
 mastery do not affect the unlock.
@@ -26,7 +26,7 @@ mastery do not affect the unlock.
 | M2 | The player pilots a spacecraft in 3D with keyboard, mouse and continuous six-axis-capable controls; gamepad remains optional. | `pnpm playtest` plus manual control check |
 | M3 | The active catalog contains exactly CAIRN DRIFT followed by BLACKOUT RELAY, and only a CAIRN clear unlocks Chapter 02. | `pnpm test:campaign`, `pnpm playtest:campaign` |
 | M4 | CAIRN requires all nine authored gates in order and finishes at VESPER TERMINUS with hull remaining. | `pnpm playtest` |
-| M5 | BLACKOUT RELAY presents five visible physical CORE sources, accepts any three, awards +20 charge and +25 BOOST per CORE, and finishes at exactly 60 charge. | `pnpm test:relay`, `pnpm test:relay-render`, `pnpm playtest:relay` |
+| M5 | BLACKOUT RELAY presents ten visible physical CORE sources, relocates expired signals deterministically, awards +10 charge and +25 BOOST per CORE, and succeeds only after all ten are returned to the relay. | `pnpm test:relay`, `pnpm test:relay-render`, manual playtest |
 | M6 | `RETRY`, `RESTART` and `RUN AGAIN` retain the current validated layout; `NEW LAYOUT` loads a different validated layout. PB identity is partitioned by layout signature. | `pnpm test:relay`, `pnpm playtest:relay` |
 | M7 | The shipped build has no runtime console errors or external network dependencies and meets its browser performance gates. | `pnpm playtest:perf`, `pnpm playtest:all` |
 

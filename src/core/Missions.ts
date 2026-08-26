@@ -22,10 +22,10 @@ export interface GateRaceObjectiveDefinition {
 export interface CollectionObjectiveDefinition {
   readonly kind: 'collection';
   readonly path: FlightPathDefinition;
-  readonly activeSources: 5;
-  readonly requiredSources: 3;
-  readonly chargePerSource: 20;
-  readonly chargeRequired: 60;
+  readonly activeSources: 10;
+  readonly requiredSources: 10;
+  readonly chargePerSource: 10;
+  readonly chargeRequired: 100;
 }
 
 export type ObjectiveDefinition = GateRaceObjectiveDefinition | CollectionObjectiveDefinition;
@@ -112,9 +112,15 @@ const RELAY_RADIO: readonly RadioAuthoringDefinition[] = Object.freeze([
     safeWindowSeconds: 8,
   }),
   Object.freeze({
-    afterGate: 2,
+    afterGate: 5,
     speaker: 'Control',
     messageKey: 'radio3',
+    safeWindowSeconds: 8,
+  }),
+  Object.freeze({
+    afterGate: 10,
+    speaker: 'Control',
+    messageKey: 'radio4',
     safeWindowSeconds: 8,
   }),
 ]);
@@ -122,23 +128,27 @@ const RELAY_RADIO: readonly RadioAuthoringDefinition[] = Object.freeze([
 export const RELAY_HARVEST_MISSION: MissionDefinition = Object.freeze({
   id: 'relay-harvest',
   chapter: 2,
-  rulesetVersion: 1,
+  // v2 adds live-source relocation and a timed return-to-relay extraction phase. Keep the old
+  // PB partition intact: v1 times ended at the third pickup and are not comparable.
+  rulesetVersion: 2,
   defaultSeed: 0x52454c59,
   world: Object.freeze({
     kind: 'relay-field',
     sourceCourse: null,
     canonicalSector: 'THE BLACKOUT RELAY',
     canonicalDestination: 'RELAY HEART',
-    sunDirection: Object.freeze([0.48, 0.22, -0.85] as const),
+    // Low, cold back-light: the relay's splinter field reads as a dense broken lane rather than
+    // CAIRN DRIFT's open, warm shelf.
+    sunDirection: Object.freeze([-0.55, -0.18, -0.81] as const),
     attractLoopDistance: 18_000,
   }),
   objective: Object.freeze({
     kind: 'collection',
     path: RELAY_HARVEST_PATH,
-    activeSources: 5,
-    requiredSources: 3,
-    chargePerSource: 20,
-    chargeRequired: 60,
+    activeSources: 10,
+    requiredSources: 10,
+    chargePerSource: 10,
+    chargeRequired: 100,
   }),
   mastery: Object.freeze([]),
   radio: RELAY_RADIO,

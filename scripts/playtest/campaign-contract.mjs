@@ -73,10 +73,10 @@ function collectionResult() {
   return {
     kind: 'collection',
     missionId: 'relay-harvest',
-    rulesetVersion: 1,
+    rulesetVersion: 2,
     totalTime: 58,
     hullRemaining: 0.92,
-    objectiveSummary: '3 / 3 CORES',
+    objectiveSummary: '10 / 10 CORES',
     topSpeed: 980,
     cleanRun: true,
     rank: 'A',
@@ -84,11 +84,11 @@ function collectionResult() {
     newlyUnlockedMissionId: null,
     bestTime: null,
     isNewBest: true,
-    collected: 3,
-    required: 3,
-    activeTotal: 5,
-    charge: 60,
-    chargeRequired: 60,
+    collected: 10,
+    required: 10,
+    activeTotal: 10,
+    charge: 100,
+    chargeRequired: 100,
   };
 }
 
@@ -101,8 +101,8 @@ await check('CAMPAIGN.catalog-contract', () => {
   const relay = getMissionDefinition('relay-harvest');
   assert.equal(relay.chapter, 2);
   assert.equal(relay.objective.kind, 'collection');
-  assert.equal(relay.objective.activeSources, 5);
-  assert.equal(relay.objective.requiredSources, 3);
+  assert.equal(relay.objective.activeSources, 10);
+  assert.equal(relay.objective.requiredSources, 10);
   assert.deepEqual(relay.capabilities, []);
   return { order: ACTIVE_MISSION_ORDER, objective: relay.objective };
 });
@@ -153,7 +153,7 @@ await check('CAMPAIGN.progress-persistence', () => {
   assert.notEqual(nextIndex, layoutIndex);
   const objective = new RelayHarvestObjective(new RelayHarvestState(getRelayHarvestLayout(layoutIndex)));
   const recordId = objective.recordId(missionRecordId(getMissionDefinition('relay-harvest'), seed));
-  assert.match(recordId, /^relay-harvest-r1-1337-layout-rh1-/u);
+  assert.match(recordId, /^relay-harvest-r2-1337-layout-rh2-/u);
   return { selected: reloaded.snapshot().selectedMission, layoutIndex, nextIndex, recordId };
 });
 

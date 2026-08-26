@@ -113,6 +113,10 @@ export interface CollectionSourceTelemetry {
   readonly id: string;
   readonly position: readonly [number, number, number];
   readonly anchor: ScreenAnchor;
+  /** Increments when this fixed-capacity source is relocated to another authored socket. */
+  readonly generation: number;
+  /** Seconds until relocation while live, or null once the source has been banked. */
+  expiresIn: number | null;
   distance: number;
   collected: boolean;
   primary: boolean;
@@ -120,11 +124,17 @@ export interface CollectionSourceTelemetry {
 
 export interface CollectionObjectiveTelemetry {
   kind: 'collection';
+  phase: 'collecting' | 'returning';
   collected: number;
   required: number;
   activeTotal: number;
   charge: number;
   chargeRequired: number;
+  /** Countdown for the currently selected live source. */
+  primaryExpiresIn: number | null;
+  /** Return-to-relay countdown; null until the collection quota is banked. */
+  relayRemaining: number | null;
+  relayWindow: number | null;
   primarySourceId: string | null;
   primaryDistance: number | null;
   sources: readonly CollectionSourceTelemetry[];

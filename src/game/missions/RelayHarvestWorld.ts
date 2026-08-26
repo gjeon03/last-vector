@@ -19,6 +19,7 @@ export interface RelayHarvestWorldOptions {
   readonly farScene: THREE.Scene;
   readonly mainScene: THREE.Scene;
   readonly sources: readonly RelayHarvestSourceView[];
+  readonly protectedPositions: readonly THREE.Vector3[];
   readonly seed: number;
   readonly lighting: LightingUniforms;
   readonly initialQuality: QualityProfile;
@@ -34,7 +35,8 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
   private readonly farScene: THREE.Scene;
   private readonly mainScene: THREE.Scene;
   private readonly previousBackground: THREE.Scene['background'];
-  private readonly background = new THREE.Color(0x020b18);
+  // Cold green-black void and a small hard star distinguish the relay from CAIRN's warm shelf.
+  private readonly background = new THREE.Color(0x010907);
   private readonly starfield: Starfield;
   private readonly star: Star;
   private readonly dust: DustField;
@@ -45,12 +47,12 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
     this.mainScene = options.mainScene;
     this.previousBackground = options.farScene.background;
     this.starfield = new Starfield(
-      options.maximumQuality.starCount,
+      Math.ceil(options.maximumQuality.starCount * 1.25),
       90,
       options.seed ^ 0x4b1ac7,
     );
     this.star = new Star(
-      62,
+      42,
       0.013,
       options.lighting.uSunDir.value,
     );
@@ -61,6 +63,7 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
     );
     this.field = new RelayHarvestField({
       sources: options.sources,
+      protectedPositions: options.protectedPositions,
       lighting: options.lighting,
     });
     this.contacts = Object.freeze(this.field.colliders.map((collider) => Object.freeze({
@@ -103,7 +106,10 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
   }
 
   applyQuality(profile: QualityProfile, maximum: QualityProfile): void {
-    this.starfield.setVisibleCount(profile.starCount);
+    this.starfield.setVisibleCount(Math.min(
+      Math.ceil(maximum.starCount * 1.25),
+      Math.ceil(profile.starCount * 1.25),
+    ));
     this.dust.setVisibleCount(profile.dustCount);
     this.field.applyQuality(profile, maximum);
   }

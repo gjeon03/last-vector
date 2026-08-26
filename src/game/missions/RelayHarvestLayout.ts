@@ -1,10 +1,15 @@
 export const RELAY_HARVEST_AUTHORED_SOCKET_COUNT = 12;
-export const RELAY_HARVEST_ACTIVE_SOURCE_COUNT = 5;
-export const RELAY_HARVEST_REQUIRED_SOURCE_COUNT = 3;
-export const RELAY_HARVEST_CHARGE_PER_SOURCE = 20;
-export const RELAY_HARVEST_CHARGE_REQUIRED = 60;
+export const RELAY_HARVEST_ACTIVE_SOURCE_COUNT = 10;
+export const RELAY_HARVEST_REQUIRED_SOURCE_COUNT = 10;
+export const RELAY_HARVEST_CHARGE_PER_SOURCE = 10;
+export const RELAY_HARVEST_CHARGE_REQUIRED = 100;
 export const RELAY_HARVEST_BOOST_REWARD = 25;
 export const RELAY_HARVEST_CAPTURE_RADIUS = 220;
+export const RELAY_HARVEST_RELAY_CAPTURE_RADIUS = 320;
+export const RELAY_HARVEST_RETURN_MINIMUM_SECONDS = 22;
+export const RELAY_HARVEST_RETURN_PACE = 1.2;
+export const RELAY_HARVEST_SOURCE_LIFETIME_MIN = 55;
+export const RELAY_HARVEST_SOURCE_LIFETIME_MAX = 65;
 
 export type RelayHarvestBand = 'near' | 'mid' | 'far';
 
@@ -21,7 +26,7 @@ export interface RelayHarvestSocketDefinition {
 }
 
 export interface RelayHarvestReferenceRoute {
-  readonly sourceIds: readonly [string, string, string];
+  readonly sourceIds: readonly string[];
   readonly distanceMetres: number;
   readonly referenceSeconds: number;
   readonly noBoostSeconds: number;
@@ -31,15 +36,9 @@ export interface RelayHarvestReferenceRoute {
 export interface RelayHarvestLayout {
   readonly index: number;
   readonly signature: string;
-  readonly socketIndices: readonly [number, number, number, number, number];
-  readonly sockets: readonly [
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-  ];
-  /** The two fastest distinct authored reference routes used by the finite-catalog validator. */
+  readonly socketIndices: readonly number[];
+  readonly sockets: readonly RelayHarvestSocketDefinition[];
+  /** Two deterministic full-harvest routes used by the finite-catalog validator. */
   readonly referenceRoutes: readonly [RelayHarvestReferenceRoute, RelayHarvestReferenceRoute];
 }
 
@@ -54,7 +53,7 @@ const socket = (
 
 /**
  * Twelve authored sockets, not random world coordinates. The launch-local catalogue is shared by
- * every run; a runtime layout only selects a validated 2 near / 2 mid / 1 far subset.
+ * every run; a runtime layout selects ten sources and leaves two deterministic relocation sockets.
  */
 export const RELAY_HARVEST_SOCKETS: readonly RelayHarvestSocketDefinition[] = Object.freeze([
   socket(0, 'CORE-N1', 'near', -4_500, -1_050, 7_600),
@@ -80,10 +79,9 @@ const BAND_RANGES: Readonly<Record<RelayHarvestBand, readonly [number, number]>>
   mid: Object.freeze([18_000, 26_000] as const),
   far: Object.freeze([32_000, 40_000] as const),
 });
-const MAX_REFERENCE_TURN_DEGREES = 55;
-const MAX_REFERENCE_SECONDS = 60;
-const MAX_NO_BOOST_SECONDS = 85;
-const MAX_ROUTE_TIME_DELTA_SECONDS = 6;
+const MAX_REFERENCE_SECONDS = 220;
+const MAX_NO_BOOST_SECONDS = 310;
+const MAX_ROUTE_TIME_DELTA_SECONDS = 24;
 const MIN_SOURCE_SEPARATION_METRES = 2_400;
 const DEG_PER_RADIAN = 180 / Math.PI;
 
@@ -115,42 +113,63 @@ function angleDegrees(a: Point3, b: Point3): number {
   return Math.acos(cosine) * DEG_PER_RADIAN;
 }
 
-function routeFor(
-  first: RelayHarvestSocketDefinition,
-  second: RelayHarvestSocketDefinition,
-  third: RelayHarvestSocketDefinition,
-): RelayHarvestReferenceRoute | null {
-  const a = pointOf(first);
-  const b = pointOf(second);
-  const c = pointOf(third);
-  const firstLeg = subtract(a, LAUNCH);
-  const secondLeg = subtract(b, a);
-  const thirdLeg = subtract(c, b);
-  const turns = [
-    angleDegrees(LAUNCH_FORWARD, firstLeg),
-    angleDegrees(firstLeg, secondLeg),
-    angleDegrees(secondLeg, thirdLeg),
-  ];
-  const maximumTurnDegrees = Math.max(...turns);
-  const distanceMetres = length(firstLeg) + length(secondLeg) + length(thirdLeg);
-  // These are conservative authored-reference models, not player physics. Turn settling prevents
-  // the catalogue validator from treating a sharp zig-zag as equivalent to a straight boost line.
-  // At cruise/boost speed the craft cannot pivot at the geometric waypoint. Roughly five
-  // seconds for a 90° reversal accounts for yaw spool, the committed flight arc, and settling
-  // the velocity vector; the previous 1 s estimate made impossible hairpins look dominant.
-  const turnSettlingSeconds = turns.reduce((sum, turn) => sum + turn / 18, 0);
+function routeFor(sequence: readonly RelayHarvestSocketDefinition[]): RelayHarvestReferenceRoute | null {
+  if (sequence.length !== RELAY_HARVEST_REQUIRED_SOURCE_COUNT) return null;
+  let previous = LAUNCH;
+  let previousDirection = LAUNCH_FORWARD;
+  let distanceMetres = 0;
+  let turnSettlingSeconds = 0;
+  let maximumTurnDegrees = 0;
+  for (const source of sequence) {
+    const point = pointOf(source);
+    const direction = subtract(point, previous);
+    const turn = angleDegrees(previousDirection, direction);
+    distanceMetres += length(direction);
+    turnSettlingSeconds += turn / 24;
+    maximumTurnDegrees = Math.max(maximumTurnDegrees, turn);
+    previous = point;
+    previousDirection = direction;
+  }
+  const returnDirection = subtract(LAUNCH, previous);
+  const returnTurn = angleDegrees(previousDirection, returnDirection);
+  distanceMetres += length(returnDirection);
+  turnSettlingSeconds += returnTurn / 24;
+  maximumTurnDegrees = Math.max(maximumTurnDegrees, returnTurn);
   const referenceSeconds = distanceMetres / 760 + turnSettlingSeconds;
   const noBoostSeconds = distanceMetres / 500 + turnSettlingSeconds;
-  if (referenceSeconds >= MAX_REFERENCE_SECONDS || noBoostSeconds >= MAX_NO_BOOST_SECONDS) {
-    return null;
-  }
+  if (referenceSeconds >= MAX_REFERENCE_SECONDS || noBoostSeconds >= MAX_NO_BOOST_SECONDS) return null;
   return Object.freeze({
-    sourceIds: Object.freeze([first.id, second.id, third.id]) as readonly [string, string, string],
+    sourceIds: Object.freeze(sequence.map((source) => source.id)),
     distanceMetres,
     referenceSeconds,
     noBoostSeconds,
     maximumTurnDegrees,
   });
+}
+
+function greedySequence(
+  selected: readonly RelayHarvestSocketDefinition[],
+  first: RelayHarvestSocketDefinition,
+): RelayHarvestSocketDefinition[] {
+  const remaining = selected.filter((source) => source !== first);
+  const sequence = [first];
+  let current = first;
+  while (remaining.length > 0) {
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    for (let index = 0; index < remaining.length; index++) {
+      const candidate = remaining[index]!;
+      const distance = sourceSeparation(current, candidate);
+      if (distance < bestDistance
+        || (distance === bestDistance && candidate.id < remaining[bestIndex]!.id)) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+    current = remaining.splice(bestIndex, 1)[0]!;
+    sequence.push(current);
+  }
+  return sequence;
 }
 
 function combinations<T>(values: readonly T[], size: number): T[][] {
@@ -192,27 +211,15 @@ function referenceRoutesFor(
   selected: readonly RelayHarvestSocketDefinition[],
 ): readonly [RelayHarvestReferenceRoute, RelayHarvestReferenceRoute] | null {
   const routes: RelayHarvestReferenceRoute[] = [];
-  for (const chosen of combinations(selected, RELAY_HARVEST_REQUIRED_SOURCE_COUNT)) {
-    // Reference routes preserve forward-band order. Runtime remains free-flight; this ordering only
-    // rejects catalogue entries whose plausible three-core choices require a >55 degree reversal.
-    chosen.sort((a, b) => a.forward - b.forward || a.id.localeCompare(b.id));
-    const route = routeFor(chosen[0]!, chosen[1]!, chosen[2]!);
+  for (const first of selected) {
+    const route = routeFor(greedySequence(selected, first));
     if (route) routes.push(route);
   }
   routes.sort((a, b) => a.referenceSeconds - b.referenceSeconds
     || a.sourceIds.join('.').localeCompare(b.sourceIds.join('.')));
   if (routes.length < 2) return null;
-  // Consider every route before applying the authored turn ceiling. Otherwise an extremely short
-  // >55° shortcut can be hidden from validation even though free flight still allows the player
-  // to take it, leaving one dominant choice in a supposedly route-selecting layout.
   const fastest = routes[0]!;
-  const practical = routes.find((route) =>
-    route.maximumTurnDegrees <= MAX_REFERENCE_TURN_DEGREES);
-  if (!practical
-    || practical.referenceSeconds - fastest.referenceSeconds > MAX_ROUTE_TIME_DELTA_SECONDS) {
-    return null;
-  }
-  const alternative = practical === fastest ? routes[1]! : practical;
+  const alternative = routes[1]!;
   if (alternative.referenceSeconds - fastest.referenceSeconds > MAX_ROUTE_TIME_DELTA_SECONDS) {
     return null;
   }
@@ -232,7 +239,7 @@ function createValidatedLayout(
   if (ids.size !== selected.length || indices.size !== selected.length) return null;
   const counts = { near: 0, mid: 0, far: 0 };
   for (const source of selected) counts[source.band]++;
-  if (counts.near !== 2 || counts.mid !== 2 || counts.far !== 1) return null;
+  if (Object.values(counts).some((count) => count < 2 || count > 4)) return null;
   if (!selected.some((source) => source.right < 0)
     || !selected.some((source) => source.right > 0)
     || !selected.some((source) => source.up < 0)
@@ -246,15 +253,9 @@ function createValidatedLayout(
   }
   const referenceRoutes = referenceRoutesFor(selected);
   if (!referenceRoutes) return null;
-  const ordered = selected.slice().sort((a, b) => a.index - b.index) as [
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-    RelayHarvestSocketDefinition,
-  ];
-  const socketIndices = ordered.map((source) => source.index) as [number, number, number, number, number];
-  const signature = `rh1-${ordered.map((source) => source.id.replace('CORE-', '')).join('.')}`;
+  const ordered = selected.slice().sort((a, b) => a.index - b.index);
+  const socketIndices = ordered.map((source) => source.index);
+  const signature = `rh2-${ordered.map((source) => source.id.replace('CORE-', '')).join('.')}`;
   return Object.freeze({
     signature,
     socketIndices: Object.freeze(socketIndices),
@@ -264,23 +265,13 @@ function createValidatedLayout(
 }
 
 function buildValidatedCatalog(): readonly RelayHarvestLayout[] {
-  const near = RELAY_HARVEST_SOCKETS.filter((source) => source.band === 'near');
-  const mid = RELAY_HARVEST_SOCKETS.filter((source) => source.band === 'mid');
-  const far = RELAY_HARVEST_SOCKETS.filter((source) => source.band === 'far');
-  if (near.length !== 4 || mid.length !== 4 || far.length !== 4) {
-    throw new Error('BLACKOUT RELAY authored sockets must be grouped 4 near / 4 mid / 4 far');
-  }
   const validated: RelayHarvestLayout[] = [];
-  for (const nearPair of combinations(near, 2)) {
-    for (const midPair of combinations(mid, 2)) {
-      for (const farSource of far) {
-        const candidate = createValidatedLayout([...nearPair, ...midPair, farSource]);
-        if (!candidate) continue;
-        validated.push(Object.freeze({ ...candidate, index: validated.length }));
-      }
-    }
+  for (const selected of combinations(RELAY_HARVEST_SOCKETS, RELAY_HARVEST_ACTIVE_SOURCE_COUNT)) {
+    const candidate = createValidatedLayout(selected);
+    if (!candidate) continue;
+    validated.push(Object.freeze({ ...candidate, index: validated.length }));
   }
-  if (validated.length < 2 || validated.length > 144) {
+  if (validated.length < 2 || validated.length > 66) {
     throw new Error(`BLACKOUT RELAY validated layout count is invalid: ${validated.length}`);
   }
   return Object.freeze(validated);

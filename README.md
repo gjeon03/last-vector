@@ -6,9 +6,9 @@
 
 죽어가는 호박색 별의 잔해 지대를 건너는 2챕터 브라우저 우주선 비행. Chapter 01
 **CAIRN DRIFT**에서는 아홉 개의 케언을 순서대로 통과해 VESPER TERMINUS에 도달한다. 완주하면
-Chapter 02 **BLACKOUT RELAY**가 열린다. 이곳에서는 항상 보이는 다섯 CORE 중 어느 세 개든 골라
-회수한다. CORE 하나가 RELAY CHARGE 20과 BOOST 예비량 25를 공급하며, 세 번째 CORE에서 CHARGE
-60을 채우면 임무가 끝난다.
+Chapter 02 **BLACKOUT RELAY**가 열린다. 차갑고 빽빽한 파손 릴레이 안에서 불안정한 CORE 열 개를
+빠르게 회수해야 한다. 놓친 CORE는 다른 고정 후보 지점으로 이동하며, 마지막 CORE를 확보한 뒤에는
+제한시간 안에 출발 릴레이로 돌아와야 완주된다. CORE 하나는 CHARGE 10과 BOOST 예비량 25를 준다.
 
 전부 브라우저 안에서 돈다. 서버나 런타임 외부 네트워크는 없다. 바위와 별과 성운, 선체 패널, 소리는
 로드 시점에 시드 하나에서 생성되며 모델·텍스처·오디오 샘플을 내려받지 않는다. 라디오 연출은 자막과
@@ -43,7 +43,7 @@ pnpm serve:dist     # http://127.0.0.1:4173 — 리라이트 없는 단순 정�
 무충돌 완주와 미션별 숙련 목표는 `last-vector.progress.v2`에 저장된다.
 
 결정적인 미션 URL은 `?mission=cairn-drift`와 `?mission=relay-harvest`를 사용한다. RELAY의
-`layout=<index>`는 다섯 CORE 배치를 고정한다. 결과 화면의 **RUN AGAIN**은 같은 배치와 PB 구획을
+`layout=<index>`는 열 CORE와 두 예비 위치의 배치를 고정한다. 결과 화면의 **RUN AGAIN**은 같은 배치와 PB 구획을
 유지해 다시 시작하고, **NEW LAYOUT**은 다른 검증된 배치로 새로 로드한다. 잠긴 미션이나 잘못된 ID로
 접근하면 CAIRN으로 안전하게 되돌아간다.
 
