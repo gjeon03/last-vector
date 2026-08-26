@@ -74,7 +74,7 @@ async function runRelayHarvest({ report, session, options }) {
       'Active mission order is not exactly the approved two chapters.', { catalog });
     verify(course.courseId === 'relay-harvest', 'Relay runtime was not selected.', { course });
     verify(new URL(page.url()).searchParams.get('layout') === '0', 'Layout URL is not canonical.', { url: page.url() });
-    verify(course.recordId.includes('-layout-rh1-'), 'PB record does not include layout signature.', { course });
+    verify(course.recordId.includes('-layout-rh2-'), 'PB record does not include layout signature.', { course });
     return { course, order: catalog.order, url: page.url() };
   });
 

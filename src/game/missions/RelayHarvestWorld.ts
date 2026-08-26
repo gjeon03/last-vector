@@ -47,7 +47,7 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
     this.mainScene = options.mainScene;
     this.previousBackground = options.farScene.background;
     this.starfield = new Starfield(
-      Math.ceil(options.maximumQuality.starCount * 1.25),
+      options.maximumQuality.starCount,
       90,
       options.seed ^ 0x4b1ac7,
     );
@@ -106,10 +106,7 @@ export class RelayHarvestWorld implements MissionWorldRuntime {
   }
 
   applyQuality(profile: QualityProfile, maximum: QualityProfile): void {
-    this.starfield.setVisibleCount(Math.min(
-      Math.ceil(maximum.starCount * 1.25),
-      Math.ceil(profile.starCount * 1.25),
-    ));
+    this.starfield.setVisibleCount(Math.min(maximum.starCount, profile.starCount));
     this.dust.setVisibleCount(profile.dustCount);
     this.field.applyQuality(profile, maximum);
   }

@@ -4,7 +4,7 @@ import type { LightingUniforms } from './lighting.ts';
 import { buildRingHull, createStructureMaterial } from './Structures.ts';
 
 export const RELAY_HARVEST_SOURCE_CAPACITY = 10;
-export const RELAY_HARVEST_SOURCE_DRAW_CAP = 3;
+export const RELAY_HARVEST_SOURCE_DRAW_CAP = 2;
 export const RELAY_HARVEST_SOURCE_TRIANGLE_CAP = 5_000;
 
 /** Structural seam: the objective owns these values and the renderer only observes them. */
@@ -39,11 +39,12 @@ const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
 const ARC_RADIUS = 1_050;
 const ARC_LENGTH = Math.PI * 1.48;
 const ARC_CONTACTS = 10;
-const BANK_COUNT = 6;
+const BANK_COUNT = 5;
 const SOURCE_STRUCTURE_CLEARANCE = 500;
 
 const SOURCE_VERT = /* glsl */ `
   attribute float aCollectedAt;
+  attribute float aExpiresAt;
   uniform float uTime;
   uniform float uCollapseRate;
   uniform float uResidualScale;
@@ -52,6 +53,8 @@ const SOURCE_VERT = /* glsl */ `
   varying vec3 vWorldPosition;
   varying float vLive;
   varying float vFlash;
+  varying float vUrgency;
+  varying float vPhase;
 
   void main() {
     float collected = step(0.0, aCollectedAt);
@@ -76,13 +79,19 @@ const SOURCE_VERT = /* glsl */ `
     vWorldPosition = world.xyz;
     vLive = 1.0 - collected;
     vFlash = flash;
+    vUrgency = aExpiresAt < 0.0
+      ? 0.0
+      : 1.0 - clamp((aExpiresAt - uTime) / 15.0, 0.0, 1.0);
+    vPhase = dot(world.xyz, vec3(0.0131, 0.0173, 0.0197));
     gl_Position = projectionMatrix * viewMatrix * world;
   }
 `;
 
 const SOURCE_FRAG = /* glsl */ `
   precision highp float;
+  uniform float uTime;
   uniform vec3 uColor;
+  uniform vec3 uWarningColor;
   uniform vec3 uCollectedColor;
   uniform vec3 uSunDir;
   uniform float uOpacity;
@@ -92,6 +101,8 @@ const SOURCE_FRAG = /* glsl */ `
   varying vec3 vWorldPosition;
   varying float vLive;
   varying float vFlash;
+  varying float vUrgency;
+  varying float vPhase;
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -99,12 +110,84 @@ const SOURCE_FRAG = /* glsl */ `
     float key = max(dot(normal, normalize(uSunDir)), 0.0);
     float rim = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.5);
     float liveEnergy = mix(uCollectedLevel, 1.0, vLive);
-    vec3 base = mix(uCollectedColor, uColor, vLive);
+    float warningMix = smoothstep(0.45, 1.0, vUrgency);
+    float pulseRate = 2.7 + vUrgency * vUrgency * 8.5;
+    float pulse = 0.86 + 0.14 * sin(uTime * pulseRate + vPhase);
+    vec3 liveColor = mix(uColor, uWarningColor, warningMix);
+    vec3 base = mix(uCollectedColor, liveColor, vLive);
     vec3 lit = base * (uEmissive + key * 0.72 + rim * 0.72);
     vec3 flash = vec3(1.0, 0.94, 0.72) * vFlash * 5.2;
     float alpha = uOpacity * (liveEnergy + vFlash * 1.7);
     if (alpha < 0.002) discard;
-    gl_FragColor = vec4(lit * liveEnergy + flash, clamp(alpha, 0.0, 1.0));
+    gl_FragColor = vec4((lit * liveEnergy + flash) * pulse, clamp(alpha, 0.0, 1.0));
+  }
+`;
+
+const HALO_VERT = /* glsl */ `
+  attribute float aCollectedAt;
+  attribute float aExpiresAt;
+  uniform float uTime;
+  varying vec2 vUv;
+  varying float vFlash;
+  varying float vUrgency;
+  varying float vPhase;
+
+  void main() {
+    vec4 worldOrigin = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 viewOrigin = viewMatrix * worldOrigin;
+    vUv = uv;
+    vPhase = dot(worldOrigin.xyz, vec3(0.0131, 0.0173, 0.0197));
+    vUrgency = aExpiresAt < 0.0
+      ? 0.0
+      : 1.0 - clamp((aExpiresAt - uTime) / 15.0, 0.0, 1.0);
+
+    float collected = step(0.0, aCollectedAt);
+    float age = collected * max(0.0, uTime - aCollectedAt);
+    vFlash = collected * exp(-age * 8.0);
+    float collapse = mix(1.0, max(0.0, 1.0 - age * 3.2) + vFlash * 1.25, collected);
+
+    if (viewOrigin.z >= -1.0 || collapse <= 0.001) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      return;
+    }
+
+    // A physical 150 m halo up close, with a 1.2% viewport-height floor at long range.
+    // This keeps sources findable without turning them into kilometre-scale geometry.
+    float distance = max(1.0, -viewOrigin.z);
+    float projectionY = max(0.1, projectionMatrix[1][1]);
+    float angularFloor = distance * 0.024 / projectionY;
+    float size = max(150.0, angularFloor) * collapse;
+    viewOrigin.xy += position.xy * size;
+    gl_Position = projectionMatrix * viewOrigin;
+  }
+`;
+
+const HALO_FRAG = /* glsl */ `
+  precision highp float;
+  uniform float uTime;
+  varying vec2 vUv;
+  varying float vFlash;
+  varying float vUrgency;
+  varying float vPhase;
+
+  void main() {
+    vec2 p = (vUv - 0.5) * 2.0;
+    float r = length(p);
+    if (r > 1.0) discard;
+
+    float core = pow(clamp(1.0 - r / 0.24, 0.0, 1.0), 1.5);
+    float bloom = pow(clamp(1.0 - r, 0.0, 1.0), 2.7);
+    float ring = smoothstep(0.74, 0.61, r) * smoothstep(0.39, 0.51, r);
+    float beat = 2.7 + vUrgency * vUrgency * 9.0;
+    float pulse = 0.82 + 0.18 * sin(uTime * beat + vPhase);
+    vec3 cool = vec3(0.30, 0.92, 1.0);
+    vec3 warning = vec3(1.0, 0.48, 0.12);
+    vec3 tint = mix(cool, warning, smoothstep(0.45, 1.0, vUrgency));
+    vec3 color = tint * (bloom * 0.92 + ring * (0.72 - vUrgency * 0.28))
+      + vec3(1.0, 0.98, 0.84) * core;
+    color += vec3(1.0, 0.72, 0.32) * vFlash * 2.8;
+    float alpha = clamp(core + bloom * 0.7 + ring * 0.42, 0.0, 1.0);
+    gl_FragColor = vec4(color * pulse, alpha * pulse);
   }
 `;
 
@@ -134,6 +217,7 @@ function createSourceMaterial(options: {
       uResidualScale: { value: options.residualScale },
       uFlashExpansion: { value: options.flashExpansion },
       uColor: { value: new THREE.Color(options.color) },
+      uWarningColor: { value: new THREE.Color(0xff7c2f) },
       uCollectedColor: { value: new THREE.Color(options.collectedColor) },
       uSunDir: options.lighting.uSunDir,
       uOpacity: { value: options.opacity },
@@ -147,6 +231,19 @@ function createSourceMaterial(options: {
     depthTest: true,
     blending: options.transparent ? THREE.AdditiveBlending : THREE.NormalBlending,
     wireframe: options.wireframe ?? false,
+    toneMapped: false,
+  });
+}
+
+function createHaloMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: HALO_VERT,
+    fragmentShader: HALO_FRAG,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending,
     toneMapped: false,
   });
 }
@@ -185,7 +282,7 @@ function clearsEverySource(
 }
 
 /**
- * Fixed-capacity procedural relay wreck and the three-draw physical source presentation.
+ * Fixed-capacity procedural relay wreck and the two-draw physical source presentation.
  * Objective state is never copied: collection flags are observed from the shared source array.
  */
 export class RelayHarvestField {
@@ -203,16 +300,14 @@ export class RelayHarvestField {
   private readonly trussGeometry = new THREE.BoxGeometry(1, 1, 1);
   private readonly finGeometry = new THREE.BoxGeometry(1, 1, 1);
   private readonly conduitGeometry = new THREE.BufferGeometry();
-  private readonly coreGeometry = new THREE.IcosahedronGeometry(110, 1);
-  private readonly cageGeometry = new THREE.OctahedronGeometry(380, 0);
-  private readonly beaconGeometry = new THREE.CylinderGeometry(8, 20, 1_800, 6, 1, true);
+  private readonly coreGeometry = new THREE.IcosahedronGeometry(52, 1);
+  private readonly haloGeometry = new THREE.PlaneGeometry(1, 1);
   private readonly coreMaterial: THREE.ShaderMaterial;
-  private readonly cageMaterial: THREE.ShaderMaterial;
-  private readonly beaconMaterial: THREE.ShaderMaterial;
+  private readonly haloMaterial: THREE.ShaderMaterial;
   private readonly cores: THREE.InstancedMesh;
-  private readonly cages: THREE.InstancedMesh;
-  private readonly beacons: THREE.InstancedMesh;
-  private readonly sourceAttributes: readonly THREE.InstancedBufferAttribute[];
+  private readonly halos: THREE.InstancedMesh;
+  private readonly collectedAttributes: readonly THREE.InstancedBufferAttribute[];
+  private readonly expiryAttributes: readonly THREE.InstancedBufferAttribute[];
   private readonly conduitPositions = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY * 4 * 2 * 3);
   private readonly sourceMatrix = new THREE.Matrix4();
   private readonly sourceQuaternion = new THREE.Quaternion();
@@ -238,7 +333,7 @@ export class RelayHarvestField {
     this.structureMaterial = createStructureMaterial({
       lighting: options.lighting,
       // This chapter is route-choice gameplay, so the wreck must read as physical navigation
-      // space rather than disappear into the starfield behind its HUD diamonds.
+      // space rather than disappear into the starfield behind navigation overlays.
       base: 0x1c302d,
       accent: 0x688b78,
       window: 0xb4ff68,
@@ -295,11 +390,11 @@ export class RelayHarvestField {
       ...sourcesForBand('mid'),
       ...sourcesForBand('far'),
     ];
-    const bankSources = authoredBanks.length === BANK_COUNT
-      ? authoredBanks
+    const bankSources = authoredBanks.length >= BANK_COUNT
+      ? authoredBanks.slice(0, BANK_COUNT)
       : sortedSources.slice(0, BANK_COUNT);
-    const bankScales = [0.88, 1.02, 0.94, 1.08, 0.96, 1.04] as const;
-    const bankRotations = [0.38, 1.46, 2.42, 3.4, 4.46, 5.52] as const;
+    const bankScales = [0.88, 1.02, 0.94, 1.08, 0.96] as const;
+    const bankRotations = [0.38, 1.46, 2.42, 3.4, 4.46] as const;
     const colliderList: RelayHarvestCollider[] = [];
     let trussIndex = 0;
     let finIndex = 0;
@@ -456,76 +551,50 @@ export class RelayHarvestField {
       flashExpansion: 0.18,
       transparent: false,
     });
-    this.cageMaterial = createSourceMaterial({
-      lighting: options.lighting,
-      color: 0x6ff9ff,
-      collectedColor: 0x19404a,
-      opacity: 0.72,
-      emissive: 1.25,
-      collectedLevel: 0.14,
-      collapseRate: 5.5,
-      residualScale: 0.34,
-      flashExpansion: 0.24,
-      transparent: true,
-      wireframe: true,
-    });
-    this.beaconMaterial = createSourceMaterial({
-      lighting: options.lighting,
-      color: 0x48e8f4,
-      collectedColor: 0x10272c,
-      opacity: 0.38,
-      emissive: 1.42,
-      collectedLevel: 0,
-      collapseRate: 10,
-      residualScale: 0.001,
-      flashExpansion: 0.04,
-      transparent: true,
-    });
-    this.beaconGeometry.translate(0, 900, 0);
+    this.haloMaterial = createHaloMaterial();
 
     this.cores = new THREE.InstancedMesh(
       this.coreGeometry,
       this.coreMaterial,
       RELAY_HARVEST_SOURCE_CAPACITY,
     );
-    this.cages = new THREE.InstancedMesh(
-      this.cageGeometry,
-      this.cageMaterial,
+    this.halos = new THREE.InstancedMesh(
+      this.haloGeometry,
+      this.haloMaterial,
       RELAY_HARVEST_SOURCE_CAPACITY,
     );
-    this.beacons = new THREE.InstancedMesh(
-      this.beaconGeometry,
-      this.beaconMaterial,
-      RELAY_HARVEST_SOURCE_CAPACITY,
-    );
-    this.cores.name = 'BLACKOUT RELAY / SOLID ENERGY CORES';
-    this.cages.name = 'BLACKOUT RELAY / CAPTURE CAGES';
-    this.beacons.name = 'BLACKOUT RELAY / NARROW SOURCE BEACONS';
+    this.cores.name = 'BLACKOUT RELAY / PHYSICAL ENERGY CORES';
+    this.halos.name = 'BLACKOUT RELAY / ENERGY HALOS';
     this.cores.frustumCulled = false;
-    this.cages.frustumCulled = false;
-    this.beacons.frustumCulled = false;
+    this.halos.frustumCulled = false;
     this.cores.renderOrder = 12;
-    this.cages.renderOrder = 13;
-    this.beacons.renderOrder = 11;
+    this.halos.renderOrder = 13;
 
-    const attributes: THREE.InstancedBufferAttribute[] = [];
-    for (const geometry of [this.coreGeometry, this.cageGeometry, this.beaconGeometry]) {
-      const values = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY);
-      values.fill(-1);
-      const attribute = new THREE.InstancedBufferAttribute(values, 1);
-      attribute.setUsage(THREE.DynamicDrawUsage);
-      geometry.setAttribute('aCollectedAt', attribute);
-      attributes.push(attribute);
+    const collectedAttributes: THREE.InstancedBufferAttribute[] = [];
+    const expiryAttributes: THREE.InstancedBufferAttribute[] = [];
+    for (const geometry of [this.coreGeometry, this.haloGeometry]) {
+      const collectedValues = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY);
+      const expiryValues = new Float32Array(RELAY_HARVEST_SOURCE_CAPACITY);
+      collectedValues.fill(-1);
+      expiryValues.fill(-1);
+      const collectedAttribute = new THREE.InstancedBufferAttribute(collectedValues, 1);
+      const expiryAttribute = new THREE.InstancedBufferAttribute(expiryValues, 1);
+      collectedAttribute.setUsage(THREE.DynamicDrawUsage);
+      expiryAttribute.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('aCollectedAt', collectedAttribute);
+      geometry.setAttribute('aExpiresAt', expiryAttribute);
+      collectedAttributes.push(collectedAttribute);
+      expiryAttributes.push(expiryAttribute);
     }
-    this.sourceAttributes = Object.freeze(attributes);
+    this.collectedAttributes = Object.freeze(collectedAttributes);
+    this.expiryAttributes = Object.freeze(expiryAttributes);
 
     for (let index = 0; index < RELAY_HARVEST_SOURCE_CAPACITY; index++) {
       matrix.compose(this.sourcePositions[index]!, this.sourceQuaternion, UNIT_SCALE);
       this.cores.setMatrixAt(index, matrix);
-      this.cages.setMatrixAt(index, matrix);
-      this.beacons.setMatrixAt(index, matrix);
+      this.halos.setMatrixAt(index, matrix);
     }
-    for (const mesh of [this.cores, this.cages, this.beacons]) {
+    for (const mesh of [this.cores, this.halos]) {
       // Source relocation is rare and bounded to ten matrix uploads; no mesh/material is rebuilt.
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceMatrix.needsUpdate = true;
@@ -540,21 +609,19 @@ export class RelayHarvestField {
       fins,
       wreckTrace,
       conduits,
-      this.beacons,
       this.cores,
-      this.cages,
+      this.halos,
     );
 
     const sourceTriangles = RELAY_HARVEST_SOURCE_CAPACITY * (
       triangles(this.coreGeometry)
-      + triangles(this.cageGeometry)
-      + triangles(this.beaconGeometry)
+      + triangles(this.haloGeometry)
     );
     this.debug = Object.freeze({
       activeSources: RELAY_HARVEST_SOURCE_CAPACITY,
-      sourceDrawCalls: 3,
-      sourceGeometries: 3,
-      sourceMaterials: 3,
+      sourceDrawCalls: 2,
+      sourceGeometries: 2,
+      sourceMaterials: 2,
       sourceTriangles,
       structureDrawCalls: 5,
       structureTriangles: triangles(this.arcGeometry) * BANK_COUNT
@@ -576,8 +643,7 @@ export class RelayHarvestField {
     this.structureMaterial.uniforms.uTime.value = runTime;
     this.structureMaterial.uniforms.uCameraPos.value.copy(cameraPosition);
     this.coreMaterial.uniforms.uTime.value = runTime;
-    this.cageMaterial.uniforms.uTime.value = runTime;
-    this.beaconMaterial.uniforms.uTime.value = runTime;
+    this.haloMaterial.uniforms.uTime.value = runTime;
     this.syncSources(runTime);
   }
 
@@ -605,25 +671,27 @@ export class RelayHarvestField {
     this.finGeometry.dispose();
     this.conduitGeometry.dispose();
     this.coreGeometry.dispose();
-    this.cageGeometry.dispose();
-    this.beaconGeometry.dispose();
+    this.haloGeometry.dispose();
     this.structureMaterial.dispose();
     this.conduitMaterial.dispose();
     this.wreckTraceMaterial.dispose();
     this.coreMaterial.dispose();
-    this.cageMaterial.dispose();
-    this.beaconMaterial.dispose();
+    this.haloMaterial.dispose();
   }
 
   private syncSources(runTime: number): void {
-    let attributeDirty = false;
+    let collectedAttributeDirty = false;
+    let expiryAttributeDirty = false;
     let transformDirty = false;
     for (let index = 0; index < RELAY_HARVEST_SOURCE_CAPACITY; index++) {
       const source = this.sources[index]!;
       if (this.visualGeneration[index] !== source.generation) {
         this.visualGeneration[index] = source.generation;
         this.syncSourceTransform(index);
+        const expiresAt = source.expiresAt ?? -1;
+        for (const attribute of this.expiryAttributes) attribute.setX(index, expiresAt);
         transformDirty = true;
+        expiryAttributeDirty = true;
       }
       const collected = source.collected ? 1 : 0;
       let collectedAt = -1;
@@ -637,16 +705,18 @@ export class RelayHarvestField {
       ) continue;
       this.visualCollected[index] = collected;
       this.visualCollectedAt[index] = collectedAt;
-      for (const attribute of this.sourceAttributes) attribute.setX(index, collectedAt);
-      attributeDirty = true;
+      for (const attribute of this.collectedAttributes) attribute.setX(index, collectedAt);
+      collectedAttributeDirty = true;
     }
-    if (attributeDirty) {
-      for (const attribute of this.sourceAttributes) attribute.needsUpdate = true;
+    if (collectedAttributeDirty) {
+      for (const attribute of this.collectedAttributes) attribute.needsUpdate = true;
+    }
+    if (expiryAttributeDirty) {
+      for (const attribute of this.expiryAttributes) attribute.needsUpdate = true;
     }
     if (transformDirty) {
       this.cores.instanceMatrix.needsUpdate = true;
-      this.cages.instanceMatrix.needsUpdate = true;
-      this.beacons.instanceMatrix.needsUpdate = true;
+      this.halos.instanceMatrix.needsUpdate = true;
       const conduit = this.conduitGeometry.getAttribute('position');
       if (conduit) conduit.needsUpdate = true;
     }
@@ -656,8 +726,7 @@ export class RelayHarvestField {
     const source = this.sources[index]!;
     this.sourceMatrix.compose(source.position, this.sourceQuaternion, UNIT_SCALE);
     this.cores.setMatrixAt(index, this.sourceMatrix);
-    this.cages.setMatrixAt(index, this.sourceMatrix);
-    this.beacons.setMatrixAt(index, this.sourceMatrix);
+    this.halos.setMatrixAt(index, this.sourceMatrix);
 
     let offset = index * 4 * 2 * 3;
     for (let spoke = 0; spoke < 4; spoke++) {

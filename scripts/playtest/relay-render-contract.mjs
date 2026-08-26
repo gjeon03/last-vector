@@ -22,9 +22,9 @@ const field = new RelayHarvestField({
 const debug = field.getDebugState();
 
 assert.equal(debug.activeSources, 10);
-assert.equal(debug.sourceDrawCalls, 3);
-assert.equal(debug.sourceGeometries, 3);
-assert.equal(debug.sourceMaterials, 3);
+assert.equal(debug.sourceDrawCalls, 2);
+assert.equal(debug.sourceGeometries, 2);
+assert.equal(debug.sourceMaterials, 2);
 assert.ok(debug.sourceDrawCalls <= RELAY_HARVEST_SOURCE_DRAW_CAP);
 assert.ok(debug.sourceTriangles <= RELAY_HARVEST_SOURCE_TRIANGLE_CAP);
 assert.ok(debug.colliders > 0 && debug.colliders <= 90);
@@ -41,15 +41,18 @@ for (const collider of field.colliders) {
 
 const sourceMeshes = field.object.children.filter((child) =>
   child.name.includes('ENERGY CORES')
-  || child.name.includes('CAPTURE CAGES')
-  || child.name.includes('SOURCE BEACONS'));
-assert.equal(sourceMeshes.length, 3);
+  || child.name.includes('ENERGY HALOS'));
+assert.equal(sourceMeshes.length, 2);
 for (const mesh of sourceMeshes) assert.ok(mesh instanceof THREE.InstancedMesh);
 
 const geometries = sourceMeshes.map((mesh) => mesh.geometry);
 const materials = sourceMeshes.map((mesh) => mesh.material);
 const initialInstanceMatrices = sourceMeshes.map((mesh) => Array.from(mesh.instanceMatrix.array));
 const collectedAttributes = sourceMeshes.map((mesh) => mesh.geometry.getAttribute('aCollectedAt'));
+const expiryAttributes = sourceMeshes.map((mesh) => mesh.geometry.getAttribute('aExpiresAt'));
+for (const attribute of expiryAttributes) {
+  assert.ok(Math.abs(attribute.getX(0) - state.sources[0].expiresAt) <= 1e-4);
+}
 const childCount = field.object.children.length;
 
 field.update(0.5, new THREE.Vector3(0, 0, 1_000));
@@ -65,6 +68,9 @@ assert.equal(state.relocateExpired(0.61), 1);
 field.update(0.61, new THREE.Vector3(10, 0, 900));
 assert.equal(relocationSource.generation, 1);
 assert.ok(relocationSource.position.distanceTo(relocationBefore) > 1_000);
+for (const attribute of expiryAttributes) {
+  assert.ok(Math.abs(attribute.getX(1) - relocationSource.expiresAt) <= 1e-4);
+}
 const matricesAfterRelocation = sourceMeshes.map((mesh) => Array.from(mesh.instanceMatrix.array));
 for (let index = 0; index < sourceMeshes.length; index++) {
   assert.notDeepEqual(matricesAfterRelocation[index], initialInstanceMatrices[index]);

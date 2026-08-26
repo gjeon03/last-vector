@@ -116,7 +116,7 @@ async function runCampaignProof({ report, session, options }) {
     const catalog = await callHarness(page, 'catalog');
     const url = new URL(page.url());
     verify(course.courseId === 'relay-harvest'
-      && course.recordId.includes('-layout-rh1-')
+      && course.recordId.includes('-layout-rh2-')
       && url.searchParams.get('mission') === 'relay-harvest'
       && /^\d+$/u.test(url.searchParams.get('layout') ?? ''),
     'Chapter handoff did not construct a canonical relay layout.', { course, url: url.href });

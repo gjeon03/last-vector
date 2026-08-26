@@ -434,7 +434,6 @@ export class Hud {
 
   /* rolling feeds */
   private readonly logNodes = new Map<number, HTMLElement>();
-  private readonly collectionLabels = new Map<string, string>();
   private readonly logPool: HTMLElement[] = [];
   private readonly logAlpha = new Map<number, number>();
   private readonly splitNodes: HTMLElement[] = [];
@@ -837,7 +836,6 @@ export class Hud {
   dispose(): void {
     this.logNodes.clear();
     this.logAlpha.clear();
-    this.collectionLabels.clear();
     this.el.remove();
   }
 
@@ -1449,7 +1447,7 @@ export class Hud {
     this.drawRollArc(ctx, w, h, vs);
     this.drawProximity(ctx, w, h, vs);
     if (t.objective.kind === 'collection') {
-      this.drawCollectionMarkers(ctx, w, h, t.objective, alpha);
+      this.drawCollectionEdgeCues(ctx, w, h, t.objective, alpha);
     }
     if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs, Math.min(w, h));
     if (vs.gateOn < 0.99) this.drawChaseArrow(ctx, w, h, vs);
@@ -1460,61 +1458,56 @@ export class Hud {
     this.placeGateTag(w, h, vs, anchor.onScreen);
   }
 
-  /** Five quiet source marks; only the common guidance target receives the large director. */
-  private drawCollectionMarkers(
+  /**
+   * At most two quiet edge notches preserve route choice when alternative sources sit behind the
+   * camera. On-screen sources are physical glowing objects; painting diamonds and labels over
+   * them made the energy field read as a UI mock-up instead of a place.
+   */
+  private drawCollectionEdgeCues(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     objective: Extract<Telemetry['objective'], { kind: 'collection' }>,
     alpha: number,
   ): void {
+    if (objective.phase !== 'collecting') return;
     const cx = w * 0.5;
     const cy = h * 0.5;
     const edgeX = Math.max(24, cx - 48);
     const edgeY = Math.max(24, cy - 48);
-    ctx.save();
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-
+    let nearest: (typeof objective.sources)[number] | null = null;
+    let second: (typeof objective.sources)[number] | null = null;
     for (const source of objective.sources) {
-      if (source.collected) continue;
-      const anchor = source.anchor;
-      let x: number;
-      let y: number;
-      if (anchor.onScreen) {
-        x = cx + anchor.x * cx;
-        y = cy - anchor.y * cy;
-      } else {
-        const dx = Math.cos(anchor.angle);
-        const dy = -Math.sin(anchor.angle);
-        const edgeScale = Math.min(
-          edgeX / Math.max(Math.abs(dx), 0.001),
-          edgeY / Math.max(Math.abs(dy), 0.001),
-        );
-        x = cx + dx * edgeScale;
-        y = cy + dy * edgeScale;
+      if (source.collected || source.primary || source.anchor.onScreen) continue;
+      if (!nearest || source.distance < nearest.distance) {
+        second = nearest;
+        nearest = source;
+      } else if (!second || source.distance < second.distance) {
+        second = source;
       }
+    }
 
-      const size = source.primary ? 6 : 4.5;
-      const colour = source.primary ? UI.accent : UI.primary;
-      ctx.globalAlpha = alpha * (source.primary ? 0.95 : 0.72);
+    ctx.save();
+    const cues = [nearest, second] as const;
+    for (let index = 0; index < cues.length; index++) {
+      const source = cues[index];
+      if (!source) continue;
+      const dx = Math.cos(source.anchor.angle);
+      const dy = -Math.sin(source.anchor.angle);
+      const edgeScale = Math.min(
+        edgeX / Math.max(Math.abs(dx), 0.001),
+        edgeY / Math.max(Math.abs(dy), 0.001),
+      );
+      const x = cx + dx * edgeScale;
+      const y = cy + dy * edgeScale;
+      const tx = -dy;
+      const ty = dx;
+      const half = index === 0 ? 4.5 : 3.5;
+      ctx.globalAlpha = alpha * (index === 0 ? 0.42 : 0.27);
       ctx.beginPath();
-      ctx.moveTo(x, y - size);
-      ctx.lineTo(x + size, y);
-      ctx.lineTo(x, y + size);
-      ctx.lineTo(x - size, y);
-      ctx.closePath();
-      casedStroke(ctx, colour, source.primary ? 1.5 : 1, 3);
-      if (anchor.onScreen && !source.primary) {
-        let label = this.collectionLabels.get(source.id);
-        if (label === undefined) {
-          label = source.id.startsWith('CORE-') ? source.id.slice(5) : source.id;
-          this.collectionLabels.set(source.id, label);
-        }
-        ctx.fillStyle = UI.primary;
-        ctx.fillText(label, x, y - size - 4);
-      }
+      ctx.moveTo(x - tx * half, y - ty * half);
+      ctx.lineTo(x + tx * half, y + ty * half);
+      casedStroke(ctx, UI.primary, 1, 2.4);
     }
     ctx.restore();
   }
