@@ -32,7 +32,12 @@ import {
   type LocaleFontResult,
   type Translator,
 } from '../i18n/index.ts';
-import { FILL_BUDGET_PIXELS, FLIGHT, FLIGHT_THRESHOLDS } from '../core/art.ts';
+import {
+  applyWorldPalette,
+  FILL_BUDGET_PIXELS,
+  FLIGHT,
+  FLIGHT_THRESHOLDS,
+} from '../core/art.ts';
 import { clamp, clamp01, damp, lerp, smoothstep, distanceToSegment } from '../core/mathx.ts';
 import { hasRadioSafeWindow, radioDurationSeconds } from '../core/RadioSchedule.ts';
 import { CAIRN_MISSION, type MissionDefinition } from '../core/Missions.ts';
@@ -51,7 +56,6 @@ import {
   resolveAutopilotButton,
 } from './GameContracts.ts';
 import { createCairnMissionRuntime } from './CairnRuntime.ts';
-import { nextRelayHarvestLayoutIndex } from './missions/RelayHarvestLayout.ts';
 import type {
   AudioBus,
   CameraMode,
@@ -230,8 +234,6 @@ export interface GameOptions {
     cancel(): void;
   };
   seed?: number;
-  /** Validated collection layout selected at boot; ignored by other mission runtimes. */
-  layoutIndex?: number;
 }
 
 export class Game {
@@ -263,7 +265,6 @@ export class Game {
   private readonly missionDefinition: MissionDefinition;
   private readonly courseDefinition: MissionDefinition['world']['sourceCourse'];
   private readonly missionResolution: MissionResolution;
-  private readonly layoutIndex: number | null;
   private readonly progressStore: ProgressStore;
   private newlyUnlockedMissionId: MissionDefinition['id'] | null = null;
   private campaignNavigationError: CampaignViewModel['navigationError'] = null;
@@ -421,10 +422,13 @@ export class Game {
       source: 'default',
       diagnostic: null,
     };
-    this.layoutIndex = options.layoutIndex ?? null;
     this.progressStore = options.progressStore ?? new ProgressStore();
+    applyWorldPalette(this.missionDefinition.world.palette);
     const sun = this.missionDefinition.world.sunDirection;
     this.lighting = createLightingUniforms(new THREE.Vector3(sun[0], sun[1], sun[2]));
+    this.lighting.uSunColor.value
+      .setHex(this.missionDefinition.world.sunColor)
+      .multiplyScalar(this.missionDefinition.world.sunIntensity);
     this.localeStore = options.localeStore ?? new LocaleStore();
     this.selectedLocale = this.localeStore.get();
     this.activeTranslator = createTranslator(this.selectedLocale);
@@ -487,7 +491,6 @@ export class Game {
       lighting: this.lighting,
       initialQuality: profile,
       maximumQuality: maxProfile,
-      ...(options.layoutIndex === undefined ? {} : { layoutIndex: options.layoutIndex }),
     }, missionRuntimeFactory);
 
     this.shipModel = new ShipModel({ lighting: this.lighting });
@@ -651,7 +654,6 @@ export class Game {
       quitToTitle: () => this.toTitle(),
       selectMission: (missionId) => this.selectMission(missionId),
       showMissionSelect: () => this.showMissionSelect(),
-      newLayout: () => this.newLayout(),
       requestLocale: (locale) => this.applyLocale(locale),
       setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => this.applySetting(key, value),
       getSettings: () => this.settings.value,
@@ -693,7 +695,7 @@ export class Game {
     const locale = this.activeRunLocale ?? this.selectedLocale;
     writeLocaleHandoff(locale);
     const target = new URL(buildMissionUrl(window.location.href, missionId));
-    if (this.phase === 'finished') target.searchParams.set('briefing', '1');
+    if (this.phase === 'finished' || this.phase === 'title') target.searchParams.set('briefing', '1');
     else target.searchParams.delete('briefing');
     try {
       window.location.assign(target.href);
@@ -718,24 +720,6 @@ export class Game {
     this.toTitle();
     this.overlay.syncCampaign(this.campaignViewModel());
     this.overlay.focusStageSelection();
-  }
-
-  private newLayout(): void {
-    if (this.missionDefinition.id !== 'relay-harvest' || this.layoutIndex === null) return;
-    const target = new URL(window.location.href);
-    target.searchParams.set(
-      'layout',
-      String(nextRelayHarvestLayoutIndex(this.layoutIndex, this.seed)),
-    );
-    target.searchParams.set('mission', this.missionDefinition.id);
-    target.searchParams.delete('course');
-    target.searchParams.delete('briefing');
-    try {
-      window.location.assign(target.href);
-    } catch {
-      this.campaignNavigationError = 'navigation-failed';
-      this.overlay.syncCampaign(this.campaignViewModel());
-    }
   }
 
   private campaignViewModel(): CampaignViewModel {
@@ -1331,12 +1315,8 @@ export class Game {
             const core = collectedBeforeRewards + rewardIndex + 1;
             this.pushCallout({
               titleMessage: { type: 'callout-title.core-acquired', core },
-              sub: undefined,
-              subMessage: {
-                type: 'callout-sub.relay-charge',
-                charge: objectiveTelemetry.charge,
-                required: objectiveTelemetry.chargeRequired,
-              },
+              sub: 'BOOST FULL',
+              subMessage: undefined,
               tone: 'good',
               ttl: 1.35,
             });

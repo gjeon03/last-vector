@@ -338,8 +338,6 @@ export class Hud {
   private readonly nObjectiveKind: HTMLElement;
   private readonly nCollectionStatus: HTMLElement;
   private readonly nCollectionSummary: HTMLElement;
-  private readonly nCollectionSources: HTMLElement;
-  private readonly nCollectionSourcePips: HTMLElement[] = [];
   private readonly nSplit: HTMLElement;
   private readonly nTotal: HTMLElement;
   private readonly nBest: HTMLElement;
@@ -403,7 +401,6 @@ export class Hud {
   private pGateNameType = '';
   private pObjectiveKind = '';
   private pCollectionStatus = '';
-  private pCollectionSourceBits = -1;
   private pSplit = '';
   private pTotal = '';
   private pBest = '';
@@ -600,14 +597,7 @@ export class Hud {
     this.nCollectionStatus.lang = 'en';
     this.nCollectionStatus.hidden = true;
     this.nCollectionSummary = el('div', 'lv-collection-summary');
-    this.nCollectionSources = el('div', 'lv-collection-sources');
-    this.nCollectionSources.setAttribute('aria-hidden', 'true');
-    for (let index = 0; index < 10; index++) {
-      const pip = el('i', 'lv-collection-source');
-      this.nCollectionSourcePips.push(pip);
-      this.nCollectionSources.appendChild(pip);
-    }
-    this.nCollectionStatus.append(this.nCollectionSummary, this.nCollectionSources);
+    this.nCollectionStatus.append(this.nCollectionSummary);
     right.append(
       this.nObjectiveKind,
       gateCount,
@@ -944,7 +934,7 @@ export class Hud {
       this.nObjectiveKind.textContent = collection
         ? collection.phase === 'returning'
           ? this.messages.hud.returnToRelay
-          : this.messages.hud.relayCharge
+          : 'ENERGY CELL'
         : this.messages.hud.nextMarker;
       this.nCollectionStatus.hidden = collection === null;
     }
@@ -982,29 +972,10 @@ export class Hud {
     if (collection) {
       const status = collection.phase === 'returning'
         ? `${this.messages.hud.coreProgress(collection.collected, collection.required)} · ${this.messages.hud.returnWindow(collection.relayRemaining ?? 0)}`
-        : `${this.messages.hud.chargeProgress(collection.charge, collection.chargeRequired)} · ${this.messages.hud.coreProgress(collection.collected, collection.required)} · ${this.messages.hud.coreStability(collection.primaryExpiresIn ?? 0)}`;
+        : this.messages.hud.coreProgress(collection.collected, collection.required);
       if (status !== this.pCollectionStatus) {
         this.pCollectionStatus = status;
         this.nCollectionSummary.textContent = status;
-      }
-      let sourceBits = 0;
-      for (let index = 0; index < collection.sources.length; index++) {
-        const source = collection.sources[index]!;
-        if (source.collected) sourceBits |= 1 << index;
-        // Ten collection bits occupy 0..9; keep primary bits disjoint at 10..19.
-        if (source.primary) sourceBits |= 1 << (index + 10);
-      }
-      if (sourceBits !== this.pCollectionSourceBits) {
-        this.pCollectionSourceBits = sourceBits;
-        for (let index = 0; index < this.nCollectionSourcePips.length; index++) {
-          const source = collection.sources[index];
-          const pip = this.nCollectionSourcePips[index]!;
-          pip.hidden = source === undefined;
-          if (!source) continue;
-          pip.dataset['collected'] = source.collected ? '1' : '0';
-          pip.dataset['primary'] = source.primary ? '1' : '0';
-          pip.title = source.id;
-        }
       }
     }
 
@@ -1446,9 +1417,6 @@ export class Hud {
 
     this.drawRollArc(ctx, w, h, vs);
     this.drawProximity(ctx, w, h, vs);
-    if (t.objective.kind === 'collection') {
-      this.drawCollectionEdgeCues(ctx, w, h, t.objective, alpha);
-    }
     if (vs.gateOn > 0.01) this.drawGateReticle(ctx, vs, Math.min(w, h));
     if (vs.gateOn < 0.99) this.drawChaseArrow(ctx, w, h, vs);
     this.drawFlightMarker(ctx, w, h, vs);
@@ -1456,60 +1424,6 @@ export class Hud {
 
     ctx.globalAlpha = 1;
     this.placeGateTag(w, h, vs, anchor.onScreen);
-  }
-
-  /**
-   * At most two quiet edge notches preserve route choice when alternative sources sit behind the
-   * camera. On-screen sources are physical glowing objects; painting diamonds and labels over
-   * them made the energy field read as a UI mock-up instead of a place.
-   */
-  private drawCollectionEdgeCues(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    objective: Extract<Telemetry['objective'], { kind: 'collection' }>,
-    alpha: number,
-  ): void {
-    if (objective.phase !== 'collecting') return;
-    const cx = w * 0.5;
-    const cy = h * 0.5;
-    const edgeX = Math.max(24, cx - 48);
-    const edgeY = Math.max(24, cy - 48);
-    let nearest: (typeof objective.sources)[number] | null = null;
-    let second: (typeof objective.sources)[number] | null = null;
-    for (const source of objective.sources) {
-      if (source.collected || source.primary || source.anchor.onScreen) continue;
-      if (!nearest || source.distance < nearest.distance) {
-        second = nearest;
-        nearest = source;
-      } else if (!second || source.distance < second.distance) {
-        second = source;
-      }
-    }
-
-    ctx.save();
-    const cues = [nearest, second] as const;
-    for (let index = 0; index < cues.length; index++) {
-      const source = cues[index];
-      if (!source) continue;
-      const dx = Math.cos(source.anchor.angle);
-      const dy = -Math.sin(source.anchor.angle);
-      const edgeScale = Math.min(
-        edgeX / Math.max(Math.abs(dx), 0.001),
-        edgeY / Math.max(Math.abs(dy), 0.001),
-      );
-      const x = cx + dx * edgeScale;
-      const y = cy + dy * edgeScale;
-      const tx = -dy;
-      const ty = dx;
-      const half = index === 0 ? 4.5 : 3.5;
-      ctx.globalAlpha = alpha * (index === 0 ? 0.42 : 0.27);
-      ctx.beginPath();
-      ctx.moveTo(x - tx * half, y - ty * half);
-      ctx.lineTo(x + tx * half, y + ty * half);
-      casedStroke(ctx, UI.primary, 1, 2.4);
-    }
-    ctx.restore();
   }
 
   /** Compact roll scale sat above the pipper. Reads as part of the sight, not a horizon line. */

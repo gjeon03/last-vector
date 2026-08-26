@@ -20,7 +20,7 @@ export const FICTION = {
 } as const;
 
 /** Linear-space colours as hex ints, for three.js. */
-export const PALETTE = {
+const BASE_PALETTE = {
   voidNear: 0x05070f,
   voidFar: 0x0a1226,
 
@@ -53,6 +53,19 @@ export const PALETTE = {
   rockShadow: 0x14161f,
   rockMineral: 0x3fd6c0,
 } as const;
+
+export type PaletteKey = keyof typeof BASE_PALETTE;
+
+/**
+ * A mission is selected before the one world for this page is constructed. Reusing this object
+ * identity lets constructors keep their shared palette import while a different mission can
+ * build a genuinely different sky and rock field on the next page load.
+ */
+export const PALETTE: Record<PaletteKey, number> = { ...BASE_PALETTE };
+
+export function applyWorldPalette(overrides: Partial<Record<PaletteKey, number>> = {}): void {
+  Object.assign(PALETTE, BASE_PALETTE, overrides);
+}
 
 /** CSS colours for the HUD/screens layer. Same direction, sRGB. */
 export const UI = {

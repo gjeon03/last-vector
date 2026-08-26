@@ -365,8 +365,6 @@ export interface GameMissionRuntimeFactoryContext {
   readonly lighting: LightingUniforms;
   readonly initialQuality: QualityProfile;
   readonly maximumQuality: QualityProfile;
-  /** Validated collection layout index; ignored by objectives that do not use layouts. */
-  readonly layoutIndex?: number;
 }
 
 export type GameMissionRuntimeFactory = (

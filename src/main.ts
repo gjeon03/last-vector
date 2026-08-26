@@ -20,10 +20,6 @@ import { resolveMissionSelection } from './core/MissionSelection.ts';
 import { ProgressStore } from './core/Progress.ts';
 import { getMissionRuntimeFactory } from './game/missions/MissionFactories.ts';
 import {
-  VALIDATED_RELAY_HARVEST_LAYOUTS,
-  selectRelayHarvestLayoutIndex,
-} from './game/missions/RelayHarvestLayout.ts';
-import {
   consumeLocaleHandoff,
   createTranslator,
   LocaleStore,
@@ -137,34 +133,15 @@ async function boot(): Promise<void> {
   const seedParam = search.get('seed');
   const parsedSeed = seedParam !== null ? Number.parseInt(seedParam, 10) : NaN;
   const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : undefined;
-  let missionResolution = resolveMissionSelection({
+  const missionResolution = resolveMissionSelection({
     mission: search.get('mission'),
     legacyCourse: search.get('course'),
   }, progressStore.snapshot());
   const missionDefinition = getMissionDefinition(missionResolution.missionId);
-  const actualSeed = seed ?? missionDefinition.defaultSeed;
-  let layoutIndex: number | undefined;
   const canonicalUrl = new URL(window.location.href);
-  if (missionDefinition.id === 'relay-harvest') {
-    const rawLayout = search.get('layout');
-    const parsedLayout = rawLayout !== null && /^\d+$/u.test(rawLayout)
-      ? Number.parseInt(rawLayout, 10)
-      : -1;
-    const validLayout = Number.isInteger(parsedLayout)
-      && parsedLayout >= 0
-      && parsedLayout < VALIDATED_RELAY_HARVEST_LAYOUTS.length;
-    layoutIndex = validLayout ? parsedLayout : selectRelayHarvestLayoutIndex(actualSeed);
-    if (!validLayout && rawLayout !== null) {
-      missionResolution = {
-        ...missionResolution,
-        diagnostic: `invalid layout parameter: ${rawLayout}`,
-      };
-    }
-    if (rawLayout !== String(layoutIndex)) {
-      canonicalUrl.searchParams.set('layout', String(layoutIndex));
-      window.history.replaceState(window.history.state, '', canonicalUrl.href);
-    }
-  } else if (canonicalUrl.searchParams.has('layout')) {
+  // HARVEST is fully seed-deterministic. Remove the retired relay-arena layout selector rather
+  // than letting an old bookmark pretend to choose a different ruleset.
+  if (canonicalUrl.searchParams.has('layout')) {
     canonicalUrl.searchParams.delete('layout');
     window.history.replaceState(window.history.state, '', canonicalUrl.href);
   }
@@ -184,7 +161,6 @@ async function boot(): Promise<void> {
       missionDefinition,
       missionResolution,
       missionRuntimeFactory: getMissionRuntimeFactory(missionDefinition.id),
-      ...(layoutIndex === undefined ? {} : { layoutIndex }),
       ...(seed === undefined ? {} : { seed }),
     });
   } catch (error) {

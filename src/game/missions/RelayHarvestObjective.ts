@@ -18,6 +18,7 @@ import {
   RELAY_HARVEST_ACTIVE_SOURCE_COUNT,
   RELAY_HARVEST_BOOST_REWARD,
   RELAY_HARVEST_CAPTURE_RADIUS,
+  RELAY_HARVEST_CELL_LIFETIME,
   RELAY_HARVEST_CHARGE_REQUIRED,
   RELAY_HARVEST_RELAY_CAPTURE_RADIUS,
   RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
@@ -31,8 +32,6 @@ const RELAY_WINDOW_CLOSED = Object.freeze({
   reason: 'relay-window-closed',
 } as const);
 const TOI_EPSILON = 1e-9;
-const PRIMARY_SWITCH_MARGIN = 0.12;
-const PRIMARY_SWITCH_FLOOR = 350;
 
 interface CollectionCandidate {
   sourceIndex: number;
@@ -59,15 +58,16 @@ function createAnchor(): ScreenAnchor {
   return { x: 0, y: 0, onScreen: false, angle: 0, distance: 0 };
 }
 
-function rankForCollection(totalTime: number, cleanRun: boolean, referenceSeconds: number): string {
-  if (totalTime < referenceSeconds && cleanRun) return 'S';
-  if (totalTime < referenceSeconds * 1.15) return 'A';
-  if (totalTime < referenceSeconds * 1.35) return 'B';
-  if (totalTime < referenceSeconds * 1.6) return 'C';
+function rankForCollection(totalTime: number, cleanRun: boolean, parSeconds: number): string {
+  const ratio = totalTime / Math.max(1, parSeconds);
+  if (ratio < 0.74 && cleanRun) return 'S';
+  if (ratio < 0.84) return 'A';
+  if (ratio < 0.96) return 'B';
+  if (ratio < 1.18) return 'C';
   return 'D';
 }
 
-/** Earliest segment/sphere entry. Handles an initial point already inside the capture volume. */
+/** Earliest segment/sphere entry, including a segment that starts inside the sphere. */
 export function relayHarvestSegmentSphereEntry(
   start: THREE.Vector3,
   end: THREE.Vector3,
@@ -95,10 +95,7 @@ export function relayHarvestSegmentSphereEntry(
   return Math.max(0, Math.min(1, timeOfImpact));
 }
 
-/**
- * Collection owner for BLACKOUT RELAY. Its state is deliberately injected so renderer and
- * objective observe the same ten stable source objects without a mission-ID branch in Game.
- */
+/** Mission-runtime adapter over the deterministic Relay Harvest state. */
 export class RelayHarvestObjective implements MissionObjectiveRuntime {
   readonly kind = 'collection' as const;
   readonly state: RelayHarvestState;
@@ -111,8 +108,6 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
   );
   private readonly previousPosition = new THREE.Vector3();
   private readonly lastPosition = new THREE.Vector3();
-  private readonly lastForward = new THREE.Vector3(0, 0, -1);
-  private readonly direction = new THREE.Vector3();
   private readonly returnSegmentStart = new THREE.Vector3();
   private readonly telemetrySources: MutableCollectionSourceTelemetry[];
   private readonly telemetryValue: MutableCollectionTelemetry;
@@ -129,15 +124,15 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
     this.rewardPool = Object.freeze(state.sources.map((source) => Object.freeze({
       kind: 'boost-recharge' as const,
       amount: RELAY_HARVEST_BOOST_REWARD,
-      sourceId: source.id,
+      sourceId: `CELL-${String(source.index + 1).padStart(2, '0')}`,
       sourceIndex: source.index,
     })));
     this.telemetrySources = state.sources.map((source) => ({
-      id: source.id,
+      id: `CELL-${String(source.index + 1).padStart(2, '0')}`,
       position: source.position.toArray() as [number, number, number],
       anchor: createAnchor(),
-      generation: 0,
-      expiresIn: source.expiresAt,
+      generation: source.generation,
+      expiresIn: source.charge * RELAY_HARVEST_CELL_LIFETIME,
       distance: Infinity,
       collected: false,
       primary: false,
@@ -169,8 +164,7 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
     this.primarySourceIndex = -1;
     this.candidateCount = 0;
     this.lastElapsed = 0;
-    this.lastPosition.set(0, 0, 0);
-    this.lastForward.set(0, 0, -1);
+    this.lastPosition.copy(this.state.relayPosition);
     for (const source of this.telemetrySources) {
       source.distance = Infinity;
       source.collected = false;
@@ -181,31 +175,34 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
       source.anchor.angle = 0;
       source.anchor.distance = 0;
     }
+    this.updatePrimary(this.state.relayPosition);
     this.syncTelemetry();
   }
 
   update(frame: ObjectiveUpdateFrame): ObjectiveTerminalState {
     if (this.state.extracted) return SUCCEEDED;
     if (this.state.failureReason !== null) return RELAY_WINDOW_CLOSED;
-    this.lastPosition.copy(frame.position);
-    this.lastElapsed = Math.max(0, frame.elapsed);
-    if (frame.forward && frame.forward.lengthSq() > 1e-9) this.lastForward.copy(frame.forward).normalize();
 
+    const elapsed = Number.isFinite(frame.elapsed) ? Math.max(0, frame.elapsed) : 0;
     const segmentStart = frame.previousPosition ?? (
       this.hasPreviousPosition ? this.previousPosition : frame.position
     );
     const startElapsed = this.hasPreviousPosition
       ? this.previousElapsed
-      : Math.max(0, frame.elapsed - Math.max(0, frame.position.distanceTo(segmentStart)
-        / Math.max(1, frame.speed)));
+      : Math.max(0, elapsed - frame.position.distanceTo(segmentStart) / Math.max(1, frame.speed));
+    const dt = this.hasPreviousPosition ? Math.max(0, elapsed - this.previousElapsed) : elapsed;
+    this.lastPosition.copy(frame.position);
+    this.lastElapsed = elapsed;
 
     let returnStart: THREE.Vector3 | null = null;
     let returnStartElapsed = startElapsed;
     if (this.state.phase === 'collecting') {
+      // Expiry owns the frame before collision: a cell that discharged is never also collected.
+      this.state.advanceDecay(elapsed, dt);
       this.candidateCount = 0;
       for (let index = 0; index < this.state.sources.length; index++) {
         const source = this.state.sources[index]!;
-        if (source.collected) continue;
+        if (!source.alive) continue;
         const timeOfImpact = relayHarvestSegmentSphereEntry(
           segmentStart,
           frame.position,
@@ -222,47 +219,40 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
         if (this.state.collected >= RELAY_HARVEST_REQUIRED_SOURCE_COUNT) break;
         const candidate = this.candidates[index]!;
         const collectedAt = startElapsed
-          + Math.max(0, frame.elapsed - startElapsed) * candidate.timeOfImpact;
-        const candidateSource = this.state.sources[candidate.sourceIndex]!;
-        // The swept pickup owns its exact contact time. An expiry later in this frame must not
-        // erase an earlier valid pickup (or let 60/120 Hz choose different outcomes).
-        if (candidateSource.expiresAt !== null
-          && collectedAt > candidateSource.expiresAt + TOI_EPSILON) continue;
-        const source = this.state.collect(candidate.sourceIndex, collectedAt);
-        if (!source) continue;
-        this.pickupSplits.push(source.collectedAt!);
-        this.pendingRewardSourceIndices[this.pendingRewardCount++] = source.index;
-        if (candidate.sourceIndex === this.primarySourceIndex) this.primarySourceIndex = -1;
-        if (this.state.collected === RELAY_HARVEST_REQUIRED_SOURCE_COUNT) {
+          + Math.max(0, elapsed - startElapsed) * candidate.timeOfImpact;
+        const pickup = this.state.collect(candidate.sourceIndex, collectedAt);
+        if (!pickup) continue;
+        this.pickupSplits.push(pickup.collectedAt);
+        this.pendingRewardSourceIndices[this.pendingRewardCount++] = pickup.sourceIndex;
+
+        if (pickup.quotaMet) {
           this.returnSegmentStart.lerpVectors(segmentStart, frame.position, candidate.timeOfImpact);
           this.state.beginReturn(
-            collectedAt,
+            pickup.collectedAt,
             this.returnSegmentStart.distanceTo(this.state.relayPosition),
             FLIGHT.cruiseSpeed,
           );
           returnStart = this.returnSegmentStart;
-          returnStartElapsed = collectedAt;
+          returnStartElapsed = pickup.collectedAt;
+          break;
         }
       }
-      // Expiry is applied after exact-time contacts. At maximum ship speed one frame travels far
-      // less than the 220 m capture radius, so a source reached just after relocation is still
-      // captured from the following frame's swept segment without tunnelling.
-      this.state.relocateExpired(frame.elapsed);
     } else {
       returnStart = segmentStart;
     }
 
     this.previousPosition.copy(frame.position);
-    this.previousElapsed = frame.elapsed;
+    this.previousElapsed = elapsed;
     this.hasPreviousPosition = true;
-    this.updatePrimary(frame.position, frame.forward ?? this.lastForward);
+    this.updatePrimary(frame.position);
     this.syncTelemetry();
+
     if (this.state.phase !== 'returning') return RUNNING;
     return this.resolveReturn(
       returnStart ?? segmentStart,
       frame.position,
       returnStartElapsed,
-      frame.elapsed,
+      elapsed,
     );
   }
 
@@ -271,7 +261,7 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
       const distance = position.distanceTo(this.state.relayPosition);
       this.syncTelemetry();
       return {
-        label: 'LAUNCH RELAY',
+        label: 'RELAY',
         anchor: this.state.relayPosition,
         distance,
         progress: 1,
@@ -279,17 +269,26 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
         total: RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
       };
     }
-    this.updatePrimary(position, this.lastForward);
+
+    this.updatePrimary(position);
     this.syncTelemetry();
     const primary = this.state.sources[this.primarySourceIndex]
-      ?? this.state.sources.find((source) => !source.collected)
-      ?? this.state.sources[0]!;
-    const distance = position.distanceTo(primary.position);
+      ?? this.state.nearestSource(position);
+    if (!primary) {
+      return {
+        label: 'RELAY',
+        anchor: this.state.relayPosition,
+        distance: position.distanceTo(this.state.relayPosition),
+        progress: this.state.collected / RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
+        current: this.state.collected,
+        total: RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
+      };
+    }
     return {
-      label: primary.collected ? 'RELAY STABLE' : primary.id,
+      label: 'ENERGY CELL',
       anchor: primary.position,
-      distance,
-      progress: Math.min(1, this.state.charge / RELAY_HARVEST_CHARGE_REQUIRED),
+      distance: position.distanceTo(primary.position),
+      progress: this.state.collected / RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
       current: this.state.collected,
       total: RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
     };
@@ -305,21 +304,18 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
   }
 
   buildResult(input: MissionResultInput): CollectionMissionResult {
+    const par = (this.state.path.totalLength * 1.45) / FLIGHT.cruiseSpeed;
     return {
       kind: 'collection',
       missionId: 'relay-harvest',
-      rulesetVersion: 2,
+      rulesetVersion: 3,
       totalTime: input.totalTime,
       hullRemaining: input.hullRemaining,
-      objectiveSummary: `${this.state.collected} / ${RELAY_HARVEST_REQUIRED_SOURCE_COUNT} CORES + RELAY RETURN`,
+      objectiveSummary: `${this.state.collected} / ${RELAY_HARVEST_REQUIRED_SOURCE_COUNT} CELLS + RELAY RETURN`,
       topSpeed: input.topSpeed,
       cleanRun: input.cleanRun,
-      rank: rankForCollection(
-        input.totalTime,
-        input.cleanRun,
-        this.state.layout.referenceRoutes[0].referenceSeconds,
-      ),
-      destinationName: 'BLACKOUT RELAY',
+      rank: rankForCollection(input.totalTime, input.cleanRun, par),
+      destinationName: 'RELAY HEART',
       newlyUnlockedMissionId: null,
       bestTime: input.bestTime,
       isNewBest: input.isNewBest,
@@ -332,7 +328,7 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
   }
 
   recordId(baseRecordId: string): string {
-    return `${baseRecordId}-layout-${this.state.layoutSignature}`;
+    return baseRecordId;
   }
 
   drainRewardEvents(out: MissionRewardEvent[]): number {
@@ -377,7 +373,6 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
   }
 
   private sortCandidates(): void {
-    // Ten fixed slots make insertion sort cheaper and more deterministic than allocating a slice.
     for (let index = 1; index < this.candidateCount; index++) {
       const value = this.candidates[index]!;
       let cursor = index - 1;
@@ -392,52 +387,12 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
   private compareCandidates(a: CollectionCandidate, b: CollectionCandidate): number {
     const timeDelta = a.timeOfImpact - b.timeOfImpact;
     if (Math.abs(timeDelta) > TOI_EPSILON) return timeDelta;
-    return this.state.sources[a.sourceIndex]!.id.localeCompare(this.state.sources[b.sourceIndex]!.id);
+    return this.state.sources[a.sourceIndex]!.id - this.state.sources[b.sourceIndex]!.id;
   }
 
-  private sourceScore(index: number, position: THREE.Vector3, forward: THREE.Vector3): number {
-    const source = this.state.sources[index]!;
-    this.direction.copy(source.position).sub(position);
-    const distance = this.direction.length();
-    if (distance <= 1e-6) return 0;
-    this.direction.divideScalar(distance);
-    const alignment = Math.max(-1, Math.min(1, forward.dot(this.direction)));
-    const angle = Math.acos(alignment);
-    return angle * 6_000 + distance * 0.25;
-  }
-
-  private updatePrimary(position: THREE.Vector3, forward: THREE.Vector3): void {
-    if (this.state.phase === 'returning') {
-      this.primarySourceIndex = -1;
-      return;
-    }
-    let bestIndex = -1;
-    let bestScore = Infinity;
-    for (let index = 0; index < this.state.sources.length; index++) {
-      const source = this.state.sources[index]!;
-      if (source.collected) continue;
-      const score = this.sourceScore(index, position, forward);
-      if (score < bestScore - TOI_EPSILON
-        || (Math.abs(score - bestScore) <= TOI_EPSILON
-          && (bestIndex < 0 || source.id < this.state.sources[bestIndex]!.id))) {
-        bestIndex = index;
-        bestScore = score;
-      }
-    }
-    if (bestIndex < 0) {
-      this.primarySourceIndex = -1;
-      return;
-    }
-    const current = this.state.sources[this.primarySourceIndex];
-    if (!current || current.collected) {
-      this.primarySourceIndex = bestIndex;
-      return;
-    }
-    const currentScore = this.sourceScore(this.primarySourceIndex, position, forward);
-    const requiredImprovement = Math.max(PRIMARY_SWITCH_FLOOR, currentScore * PRIMARY_SWITCH_MARGIN);
-    if (bestIndex !== this.primarySourceIndex && bestScore + requiredImprovement < currentScore) {
-      this.primarySourceIndex = bestIndex;
-    }
+  private updatePrimary(position: THREE.Vector3): void {
+    const nearest = this.state.phase === 'collecting' ? this.state.nearestSource(position) : null;
+    this.primarySourceIndex = nearest?.index ?? -1;
   }
 
   private syncTelemetry(): void {
@@ -451,24 +406,26 @@ export class RelayHarvestObjective implements MissionObjectiveRuntime {
       telemetryPosition[1] = stateSource.position.y;
       telemetryPosition[2] = stateSource.position.z;
       telemetrySource.generation = stateSource.generation;
-      telemetrySource.expiresIn = collecting && !stateSource.collected && stateSource.expiresAt !== null
-        ? Math.max(0, stateSource.expiresAt - this.lastElapsed)
+      telemetrySource.expiresIn = collecting && stateSource.alive
+        ? Math.max(0, stateSource.charge * RELAY_HARVEST_CELL_LIFETIME)
         : null;
       telemetrySource.distance = this.hasPreviousPosition
         ? this.lastPosition.distanceTo(stateSource.position)
         : Infinity;
-      telemetrySource.collected = stateSource.collected;
+      telemetrySource.collected = !stateSource.alive;
       telemetrySource.primary = collecting && index === this.primarySourceIndex;
     }
     this.telemetryValue.phase = this.state.phase;
     this.telemetryValue.collected = this.state.collected;
     this.telemetryValue.charge = this.state.charge;
-    this.telemetryValue.primaryExpiresIn = primary?.expiresAt !== null && primary?.expiresAt !== undefined
-      ? Math.max(0, primary.expiresAt - this.lastElapsed)
+    this.telemetryValue.primaryExpiresIn = primary?.alive
+      ? Math.max(0, primary.charge * RELAY_HARVEST_CELL_LIFETIME)
       : null;
     this.telemetryValue.relayRemaining = this.state.relayRemaining(this.lastElapsed);
     this.telemetryValue.relayWindow = this.state.relayWindow;
-    this.telemetryValue.primarySourceId = primary?.id ?? null;
+    this.telemetryValue.primarySourceId = primary
+      ? this.telemetrySources[primary.index]!.id
+      : null;
     this.telemetryValue.primaryDistance = this.state.phase === 'returning'
       ? (this.hasPreviousPosition ? this.lastPosition.distanceTo(this.state.relayPosition) : null)
       : (primary && this.hasPreviousPosition ? this.lastPosition.distanceTo(primary.position) : null);

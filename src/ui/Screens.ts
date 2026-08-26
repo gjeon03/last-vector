@@ -461,21 +461,13 @@ export class Screens {
 
   private nTitleSector: HTMLElement | null = null;
   private nTitleTagline: HTMLElement | null = null;
-  private nBeginDestination: HTMLElement | null = null;
   private nBriefTitle: HTMLElement | null = null;
   private nBriefTransit: HTMLElement | null = null;
   private readonly nBriefLines: HTMLElement[] = [];
   private readonly stageNodes = new Map<MissionId, {
     button: HTMLButtonElement;
-    chapter: HTMLElement;
     status: HTMLElement;
     selected: HTMLElement;
-    lock: HTMLElement;
-    mastery: {
-      s: HTMLElement;
-      clean: HTMLElement;
-      precision: HTMLElement;
-    };
   }>();
 
   private readonly nCountNum: HTMLElement;
@@ -550,11 +542,7 @@ export class Screens {
     return this.view;
   }
 
-  /**
-   * Places real DOM focus on the currently selected stage after STAGE SELECT returns to title.
-   * The title's ordinary entry focus remains START FLIGHT; callers opt into this only for the
-   * explicit result-screen path.
-   */
+  /** Places real DOM focus on the active mode after a result-screen return. */
   focusStageSelection(): void {
     if (this.view !== 'title') return;
     const button = this.stageNodes.get(this.campaign.activeMissionId)?.button;
@@ -607,7 +595,6 @@ export class Screens {
         ],
       );
     }
-    if (this.nBeginDestination) this.nBeginDestination.textContent = routeCopy.destination;
     if (this.nBriefTitle) this.nBriefTitle.textContent = routeCopy.sectorName;
     if (this.nBriefTransit) {
       writeEnglishTokens(
@@ -670,16 +657,15 @@ export class Screens {
       const storageBlocked =
         viewModel.navigationError === 'storage-unavailable' && !selected && state !== 'locked';
       nodes.button.dataset['stageState'] = state;
-      nodes.chapter.textContent = `CH ${String(route?.chapter ?? 1).padStart(2, '0')}`;
       nodes.button.dataset['stageSelected'] = selected ? '1' : '0';
-      nodes.button.tabIndex = selected ? 0 : -1;
-      nodes.button.setAttribute('aria-checked', selected ? 'true' : 'false');
+      nodes.button.dataset['modeSelected'] = selected ? '1' : '0';
+      nodes.button.tabIndex = 0;
+      nodes.button.setAttribute('aria-current', selected ? 'true' : 'false');
       nodes.button.setAttribute(
         'aria-disabled',
         state === 'locked' || storageBlocked ? 'true' : 'false',
       );
-      if (state === 'locked') nodes.button.setAttribute('aria-describedby', nodes.lock.id);
-      else if (storageBlocked) nodes.button.setAttribute('aria-describedby', 'lv-campaign-error-title');
+      if (storageBlocked) nodes.button.setAttribute('aria-describedby', 'lv-campaign-error-title');
       else nodes.button.removeAttribute('aria-describedby');
       nodes.status.textContent = state === 'locked'
         ? m.a11y.stageLocked
@@ -688,17 +674,6 @@ export class Screens {
           : m.a11y.stageAvailable;
       nodes.selected.textContent = selected ? m.a11y.stageSelected : '';
       nodes.selected.hidden = !selected;
-      writeEnglishTokens(
-        nodes.lock,
-        state === 'locked' ? m.campaign.routes[id].lockReason : '',
-        ['CAIRN DRIFT', 'BLACKOUT RELAY'],
-      );
-      nodes.lock.hidden = state !== 'locked';
-      nodes.mastery.s.dataset['complete'] = route?.highestRank === 'S' ? '1' : '0';
-      nodes.mastery.clean.dataset['complete'] = route?.objectives.cleanClear ? '1' : '0';
-      nodes.mastery.precision.dataset['complete'] = route !== undefined
-        && route.mastery.length > 0
-        && route.mastery.every((entry) => entry.complete) ? '1' : '0';
     }
 
     this.syncCampaignErrors();
@@ -860,17 +835,7 @@ export class Screens {
   /* -------------------------------------------------------------- navigation */
 
   private collectNav(root: HTMLElement): void {
-    /* The stage rail is visually above START FLIGHT, but the established title path starts on the
-       primary action. Only the selected node is a Tab stop; Left/Right traverses every node,
-       including locked nodes, without turning one of those nodes into the run target. */
-    const found = root.dataset['view'] === 'title'
-      ? [
-          ...root.querySelectorAll<HTMLElement>('.lv-menu [data-nav]'),
-          ...root.querySelectorAll<HTMLElement>(
-            '.lv-stage-rail [data-nav="stage"][data-stage-selected="1"]',
-          ),
-        ]
-      : [...root.querySelectorAll<HTMLElement>('[data-nav]')];
+    const found = [...root.querySelectorAll<HTMLElement>('[data-nav]')];
     this.navItems.length = 0;
     for (let i = 0; i < found.length; i++) {
       const node = found[i]!;
@@ -955,30 +920,8 @@ export class Screens {
       this.navIndex = idx;
       item.focus({ preventScroll: true });
       this.opts.onSound('hover');
-    } else if (idx < 0 && item.dataset['nav'] === 'stage') {
-      /* Non-selected stage nodes are intentionally absent from Tab order, but pointer and arrow
-         discovery still focus them. Locked is aria-disabled, never the native disabled state. */
-      const selected = this.stageNodes.get(this.campaign.activeMissionId)?.button;
-      const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
-      if (selectedIndex >= 0) this.navIndex = selectedIndex;
-      item.focus({ preventScroll: true });
-      this.opts.onSound('hover');
     }
   };
-
-  private moveStageArrow(active: HTMLElement, dir: -1 | 1): void {
-    const id = active.dataset['stageId'] as MissionId | undefined;
-    if (!id) return;
-    const current = CHAPTER_STAGE_IDS.findIndex((candidate) => candidate === id);
-    if (current < 0) return;
-    const next = clamp(current + dir, 0, CHAPTER_STAGE_IDS.length - 1);
-    if (next === current) return;
-    const selected = this.stageNodes.get(this.campaign.activeMissionId)?.button;
-    const selectedIndex = selected ? this.navItems.indexOf(selected) : -1;
-    if (selectedIndex >= 0) this.navIndex = selectedIndex;
-    this.stageNodes.get(CHAPTER_STAGE_IDS[next]!)?.button.focus({ preventScroll: true });
-    this.opts.onSound('move');
-  }
 
   /** Returns true when the key was consumed by the interface. */
   handleKey(ev: KeyboardEvent): boolean {
@@ -1006,15 +949,6 @@ export class Screens {
       return true;
     }
 
-    if (activeStage && (key === 'ArrowLeft' || key === 'a' || key === 'A')) {
-      this.moveStageArrow(activeStage, -1);
-      return true;
-    }
-    if (activeStage && (key === 'ArrowRight' || key === 'd' || key === 'D')) {
-      this.moveStageArrow(activeStage, 1);
-      return true;
-    }
-
     if (key === 'ArrowDown' || key === 's' || key === 'S' || (key === 'Tab' && !ev.shiftKey)) {
       this.focusNav(this.navIndex + 1);
       return true;
@@ -1036,8 +970,6 @@ export class Screens {
     if (key === 'Enter' || key === ' ') {
       if (isRange) return true;
       if (activeStage) {
-        /* Selecting a node is the only stage action here. START FLIGHT is a separate button, so
-           confirm can never fall through and launch while the player is reading the rail. */
         activeStage.click();
         return true;
       }
@@ -1147,100 +1079,35 @@ export class Screens {
     return node;
   }
 
-  private buildStageRail(): HTMLElement {
-    const m = this.translator.messages;
-    const section = el('section', 'lv-stage-select');
-    const heading = el('div', 'lv-stage-heading');
-    heading.append(
-      englishText('span', 'lv-kicker lv-stage-kicker', m.campaign.chapter),
-      englishText('span', 'lv-stage-chapter', m.campaign.chapterName),
-    );
-    section.appendChild(heading);
-    if (Number(CHAPTER_STAGE_IDS.length) === 1) return section;
-
-    const group = el('div', 'lv-stage-rail');
-    group.setAttribute('role', 'radiogroup');
-    group.setAttribute('aria-label', m.a11y.stageSelection);
-
-    for (let index = 0; index < CHAPTER_STAGE_IDS.length; index++) {
-      const id = CHAPTER_STAGE_IDS[index]!;
-      const copy = m.campaign.routes[id];
-      const isFirst = index === 0;
-      const button = el('button', 'lv-stage-node');
-      button.type = 'button';
-      button.dataset['nav'] = 'stage';
-      button.dataset['action'] = 'select-stage';
-      button.dataset['stageId'] = id;
-      button.dataset['stageState'] = isFirst ? 'available' : 'locked';
-      button.dataset['stageSelected'] = isFirst ? '1' : '0';
-      button.tabIndex = isFirst ? 0 : -1;
-      button.setAttribute('role', 'radio');
-      button.setAttribute('aria-checked', isFirst ? 'true' : 'false');
-      button.setAttribute('aria-disabled', isFirst ? 'false' : 'true');
-
-      const top = el('span', 'lv-stage-top');
-      const chapter = englishText(
-        'span',
-        'lv-stage-index',
-        `CH ${String(this.campaignMission(id).chapter ?? (index + 1)).padStart(2, '0')}`,
-      );
-      top.append(
-        chapter,
-        el('span', 'lv-stage-dot'),
-      );
-      top.querySelector<HTMLElement>('.lv-stage-dot')!.setAttribute('aria-hidden', 'true');
-
-      const name = englishText('span', 'lv-stage-name', copy.name);
-      const mastery = el('span', 'lv-stage-mastery');
-      mastery.setAttribute('aria-hidden', 'true');
-      const s = englishText('span', 'lv-stage-marker', 'S');
-      const clean = englishText('span', 'lv-stage-marker', 'C');
-      const precision = englishText('span', 'lv-stage-marker', 'P');
-      s.dataset['mastery'] = 's-rank';
-      clean.dataset['mastery'] = 'clean';
-      precision.dataset['mastery'] = 'precision';
-      for (const marker of [s, clean, precision]) marker.dataset['complete'] = '0';
-      mastery.append(s, clean, precision);
-
-      const status = el(
-        'span',
-        'lv-a11y',
-        isFirst ? m.a11y.stageAvailable : m.a11y.stageLocked,
-      );
-      const selected = el('span', 'lv-a11y', isFirst ? m.a11y.stageSelected : '');
-      selected.hidden = !isFirst;
-      const lock = writeEnglishTokens(
-        el('span', 'lv-a11y'),
-        isFirst ? '' : copy.lockReason,
-        ['CAIRN DRIFT', 'BLACKOUT RELAY'],
-      );
-      lock.id = `lv-stage-lock-${id}`;
-      lock.hidden = isFirst;
-      button.setAttribute('aria-describedby', lock.id);
-      button.append(top, name, mastery, status, selected, lock);
-      button.addEventListener('click', () => {
+  private modeButton(id: MissionId, text: string, sub: string): HTMLButtonElement {
+    const selected = id === this.campaign.activeMissionId;
+    const button = this.button(
+      text,
+      'lv-mode-btn',
+      'select-stage',
+      () => {
         const route = this.campaignMission(id);
-        if (
-          route.state === 'locked' ||
-          id === this.campaign.activeMissionId ||
-          this.campaign.navigationError === 'storage-unavailable'
-        ) return;
-        this.opts.onSound('click');
-        this.host.selectMission(id);
-      });
-      group.appendChild(button);
-      this.stageNodes.set(id, {
-        button,
-        chapter,
-        status,
-        selected,
-        lock,
-        mastery: { s, clean, precision },
-      });
-    }
+        if (route.state === 'locked' || this.campaign.navigationError === 'storage-unavailable') {
+          return;
+        }
+        if (id === this.campaign.activeMissionId) this.host.start();
+        else this.host.selectMission(id);
+      },
+      sub,
+    ) as HTMLButtonElement;
+    button.dataset['stageId'] = id;
+    button.dataset['stageState'] = selected ? 'available' : 'locked';
+    button.dataset['stageSelected'] = selected ? '1' : '0';
+    button.dataset['modeSelected'] = selected ? '1' : '0';
+    button.setAttribute('aria-current', selected ? 'true' : 'false');
+    button.querySelector<HTMLElement>('.lv-btn-s')?.setAttribute('lang', 'en');
 
-    section.appendChild(group);
-    return section;
+    const status = el('span', 'lv-a11y', '');
+    const selectedLabel = el('span', 'lv-a11y', '');
+    selectedLabel.hidden = !selected;
+    button.append(status, selectedLabel);
+    this.stageNodes.set(id, { button, status, selected: selectedLabel });
+    return button;
   }
 
   /* ------------------------------------------------------------------- title */
@@ -1281,8 +1148,6 @@ export class Screens {
     const tag = writeEnglishTokens(el('p', 'lv-tagline'), m.meta.tagline, ['CAIRN', 'TERMINUS']);
     this.nTitleTagline = tag;
 
-    const stages = this.buildStageRail();
-
     const campaignError = el('p', 'lv-campaign-error');
     campaignError.id = 'lv-campaign-error-title';
     campaignError.dataset['campaignError'] = '1';
@@ -1290,20 +1155,11 @@ export class Screens {
     campaignError.setAttribute('aria-live', 'polite');
     campaignError.hidden = true;
 
-    const menu = el('nav', 'lv-menu');
+    const menu = el('nav', 'lv-menu lv-mode-menu');
     menu.setAttribute('aria-label', m.a11y.mainMenu);
-    const begin = this.button(
-      m.screens.beginRun,
-      'is-primary',
-      'begin',
-      () => this.host.start(),
-      m.meta.destinationName,
-    );
-    const destination = begin.querySelector<HTMLElement>('.lv-btn-s');
-    this.nBeginDestination = destination;
-    if (destination) destination.lang = 'en';
     menu.append(
-      begin,
+      this.modeButton('relay-harvest', m.screens.beginHarvest, m.screens.beginHarvestSubtitle),
+      this.modeButton('cairn-drift', m.screens.raceRun, m.screens.raceRunSubtitle),
       this.button(m.screens.settings, '', 'settings', () => this.show('settings')),
       this.button(m.screens.controls, '', 'controls', () => this.show('controls')),
     );
@@ -1349,7 +1205,7 @@ export class Screens {
       englishText('span', '', m.screens.navigationNominal),
     );
 
-    inner.append(eyebrow, mark, rule, tag, stages, campaignError, menu, foot);
+    inner.append(eyebrow, mark, rule, tag, campaignError, menu, foot);
     view.append(el('div', 'lv-veil'), inner);
     return view;
   }
@@ -2214,7 +2070,6 @@ export class Screens {
     const stats = el('dl', 'lv-res-stats');
     const objectiveStats: readonly (readonly [string, string])[] = [
       [m.results.coresRecovered, `${r.collected} / ${r.activeTotal}`],
-      [m.results.relayCharge, `${r.charge} / ${r.chargeRequired}`],
       [m.results.topSpeed, `${Math.round(r.topSpeed)} ${m.results.speedUnit}`],
       [m.results.hull, `${Math.round(r.hullRemaining * 100)}%`],
     ];
@@ -2257,12 +2112,6 @@ export class Screens {
       firstClearAdvance ? '' : 'is-primary',
       'run-again',
       () => this.host.restart(),
-    ));
-    actions.append(this.button(
-      m.results.newLayout,
-      'is-ghost',
-      'new-layout',
-      () => this.host.newLayout(),
     ));
     if (CHAPTER_STAGE_IDS.length > 1) {
       actions.appendChild(this.button(

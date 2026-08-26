@@ -1,121 +1,76 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { createLightingUniforms } from '../../src/render/lighting.ts';
-import {
-  RELAY_HARVEST_SOURCE_DRAW_CAP,
-  RELAY_HARVEST_SOURCE_TRIANGLE_CAP,
-  RelayHarvestField,
-} from '../../src/render/RelayHarvestField.ts';
-import {
-  getRelayHarvestLayout,
-  VALIDATED_RELAY_HARVEST_LAYOUTS,
-} from '../../src/game/missions/RelayHarvestLayout.ts';
-import { RelayHarvestState } from '../../src/game/missions/RelayHarvestState.ts';
+import { HarvestCellField } from '../../src/render/HarvestCellField.ts';
 
-const lighting = createLightingUniforms(new THREE.Vector3(-0.32, 0.42, -0.85));
-const state = new RelayHarvestState(getRelayHarvestLayout(0));
-const field = new RelayHarvestField({
-  sources: state.sources,
-  protectedPositions: state.authoredPositions,
-  lighting,
-});
+const sources = Array.from({ length: 10 }, (_, index) => ({
+  id: index + 1,
+  generation: 0,
+  position: new THREE.Vector3(index * 900, index * 40, -index * 120),
+  phase: index * 0.3,
+  charge: 1 - index * 0.05,
+  alive: true,
+}));
+const field = new HarvestCellField(10);
 const debug = field.getDebugState();
 
-assert.equal(debug.activeSources, 10);
-assert.equal(debug.sourceDrawCalls, 2);
-assert.equal(debug.sourceGeometries, 2);
-assert.equal(debug.sourceMaterials, 2);
-assert.ok(debug.sourceDrawCalls <= RELAY_HARVEST_SOURCE_DRAW_CAP);
-assert.ok(debug.sourceTriangles <= RELAY_HARVEST_SOURCE_TRIANGLE_CAP);
-assert.ok(debug.colliders > 0 && debug.colliders <= 90);
+assert.deepEqual(debug, {
+  activeSources: 10,
+  sourceDrawCalls: 20,
+  sourceGeometries: 2,
+  sourceMaterials: 20,
+  sourceTriangles: 220,
+  structureDrawCalls: 0,
+  structureTriangles: 0,
+  colliders: 0,
+});
+assert.equal(Object.isFrozen(debug), true);
+assert.equal(field.object.children.length, 10);
 
-for (const collider of field.colliders) {
-  for (const sourcePosition of state.authoredPositions) {
-    const surfaceClearance = collider.position.distanceTo(sourcePosition) - collider.radius;
-    assert.ok(
-      surfaceClearance >= 500 - 1e-6,
-      `${collider.id} violates an authored relocation socket: ${surfaceClearance}`,
-    );
-  }
+field.update(sources, 0, new THREE.Vector3(0, 0, 1_000), 1080, Math.PI / 3);
+const groups = field.object.children;
+const halos = groups.map((group) => group.children[0]);
+const cores = groups.map((group) => group.children[1]);
+for (let index = 0; index < groups.length; index++) {
+  const group = groups[index];
+  const halo = halos[index];
+  const core = cores[index];
+  assert.equal(group.visible, true);
+  assert.ok(halo instanceof THREE.Mesh && halo.geometry instanceof THREE.PlaneGeometry);
+  assert.ok(halo.material instanceof THREE.ShaderMaterial);
+  assert.equal(halo.material.depthTest, true);
+  assert.equal(halo.material.depthWrite, false);
+  assert.ok(core instanceof THREE.Mesh && core.geometry instanceof THREE.IcosahedronGeometry);
+  assert.ok(core.material instanceof THREE.MeshBasicMaterial);
+  assert.equal(core.material.depthTest, true);
+  assert.equal(core.material.depthWrite, false);
 }
 
-const sourceMeshes = field.object.children.filter((child) =>
-  child.name.includes('ENERGY CORES')
-  || child.name.includes('ENERGY HALOS'));
-assert.equal(sourceMeshes.length, 2);
-for (const mesh of sourceMeshes) assert.ok(mesh instanceof THREE.InstancedMesh);
+const geometryRefs = [...halos, ...cores].map((mesh) => mesh.geometry);
+const materialRefs = [...halos, ...cores].map((mesh) => mesh.material);
+const childCounts = groups.map((group) => group.children.length);
+field.update(sources, 0.25, new THREE.Vector3(0, 0, 100_000), 1080, Math.PI / 3);
+assert.ok(halos[0].material.uniforms.uScale.value > 150, 'far cells retain an angular-size floor');
+assert.deepEqual([...halos, ...cores].map((mesh) => mesh.geometry), geometryRefs);
+assert.deepEqual([...halos, ...cores].map((mesh) => mesh.material), materialRefs);
+assert.deepEqual(groups.map((group) => group.children.length), childCounts);
 
-const geometries = sourceMeshes.map((mesh) => mesh.geometry);
-const materials = sourceMeshes.map((mesh) => mesh.material);
-const initialInstanceMatrices = sourceMeshes.map((mesh) => Array.from(mesh.instanceMatrix.array));
-const collectedAttributes = sourceMeshes.map((mesh) => mesh.geometry.getAttribute('aCollectedAt'));
-const expiryAttributes = sourceMeshes.map((mesh) => mesh.geometry.getAttribute('aExpiresAt'));
-for (const attribute of expiryAttributes) {
-  assert.ok(Math.abs(attribute.getX(0) - state.sources[0].expiresAt) <= 1e-4);
-}
-const childCount = field.object.children.length;
+const firstPosition = groups[0].position.clone();
+sources[0].position.set(4_000, 200, -500);
+sources[0].id = 11;
+sources[0].generation = 1;
+sources[0].charge = 0.25;
+field.update(sources, 0, new THREE.Vector3(), 1080, Math.PI / 3);
+assert.ok(groups[0].position.distanceTo(firstPosition) > 1_000);
+assert.equal(halos[0].material.uniforms.uCharge.value, 0.25);
 
-field.update(0.5, new THREE.Vector3(0, 0, 1_000));
-assert.ok(state.collect(0, 0.5));
-field.update(0.5, new THREE.Vector3(0, 0, 1_000));
-for (const attribute of collectedAttributes) assert.equal(attribute.getX(0), 0.5);
-const versionsAfterCollection = collectedAttributes.map((attribute) => attribute.version);
+sources[0].alive = false;
+field.update(sources, 0.1, new THREE.Vector3(), 1080, Math.PI / 3);
+assert.equal(groups[0].visible, true, 'pickup flash keeps a collected cell visible briefly');
+field.update(sources, 0.3, new THREE.Vector3(), 1080, Math.PI / 3);
+assert.equal(groups[0].visible, false);
 
-const relocationSource = state.sources[1];
-const relocationBefore = relocationSource.position.clone();
-relocationSource.expiresAt = 0.6;
-assert.equal(state.relocateExpired(0.61), 1);
-field.update(0.61, new THREE.Vector3(10, 0, 900));
-assert.equal(relocationSource.generation, 1);
-assert.ok(relocationSource.position.distanceTo(relocationBefore) > 1_000);
-for (const attribute of expiryAttributes) {
-  assert.ok(Math.abs(attribute.getX(1) - relocationSource.expiresAt) <= 1e-4);
-}
-const matricesAfterRelocation = sourceMeshes.map((mesh) => Array.from(mesh.instanceMatrix.array));
-for (let index = 0; index < sourceMeshes.length; index++) {
-  assert.notDeepEqual(matricesAfterRelocation[index], initialInstanceMatrices[index]);
-}
-
-field.update(0.75, new THREE.Vector3(10, 0, 900));
-assert.deepEqual(
-  collectedAttributes.map((attribute) => attribute.version),
-  versionsAfterCollection,
-  'steady presentation updated source GPU attributes without a collection change',
-);
-assert.equal(field.object.children.length, childCount);
-assert.deepEqual(sourceMeshes.map((mesh) => mesh.geometry), geometries);
-assert.deepEqual(sourceMeshes.map((mesh) => mesh.material), materials);
-for (let index = 0; index < sourceMeshes.length; index++) {
-  assert.deepEqual(Array.from(sourceMeshes[index].instanceMatrix.array), matricesAfterRelocation[index]);
-}
-
-state.reset();
 field.reset();
-field.update(0, new THREE.Vector3());
-for (const attribute of collectedAttributes) assert.equal(attribute.getX(0), -1);
-
+assert.ok(groups.every((group) => !group.visible));
 field.dispose();
 
-for (let index = 1; index < VALIDATED_RELAY_HARVEST_LAYOUTS.length; index++) {
-  const layoutState = new RelayHarvestState(getRelayHarvestLayout(index));
-  const layoutField = new RelayHarvestField({
-    sources: layoutState.sources,
-    protectedPositions: layoutState.authoredPositions,
-    lighting,
-  });
-  for (const collider of layoutField.colliders) {
-    for (const sourcePosition of layoutState.authoredPositions) {
-      assert.ok(
-        collider.position.distanceTo(sourcePosition) - collider.radius >= 500 - 1e-6,
-        `${layoutState.layoutSignature}: ${collider.id} violates authored socket clearance`,
-      );
-    }
-  }
-  layoutField.dispose();
-}
-
-console.log(JSON.stringify({
-  ok: true,
-  validatedLayouts: VALIDATED_RELAY_HARVEST_LAYOUTS.length,
-  debug,
-}, null, 2));
+console.log(JSON.stringify({ ok: true, debug }, null, 2));

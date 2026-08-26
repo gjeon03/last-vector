@@ -320,10 +320,10 @@ await report.check(
       enCairnClear: 'cairn 07 · 12.34s',
       koCairnMiss: 'cairn 07 missed',
       enCairnMiss: 'cairn 07 missed',
-      koRelayProgress: '2 CORES REQUIRED',
-      enRelayProgress: '2 CORES REQUIRED',
-      koRelayClear: 'core 03 · 66.93s',
-      enRelayClear: 'core 03 · 66.93s',
+      koRelayProgress: '2 CELLS REQUIRED',
+      enRelayProgress: '2 CELLS REQUIRED',
+      koRelayClear: 'cell 03 · 66.93s',
+      enRelayClear: 'cell 03 · 66.93s',
       koRelayRadio: 'CHARGE 절반 확보. 잔해 사이에서 가장 빠른 경로를 유지해.',
       enRelayRadio: 'Half the charge is aboard. Hold the fastest line through the wreckage.',
       koNeedleProgress: '2 NEEDLES REMAINING',
@@ -401,10 +401,9 @@ await report.check(
     verify(/if \(CHAPTER_STAGE_IDS\.length > 1\)[\s\S]{0,260}'stage-select'/u.test(screensSource),
       'Result mission selection is not guarded behind a multi-chapter catalog.');
     verify(screensSource.includes("'run-again'")
-      && screensSource.includes("'new-layout'")
       && screensSource.includes("'stage-select'")
       && screensSource.includes("'return'"),
-    'The campaign result path omits RUN AGAIN, NEW LAYOUT, CHAPTER SELECT, or RETURN.');
+    'The campaign result path omits RUN AGAIN, CHAPTER SELECT, or RETURN.');
     verify(screensSource.includes("complete: route.highestRank === 'S'"),
       'Mission mastery treats a non-S recorded rank as complete.');
 
@@ -448,7 +447,7 @@ await report.check(
     return {
       recognizedIds,
       activeMissionIds: ['cairn-drift', 'relay-harvest'],
-      stableCampaignActions: ['run-again', 'new-layout', 'stage-select', 'return'],
+      stableCampaignActions: ['run-again', 'stage-select', 'return'],
       lockPrerequisites,
       hybridChrome,
     };
@@ -614,7 +613,6 @@ await report.check(
       'results.arrivalConfirmed': 'ARRIVAL CONFIRMED',
       'results.newRecord': 'NEW BEST',
       'results.runAgain': 'RUN AGAIN',
-      'results.newLayout': 'NEW LAYOUT',
       'results.returnToTitle': 'RETURN',
       'results.missionFailed': 'MISSION FAILED',
       'results.hullBreach': 'HULL BREACH',
@@ -817,9 +815,9 @@ await report.check(
       [{ type: 'callout-title.boost-depleted' }, 'DRIVE DRY'],
       [{ type: 'callout-sub.boost-recharging' }, 'RESERVE RECHARGING'],
       [{ type: 'log.boost-depleted' }, 'overdrive reserve depleted'],
-      [{ type: 'callout-title.core-acquired', core: 2 }, 'CORE 02 ACQUIRED'],
+      [{ type: 'callout-title.core-acquired', core: 2 }, 'CELL 02 ACQUIRED'],
       [{ type: 'callout-sub.relay-charge', charge: 40, required: 60 }, 'RELAY CHARGE 40/60'],
-      [{ type: 'log.core-acquired', core: 2, seconds: 12.34 }, 'core 02 \u00B7 12.34s'],
+      [{ type: 'log.core-acquired', core: 2, seconds: 12.34 }, 'cell 02 \u00B7 12.34s'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'dead-centre' }, 'DEAD CENTRE'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'clean' }, 'CLEAN'],
       [{ type: 'callout-title.gate-cleared', accuracy: 'cleared' }, 'CLEARED'],

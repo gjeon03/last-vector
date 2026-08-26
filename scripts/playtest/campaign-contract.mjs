@@ -14,13 +14,6 @@ import {
   resolveMissionSelection,
 } from '../../src/core/MissionSelection.ts';
 import { ProgressStore } from '../../src/core/Progress.ts';
-import {
-  getRelayHarvestLayout,
-  nextRelayHarvestLayoutIndex,
-  selectRelayHarvestLayoutIndex,
-} from '../../src/game/missions/RelayHarvestLayout.ts';
-import { RelayHarvestObjective } from '../../src/game/missions/RelayHarvestObjective.ts';
-import { RelayHarvestState } from '../../src/game/missions/RelayHarvestState.ts';
 
 const checks = [];
 const started = Date.now();
@@ -73,10 +66,10 @@ function collectionResult() {
   return {
     kind: 'collection',
     missionId: 'relay-harvest',
-    rulesetVersion: 2,
+    rulesetVersion: 3,
     totalTime: 58,
     hullRemaining: 0.92,
-    objectiveSummary: '10 / 10 CORES',
+    objectiveSummary: '10 / 10 CELLS + RELAY RETURN',
     topSpeed: 980,
     cleanRun: true,
     rank: 'A',
@@ -108,11 +101,9 @@ await check('CAMPAIGN.catalog-contract', () => {
 });
 
 await check('CAMPAIGN.route-resolution', () => {
-  const locked = new ProgressStore({ localStorage: null, sessionStorage: null, hasLegacyCairnBest: () => false });
-  assert.equal(resolveMissionSelection({ mission: 'relay-harvest', legacyCourse: null }, locked.snapshot()).missionId, 'cairn-drift');
-  assert.equal(resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, locked.snapshot()).missionId, 'cairn-drift');
-  locked.recordSuccessfulFinish('cairn-drift', gateResult());
-  assert.equal(resolveMissionSelection({ mission: 'relay-harvest', legacyCourse: null }, locked.snapshot()).missionId, 'relay-harvest');
+  const progress = new ProgressStore({ localStorage: null, sessionStorage: null, hasLegacyCairnBest: () => false });
+  assert.equal(resolveMissionSelection({ mission: 'relay-harvest', legacyCourse: null }, progress.snapshot()).missionId, 'relay-harvest');
+  assert.equal(resolveMissionSelection({ mission: 'last-ascent', legacyCourse: null }, progress.snapshot()).missionId, 'cairn-drift');
   const built = new URL(buildMissionUrl(
     'http://localhost/?mission=relay-harvest&layout=4&seed=7&course=ringfall#x',
     'cairn-drift',
@@ -131,7 +122,7 @@ await check('CAMPAIGN.progress-merge', () => {
   const store = new ProgressStore({ localStorage: local, sessionStorage: session, hasLegacyCairnBest: () => false, now: () => 10 });
   const first = store.recordSuccessfulFinish('cairn-drift', gateResult());
   assert.equal(first.firstClear, true);
-  assert.equal(first.newlyUnlocked, 'relay-harvest');
+  assert.equal(first.newlyUnlocked, null);
   const second = store.recordSuccessfulFinish('relay-harvest', collectionResult());
   assert.equal(second.firstClear, true);
   assert.equal(second.newlyUnlocked, null);
@@ -148,13 +139,9 @@ await check('CAMPAIGN.progress-persistence', () => {
   const reloaded = new ProgressStore({ localStorage: local, sessionStorage: null, hasLegacyCairnBest: () => false });
   assert.equal(reloaded.snapshot().selectedMission, 'relay-harvest');
   const seed = 1337;
-  const layoutIndex = selectRelayHarvestLayoutIndex(seed);
-  const nextIndex = nextRelayHarvestLayoutIndex(layoutIndex, seed);
-  assert.notEqual(nextIndex, layoutIndex);
-  const objective = new RelayHarvestObjective(new RelayHarvestState(getRelayHarvestLayout(layoutIndex)));
-  const recordId = objective.recordId(missionRecordId(getMissionDefinition('relay-harvest'), seed));
-  assert.match(recordId, /^relay-harvest-r2-1337-layout-rh2-/u);
-  return { selected: reloaded.snapshot().selectedMission, layoutIndex, nextIndex, recordId };
+  const recordId = missionRecordId(getMissionDefinition('relay-harvest'), seed);
+  assert.equal(recordId, 'relay-harvest-r3-1337');
+  return { selected: reloaded.snapshot().selectedMission, recordId };
 });
 
 const status = checks.every((entry) => entry.status === 'PASS') ? 'PASS' : 'FAIL';

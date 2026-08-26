@@ -6,6 +6,7 @@ import {
   type FlightPathDefinition,
   type RadioAuthoringDefinition,
 } from './Courses.ts';
+import type { PaletteKey } from './art.ts';
 
 export type MissionId = 'cairn-drift' | 'relay-harvest';
 export type MissionChapter = 1 | 2;
@@ -41,6 +42,9 @@ export interface WorldDefinition {
   readonly canonicalSector: string;
   readonly canonicalDestination: string;
   readonly sunDirection: readonly [number, number, number];
+  readonly sunColor: number;
+  readonly sunIntensity: number;
+  readonly palette?: Partial<Record<PaletteKey, number>>;
   readonly attractLoopDistance: number;
 }
 
@@ -67,6 +71,8 @@ export const CAIRN_MISSION: MissionDefinition = {
     canonicalSector: CAIRN_DRIFT.text.canonicalSector,
     canonicalDestination: CAIRN_DRIFT.text.canonicalDestination,
     sunDirection: CAIRN_DRIFT.world.sunDirection,
+    sunColor: 0xffe2bd,
+    sunIntensity: 2.7,
     attractLoopDistance: CAIRN_DRIFT.geometry.gateSpacing * 2.2,
   },
   objective: { kind: 'gate-race', path: CAIRN_DRIFT.geometry, gates: CAIRN_DRIFT },
@@ -75,27 +81,32 @@ export const CAIRN_MISSION: MissionDefinition = {
   capabilities: [],
 };
 
-/** A short straight launch corridor. The collection objective, not this line, owns navigation. */
+/** THE SPLINTER's compressed broken lane. HARVEST uses it as terrain, not as a gate race. */
 export const RELAY_HARVEST_PATH: FlightPathDefinition = Object.freeze({
   legs: Object.freeze([
-    Object.freeze({
-      turn: 0,
-      climb: 0,
-      length: 4.6,
-      bank: 0,
-      clearance: 5_500,
-      label: 'relay field',
-    }),
+    Object.freeze({ turn: 0.14, climb: -0.06, length: 1, bank: 0, clearance: 225, label: 'lane mouth' }),
+    Object.freeze({ turn: -0.86, climb: 0.1, length: 0.72, bank: 0.7, clearance: 170, label: 'first shear' }),
+    Object.freeze({ turn: 0.94, climb: -0.22, length: 0.66, bank: -0.8, clearance: 152, label: 'counter shear' }),
+    Object.freeze({ turn: -0.42, climb: -0.52, length: 0.58, bank: -0.45, clearance: 145, label: 'the drop' }),
+    Object.freeze({ turn: 1.18, climb: 0.18, length: 0.62, bank: 1, clearance: 158, label: 'the hook' }),
+    Object.freeze({ turn: -1.24, climb: 0.08, length: 0.6, bank: -1.05, clearance: 140, label: 'reverse hook' }),
+    Object.freeze({ turn: 0.16, climb: 0.28, length: 1.15, bank: 0.15, clearance: 210, label: 'the gap' }),
+    Object.freeze({ turn: -0.7, climb: -0.34, length: 0.54, bank: -0.75, clearance: 138, label: 'under the spar' }),
+    Object.freeze({ turn: 1.06, climb: 0.14, length: 0.56, bank: 0.9, clearance: 148, label: 'the crush' }),
+    Object.freeze({ turn: -0.58, climb: 0.4, length: 0.7, bank: -0.55, clearance: 165, label: 'up the fracture' }),
+    Object.freeze({ turn: 0.82, climb: -0.26, length: 0.6, bank: 0.8, clearance: 150, label: 'the tilt' }),
+    Object.freeze({ turn: -1.02, climb: -0.12, length: 0.52, bank: -0.95, clearance: 142, label: 'last shear' }),
+    Object.freeze({ turn: 0.24, climb: 0.1, length: 0.95, bank: 0.2, clearance: 200, label: 'dock approach' }),
   ]),
-  gateSpacing: 10_000,
-  gateRadius: 220,
+  gateSpacing: 2_900,
+  gateRadius: 68,
   finalGateRadiusScale: 1,
-  leadInControlMetres: 1_000,
-  startOffsetMetres: -1_000,
+  leadInControlMetres: 1_400,
+  startOffsetMetres: -1_100,
   runOutSteps: 3,
-  runOutStepMetres: 2_000,
-  terminusStandoff: 2_000,
-  sampleCount: 96,
+  runOutStepMetres: 900,
+  terminusStandoff: 1_400,
+  sampleCount: 220,
 });
 
 const RELAY_RADIO: readonly RadioAuthoringDefinition[] = Object.freeze([
@@ -128,9 +139,9 @@ const RELAY_RADIO: readonly RadioAuthoringDefinition[] = Object.freeze([
 export const RELAY_HARVEST_MISSION: MissionDefinition = Object.freeze({
   id: 'relay-harvest',
   chapter: 2,
-  // v2 adds live-source relocation and a timed return-to-relay extraction phase. Keep the old
-  // PB partition intact: v1 times ended at the third pickup and are not comparable.
-  rulesetVersion: 2,
+  // v3 is the shipped HARVEST loop over THE SPLINTER terrain. Old relay-arena times are not
+  // comparable with a continuously repopulated ten-cell hunt through dense debris.
+  rulesetVersion: 3,
   defaultSeed: 0x52454c59,
   world: Object.freeze({
     kind: 'relay-field',
@@ -140,7 +151,29 @@ export const RELAY_HARVEST_MISSION: MissionDefinition = Object.freeze({
     // Low, cold back-light: the relay's splinter field reads as a dense broken lane rather than
     // CAIRN DRIFT's open, warm shelf.
     sunDirection: Object.freeze([-0.55, -0.18, -0.81] as const),
-    attractLoopDistance: 18_000,
+    sunColor: 0xd8ecff,
+    sunIntensity: 2.35,
+    palette: Object.freeze({
+      voidNear: 0x03080a,
+      voidFar: 0x081a1c,
+      starCore: 0xf2fbff,
+      starGlow: 0x9fd8ff,
+      starRim: 0x4f93d6,
+      nebulaTeal: 0x8fd94a,
+      nebulaIndigo: 0x1d5e57,
+      nebulaMagenta: 0xd6e34a,
+      nebulaDust: 0x14231c,
+      planetLit: 0x7d8a72,
+      planetShadow: 0x0b1414,
+      planetAtmo: 0x9fe8c4,
+      rockLit: 0x6f7a70,
+      rockShadow: 0x0d1414,
+      rockMineral: 0xc7ff5e,
+      gateIdle: 0x2f4a3a,
+      gateArmed: 0xa8ff5e,
+      gateCleared: 0xe8ff9c,
+    }),
+    attractLoopDistance: 8_000,
   }),
   objective: Object.freeze({
     kind: 'collection',

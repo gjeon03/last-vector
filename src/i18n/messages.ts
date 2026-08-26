@@ -27,6 +27,10 @@ export interface LoaderMessages {
 export interface ScreenMessages {
   sector: string;
   beginRun: string;
+  beginHarvest: string;
+  beginHarvestSubtitle: string;
+  raceRun: string;
+  raceRunSubtitle: string;
   settings: string;
   controls: string;
   hullPrefix: string;

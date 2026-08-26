@@ -135,11 +135,6 @@ export class Overlay {
         this.paused = false;
         host.showMissionSelect();
       },
-      newLayout: () => {
-        this.paused = false;
-        this.applyView();
-        host.newLayout();
-      },
       pause: () => host.pause(),
       requestLocale: (locale) => host.requestLocale(locale),
       setSetting: (key, value) => host.setSetting(key, value),

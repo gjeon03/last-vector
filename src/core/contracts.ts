@@ -341,8 +341,6 @@ export interface HudHost {
   selectMission(missionId: MissionId): void;
   /** Returns to the title mission view without changing the active boot-built world. */
   showMissionSelect(): void;
-  /** Reloads the active collection mission with a validated layout different from this run. */
-  newLayout(): void;
   /** Requests a persisted locale change; the game accepts it only while the title is active. */
   requestLocale(locale: Locale): void;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;

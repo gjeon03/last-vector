@@ -1713,10 +1713,6 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd):lang(en):not(.lv-btn-t) {
   animation: lv-fade-up 0.8s var(--ease-out) 0.66s both;
 }
 
-.lv-screen--title.is-in .lv-stage-select {
-  animation: lv-fade-up 0.7s var(--ease-out) 0.74s both;
-}
-
 .lv-screen--title.is-in .lv-menu .lv-btn {
   animation: lv-fade-up 0.7s var(--ease-out) both;
   animation-delay: calc(0.82s + var(--n) * 0.08s);
@@ -1761,6 +1757,62 @@ html[lang='ko'] .lv-root :is(span, h1, h2, dd):lang(en):not(.lv-btn-t) {
 .lv-menu--tight {
   margin-top: clamp(22px, 3vmin, 42px);
   min-width: min(28ch, 42vw);
+}
+
+.lv-title .lv-mode-menu {
+  width: min(560px, calc(100vw - var(--lv-title-edge) * 2));
+  min-width: 0;
+  gap: clamp(5px, 0.8vmin, 11px);
+  margin-top: clamp(22px, 3.2vmin, 48px);
+}
+
+.lv-mode-menu .lv-mode-btn {
+  min-height: clamp(62px, 8vmin, 92px);
+  margin-bottom: clamp(5px, 1vmin, 14px);
+  padding-block: clamp(11px, 1.5vmin, 20px);
+}
+
+.lv-mode-menu .lv-mode-btn .lv-btn-t {
+  font-size: clamp(17px, 2.15vmin, 29px);
+  letter-spacing: 0.32em;
+}
+
+.lv-mode-menu .lv-mode-btn .lv-btn-s {
+  color: rgba(186, 204, 218, 0.66);
+  letter-spacing: 0.34em;
+}
+
+.lv-mode-menu .lv-mode-btn[data-mode-selected='1'] .lv-btn-mark {
+  border-color: var(--c-accent);
+}
+
+.lv-mode-menu .lv-mode-btn[data-mode-selected='1'] .lv-btn-t {
+  color: var(--c-ink);
+}
+
+.lv-mode-menu .lv-mode-btn[data-stage-state='locked'] {
+  opacity: 0.4;
+}
+
+@media (max-width: 520px) {
+  .lv-title .lv-mode-menu {
+    width: 100%;
+  }
+
+  .lv-mode-menu .lv-mode-btn {
+    min-height: 56px;
+  }
+
+  .lv-mode-menu .lv-mode-btn .lv-btn-t {
+    font-size: clamp(15px, 5.2vw, 20px);
+    letter-spacing: 0.22em;
+  }
+
+  .lv-mode-menu .lv-mode-btn .lv-btn-s {
+    font-size: clamp(8px, 2.5vw, 11px);
+    letter-spacing: 0.18em;
+    white-space: normal;
+  }
 }
 
 .lv-btn {

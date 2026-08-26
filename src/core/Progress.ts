@@ -302,12 +302,8 @@ function defaultStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | 
 }
 
 export function isMissionUnlocked(progress: ProgressV2, missionId: MissionId): boolean {
-  const index = ACTIVE_MISSION_ORDER.indexOf(missionId);
-  if (index < 0) return false;
-  for (let prior = 0; prior < index; prior++) {
-    if (progress.missions[ACTIVE_MISSION_ORDER[prior]!]?.cleared !== true) return false;
-  }
-  return true;
+  void progress;
+  return ACTIVE_MISSION_ORDER.includes(missionId);
 }
 
 export class ProgressStore {

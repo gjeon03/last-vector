@@ -1,163 +1,213 @@
 import * as THREE from 'three';
+import { distanceToSegment } from '../../core/mathx.ts';
+import { Rng } from '../../core/rng.ts';
+import type { AsteroidInstance } from '../../render/Asteroids.ts';
+import type { FlightPath } from '../FlightPath.ts';
 import {
   RELAY_HARVEST_ACTIVE_SOURCE_COUNT,
+  RELAY_HARVEST_CELL_LIFETIME,
   RELAY_HARVEST_CHARGE_PER_SOURCE,
+  RELAY_HARVEST_MAX_CHANNEL_MULTIPLIER,
+  RELAY_HARVEST_MAX_PATH_FRACTION,
+  RELAY_HARVEST_MIN_CHANNEL_MULTIPLIER,
+  RELAY_HARVEST_MIN_PATH_FRACTION,
+  RELAY_HARVEST_MIN_SOURCE_SEPARATION,
+  RELAY_HARVEST_PLACEMENT_ATTEMPTS,
+  RELAY_HARVEST_PREGENERATED_POSITION_COUNT,
+  RELAY_HARVEST_REQUIRED_ROCK_CLEARANCE,
+  RELAY_HARVEST_REQUIRED_SOURCE_COUNT,
   RELAY_HARVEST_RETURN_MINIMUM_SECONDS,
   RELAY_HARVEST_RETURN_PACE,
-  RELAY_HARVEST_SOCKETS,
-  RELAY_HARVEST_SOURCE_LIFETIME_MAX,
-  RELAY_HARVEST_SOURCE_LIFETIME_MIN,
-  type RelayHarvestBand,
-  type RelayHarvestLayout,
-  type RelayHarvestSocketDefinition,
 } from './RelayHarvestLayout.ts';
 
 export type RelayHarvestPhase = 'collecting' | 'returning';
 
+/** One fixed renderer slot. Its position and identity are reused when a cell respawns. */
 export interface RelayHarvestSourceState {
   readonly index: number;
-  readonly id: string;
-  readonly band: RelayHarvestBand;
-  readonly homeSocket: RelayHarvestSocketDefinition;
-  /** Current authored socket. The source identity and Vector3 identity never change. */
-  socket: RelayHarvestSocketDefinition;
   readonly position: THREE.Vector3;
+  /** Monotonic cell identity; changes every time this fixed slot respawns. */
+  id: number;
+  /** Renderer-friendly respawn counter. */
   generation: number;
-  activatedAt: number;
+  phase: number;
+  charge: number;
+  alive: boolean;
+  spawnedAt: number;
   expiresAt: number | null;
+  /** Compatibility state for collection telemetry: false again after an immediate respawn. */
   collected: boolean;
   collectedAt: number | null;
 }
 
+export interface RelayHarvestPickup {
+  readonly sourceIndex: number;
+  readonly cellId: number;
+  readonly collectedAt: number;
+  readonly collected: number;
+  readonly quotaMet: boolean;
+}
+
 export interface RelayHarvestStateDebug {
-  readonly layoutIndex: number;
-  readonly layoutSignature: string;
+  readonly seed: number;
   readonly phase: RelayHarvestPhase;
   readonly collected: number;
   readonly charge: number;
+  readonly active: number;
+  readonly queueIndex: number;
   readonly relayWindow: number | null;
   readonly relayDeadline: number | null;
   readonly sources: readonly {
-    readonly id: string;
-    readonly socketId: string;
+    readonly index: number;
+    readonly id: number;
     readonly position: readonly [number, number, number];
     readonly generation: number;
+    readonly phase: number;
+    readonly charge: number;
+    readonly alive: boolean;
+    readonly spawnedAt: number;
     readonly expiresAt: number | null;
-    readonly collected: boolean;
-    readonly collectedAt: number | null;
   }[];
 }
 
 /**
- * One fixed-capacity allocation shared by gameplay and rendering. Runtime expiry mutates ten
- * stable source records and their Vector3 values; it never constructs a mesh, array, or vector.
+ * Deterministic Harvest simulation state.
+ *
+ * All potentially variable asteroid searches happen once in the constructor. Pickups and
+ * expiries only copy the next pre-generated Vector3 into a stable ten-slot source array, keeping
+ * the gameplay frame allocation-free and making a seed reproduce the same sequence regardless
+ * of when the player reaches each cell.
  */
 export class RelayHarvestState {
-  readonly layout: RelayHarvestLayout;
-  readonly layoutIndex: number;
-  readonly layoutSignature: string;
+  readonly path: FlightPath;
+  readonly seed: number;
   readonly relayPosition: THREE.Vector3;
-  /** All twelve launch-transformed authored sockets, used as stable world-clearance anchors. */
-  readonly authoredPositions: readonly THREE.Vector3[];
   readonly sources: readonly RelayHarvestSourceState[];
-
-  private readonly lifetimeOverride: number | null;
 
   phase: RelayHarvestPhase = 'collecting';
   collected = 0;
-  charge = 0;
   returnStartedAt: number | null = null;
   relayWindow: number | null = null;
   relayDeadline: number | null = null;
   extracted = false;
   failureReason: string | null = null;
 
-  constructor(
-    layout: RelayHarvestLayout,
-    launchPosition?: THREE.Vector3,
-    launchOrientation?: THREE.Quaternion,
-    sourceLifetimeSeconds?: number,
-  ) {
-    this.layout = layout;
-    this.layoutIndex = layout.index;
-    this.layoutSignature = layout.signature;
-    const origin = launchPosition ?? new THREE.Vector3();
-    const orientation = launchOrientation ?? new THREE.Quaternion();
-    this.relayPosition = origin.clone();
-    this.lifetimeOverride = Number.isFinite(sourceLifetimeSeconds)
-      && (sourceLifetimeSeconds ?? 0) > 0
-      ? sourceLifetimeSeconds!
-      : null;
-    this.authoredPositions = Object.freeze(RELAY_HARVEST_SOCKETS.map((socket) =>
-      new THREE.Vector3(socket.right, socket.up, -socket.forward)
-        .applyQuaternion(orientation)
-        .add(origin)));
-    this.sources = Object.freeze(layout.sockets.map((socket, index) => ({
-      index,
-      id: socket.id,
-      band: socket.band,
-      homeSocket: socket,
-      socket,
-      position: this.authoredPositions[socket.index]!.clone(),
-      generation: 0,
-      activatedAt: 0,
-      expiresAt: this.sourceLifetime(index, 0),
-      collected: false,
-      collectedAt: null,
-    })));
-    if (this.sources.length !== RELAY_HARVEST_ACTIVE_SOURCE_COUNT) {
-      throw new Error('BLACKOUT RELAY state requires exactly ten active sources');
+  private readonly queue: THREE.Vector3[] = [];
+  private queueIndex = 0;
+  private nextId = 0;
+
+  private readonly scratchPoint = new THREE.Vector3();
+  private readonly scratchTangent = new THREE.Vector3();
+  private readonly scratchLateralA = new THREE.Vector3();
+  private readonly scratchLateralB = new THREE.Vector3();
+  private readonly scratchCandidate = new THREE.Vector3();
+
+  constructor(path: FlightPath, seed: number, rocks: readonly AsteroidInstance[]) {
+    this.path = path;
+    this.seed = Number.isFinite(seed) ? seed >>> 0 : 0;
+    this.relayPosition = path.startPosition.clone();
+
+    // Keep this stream independent from both path and asteroid generation consumption.
+    const rng = new Rng(this.seed).fork(0x9c17_5eed);
+    for (let index = 0; index < RELAY_HARVEST_PREGENERATED_POSITION_COUNT; index++) {
+      this.queue.push(this.generatePosition(rng, rocks));
     }
+
+    this.sources = Object.freeze(Array.from(
+      { length: RELAY_HARVEST_ACTIVE_SOURCE_COUNT },
+      (_, index): RelayHarvestSourceState => ({
+        index,
+        position: new THREE.Vector3(),
+        id: 0,
+        generation: -1,
+        phase: 0,
+        charge: 0,
+        alive: false,
+        spawnedAt: 0,
+        expiresAt: null,
+        collected: false,
+        collectedAt: null,
+      }),
+    ));
+    this.reset();
+  }
+
+  /** Compatibility percentage for shared collection result/UI contracts. */
+  get charge(): number {
+    return this.collected * RELAY_HARVEST_CHARGE_PER_SOURCE;
   }
 
   reset(): void {
     this.phase = 'collecting';
     this.collected = 0;
-    this.charge = 0;
     this.returnStartedAt = null;
     this.relayWindow = null;
     this.relayDeadline = null;
     this.extracted = false;
     this.failureReason = null;
+    this.queueIndex = 0;
+    this.nextId = 0;
+
     for (const source of this.sources) {
-      source.socket = source.homeSocket;
-      source.position.copy(this.authoredPositions[source.homeSocket.index]!);
-      source.generation = 0;
-      source.activatedAt = 0;
-      source.expiresAt = this.sourceLifetime(source.index, 0);
-      source.collected = false;
-      source.collectedAt = null;
+      source.id = 0;
+      source.generation = -1;
+      this.respawn(source, 0);
+      // A stagger avoids a synchronized field-wide discharge without making layout random.
+      source.charge = 1 - (source.index / this.sources.length) * 0.55;
+      source.expiresAt = source.charge * RELAY_HARVEST_CELL_LIFETIME;
     }
   }
 
-  /** Relocates every expired live source, preserving source/vector/array identities. */
-  relocateExpired(elapsed: number): number {
-    if (this.phase !== 'collecting' || !Number.isFinite(elapsed)) return 0;
-    const now = Math.max(0, elapsed);
-    let relocated = 0;
+  /**
+   * Discharges cells before pickup collision is evaluated for the frame.
+   * A replacement is immediate, so collecting always presents ten live choices until quota.
+   */
+  advanceDecay(elapsed: number, dt: number): number {
+    if (this.phase !== 'collecting') return 0;
+    const now = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0;
+    let expired = 0;
     for (const source of this.sources) {
-      while (!source.collected && source.expiresAt !== null && now >= source.expiresAt) {
-        const activationTime = source.expiresAt;
-        this.relocate(source);
-        source.generation++;
-        source.activatedAt = activationTime;
-        source.expiresAt = activationTime + this.sourceLifetime(source.index, source.generation);
-        relocated++;
+      if (!source.alive) continue;
+      source.charge -= step / RELAY_HARVEST_CELL_LIFETIME;
+      if (source.charge > 0) {
+        source.expiresAt = now + source.charge * RELAY_HARVEST_CELL_LIFETIME;
+        continue;
       }
+      source.alive = false;
+      source.charge = 0;
+      source.expiresAt = null;
+      source.collected = true;
+      this.respawn(source, now);
+      expired++;
     }
-    return relocated;
+    return expired;
   }
 
-  collect(sourceIndex: number, elapsed: number): RelayHarvestSourceState | null {
+  collect(sourceIndex: number, elapsed: number): RelayHarvestPickup | null {
     if (this.phase !== 'collecting') return null;
     const source = this.sources[sourceIndex];
-    if (!source || source.collected) return null;
-    source.collected = true;
-    source.collectedAt = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+    if (!source?.alive) return null;
+    const collectedAt = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+    const cellId = source.id;
+
+    source.alive = false;
+    source.charge = 0;
     source.expiresAt = null;
+    source.collected = true;
+    source.collectedAt = collectedAt;
     this.collected++;
-    this.charge += RELAY_HARVEST_CHARGE_PER_SOURCE;
-    return source;
+    const quotaMet = this.collected >= RELAY_HARVEST_REQUIRED_SOURCE_COUNT;
+
+    if (!quotaMet) this.respawn(source, collectedAt);
+
+    return {
+      sourceIndex,
+      cellId,
+      collectedAt,
+      collected: this.collected,
+      quotaMet,
+    };
   }
 
   beginReturn(elapsed: number, distance: number, cruiseSpeed: number): void {
@@ -169,19 +219,45 @@ export class RelayHarvestState {
       RELAY_HARVEST_RETURN_MINIMUM_SECONDS,
       safeDistance / (safeCruise * RELAY_HARVEST_RETURN_PACE),
     );
+
     this.phase = 'returning';
     this.returnStartedAt = startedAt;
     this.relayWindow = window;
     this.relayDeadline = startedAt + window;
-    // The remaining sources are no longer targets once the bank is full.
+    // The quota pickup powers the entire field down, including the nine uncollected slots.
     for (const source of this.sources) {
-      if (!source.collected) source.expiresAt = null;
+      source.alive = false;
+      source.charge = 0;
+      source.expiresAt = null;
+      source.collected = true;
     }
+  }
+
+  activeCount(): number {
+    let count = 0;
+    for (const source of this.sources) if (source.alive) count++;
+    return count;
+  }
+
+  nearestSource(from: THREE.Vector3): RelayHarvestSourceState | null {
+    let nearest: RelayHarvestSourceState | null = null;
+    let nearestDistanceSq = Infinity;
+    for (const source of this.sources) {
+      if (!source.alive) continue;
+      const distanceSq = source.position.distanceToSquared(from);
+      if (distanceSq < nearestDistanceSq
+        || (distanceSq === nearestDistanceSq && source.id < (nearest?.id ?? Infinity))) {
+        nearest = source;
+        nearestDistanceSq = distanceSq;
+      }
+    }
+    return nearest;
   }
 
   relayRemaining(elapsed: number): number | null {
     if (this.relayDeadline === null) return null;
-    return Math.max(0, this.relayDeadline - Math.max(0, elapsed));
+    const now = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+    return Math.max(0, this.relayDeadline - now);
   }
 
   markExtracted(): void {
@@ -196,54 +272,109 @@ export class RelayHarvestState {
 
   debugSnapshot(): RelayHarvestStateDebug {
     return {
-      layoutIndex: this.layoutIndex,
-      layoutSignature: this.layoutSignature,
+      seed: this.seed,
       phase: this.phase,
       collected: this.collected,
       charge: this.charge,
+      active: this.activeCount(),
+      queueIndex: this.queueIndex,
       relayWindow: this.relayWindow,
       relayDeadline: this.relayDeadline,
       sources: this.sources.map((source) => ({
+        index: source.index,
         id: source.id,
-        socketId: source.socket.id,
         position: Object.freeze(source.position.toArray()) as readonly [number, number, number],
         generation: source.generation,
+        phase: source.phase,
+        charge: source.charge,
+        alive: source.alive,
+        spawnedAt: source.spawnedAt,
         expiresAt: source.expiresAt,
-        collected: source.collected,
-        collectedAt: source.collectedAt,
       })),
     };
   }
 
-  private sourceLifetime(sourceIndex: number, generation: number): number {
-    if (this.lifetimeOverride !== null) return this.lifetimeOverride;
-    const span = RELAY_HARVEST_SOURCE_LIFETIME_MAX - RELAY_HARVEST_SOURCE_LIFETIME_MIN + 1;
-    let value = (this.layoutIndex + 1) ^ Math.imul(sourceIndex + 1, 0x9e37_79b9)
-      ^ Math.imul(generation + 1, 0x85eb_ca6b);
-    value ^= value >>> 16;
-    value = Math.imul(value, 0x7feb_352d);
-    value ^= value >>> 15;
-    return RELAY_HARVEST_SOURCE_LIFETIME_MIN + ((value >>> 0) % span);
+  private respawn(source: RelayHarvestSourceState, elapsed: number): void {
+    source.position.copy(this.queue[this.queueIndex % this.queue.length]!);
+    this.queueIndex++;
+    source.phase = (source.id * 2.399963) % (Math.PI * 2);
+    source.id = ++this.nextId;
+    source.generation++;
+    source.charge = 1;
+    source.alive = true;
+    source.spawnedAt = elapsed;
+    source.expiresAt = elapsed + RELAY_HARVEST_CELL_LIFETIME;
+    source.collected = false;
+    source.collectedAt = null;
   }
 
-  private relocate(source: RelayHarvestSourceState): void {
-    // Five is coprime to twelve, so this probes every socket without an allocation or lookup table.
-    const start = (source.socket.index + 1
-      + ((this.layoutIndex + source.index * 3 + source.generation * 7) % 11)) % RELAY_HARVEST_SOCKETS.length;
-    for (let attempt = 0; attempt < RELAY_HARVEST_SOCKETS.length; attempt++) {
-      const socketIndex = (start + attempt * 5) % RELAY_HARVEST_SOCKETS.length;
-      if (socketIndex === source.socket.index || this.socketOccupied(socketIndex, source.index)) continue;
-      source.socket = RELAY_HARVEST_SOCKETS[socketIndex]!;
-      source.position.copy(this.authoredPositions[socketIndex]!);
-      return;
+  /** Generates one position just outside the path's protected debris-free channel. */
+  private generatePosition(rng: Rng, rocks: readonly AsteroidInstance[]): THREE.Vector3 {
+    let best = new THREE.Vector3();
+    let bestClearance = -Infinity;
+
+    for (let attempt = 0; attempt < RELAY_HARVEST_PLACEMENT_ATTEMPTS; attempt++) {
+      const t = rng.range(RELAY_HARVEST_MIN_PATH_FRACTION, RELAY_HARVEST_MAX_PATH_FRACTION);
+      this.path.curve.getPointAt(t, this.scratchPoint);
+      this.path.curve.getTangentAt(t, this.scratchTangent).normalize();
+
+      this.scratchLateralA.set(0, 1, 0);
+      if (Math.abs(this.scratchLateralA.dot(this.scratchTangent)) > 0.9) {
+        this.scratchLateralA.set(1, 0, 0);
+      }
+      this.scratchLateralB.crossVectors(this.scratchTangent, this.scratchLateralA).normalize();
+      this.scratchLateralA.crossVectors(this.scratchLateralB, this.scratchTangent).normalize();
+
+      const channel = this.channelRadiusAt(this.scratchPoint);
+      const radius = channel * rng.range(
+        RELAY_HARVEST_MIN_CHANNEL_MULTIPLIER,
+        RELAY_HARVEST_MAX_CHANNEL_MULTIPLIER,
+      );
+      const angle = rng.range(0, Math.PI * 2);
+      this.scratchCandidate
+        .copy(this.scratchPoint)
+        .addScaledVector(this.scratchLateralA, Math.cos(angle) * radius)
+        .addScaledVector(this.scratchLateralB, Math.sin(angle) * radius);
+
+      const clearance = this.clearanceOf(this.scratchCandidate, rocks);
+      if (clearance > bestClearance) {
+        bestClearance = clearance;
+        best = this.scratchCandidate.clone();
+      }
+      if (clearance >= RELAY_HARVEST_REQUIRED_ROCK_CLEARANCE) break;
     }
-    throw new Error(`BLACKOUT RELAY exhausted reserve sockets for ${source.id}`);
+
+    return best;
   }
 
-  private socketOccupied(socketIndex: number, excludedSourceIndex: number): boolean {
-    for (const source of this.sources) {
-      if (source.index !== excludedSourceIndex && source.socket.index === socketIndex) return true;
+  private clearanceOf(point: THREE.Vector3, rocks: readonly AsteroidInstance[]): number {
+    let worst = Infinity;
+    for (const rock of rocks) {
+      const gap = point.distanceTo(rock.position) - rock.radius;
+      if (gap < worst) {
+        worst = gap;
+        if (worst < 0) return worst;
+      }
     }
-    return false;
+    for (const other of this.queue) {
+      const gap = point.distanceTo(other);
+      if (gap < RELAY_HARVEST_MIN_SOURCE_SEPARATION) {
+        worst = Math.min(worst, gap - RELAY_HARVEST_MIN_SOURCE_SEPARATION);
+      }
+    }
+    return worst;
+  }
+
+  private channelRadiusAt(point: THREE.Vector3): number {
+    let bestRadius = 260;
+    let bestDistance = Infinity;
+    for (const segment of this.path.clearChannel) {
+      const distance = distanceToSegment(point, segment.a, segment.b);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestRadius = segment.radius;
+      }
+    }
+    return bestRadius;
   }
 }
